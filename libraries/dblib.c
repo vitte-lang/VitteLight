@@ -1,0 +1,1 @@
+// ldblib.c (stub)

@@ -1,0 +1,1 @@
+// lfunc.c (stub)

@@ -1,0 +1,1 @@
+// ltable.c (stub)

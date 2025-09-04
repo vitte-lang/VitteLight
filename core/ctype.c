@@ -1,0 +1,1 @@
+// lctype.c (stub)

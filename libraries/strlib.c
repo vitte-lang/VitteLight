@@ -1,0 +1,1 @@
+// lstrlib.c (stub)

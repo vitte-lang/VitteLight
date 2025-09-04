@@ -1,0 +1,1 @@
+// linit.c (stub)
