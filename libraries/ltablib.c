@@ -1,1 +1,0 @@
-// ltablib.c (stub)
