@@ -1,633 +1,963 @@
-// vitte-light/core/vm.c
-// Machine virtuelle VitteLight (exécution, contexte, natives, état, traces).
-// Compatible avec le set d'opcodes de core/opcodes.h et les introspections de
-// core/state.h. Boucle d'exécution en switch; si jumptab.c est lié, vous pouvez
-// aussi utiliser vl_run_jumptab() pour le hot path.
-//
-// Fourni:
-//   - Contexte opaque VL_Context (pile, globals, kstr, code, traces)
-//   - Cycle de vie: vl_ctx_new(), vl_ctx_free()
-//   - Chargement: vl_ctx_attach_module()/vl_ctx_detach_module()
-//   - Natives: registre par nom -> callback
-//   - Exécution: vl_step(), vl_run(max_steps)
-//   - State API: vl_state_* (IP, pile, globals, kstr, traces, dumps)
-//
-// Build:
-//   cc -std=c99 -O2 -Wall -Wextra -pedantic -c core/vm.c
-
-#include <inttypes.h>
-#include <stdarg.h>
+/* ============================================================================
+   vm.c — Machine virtuelle stack-based pour bytecode VTBC (C17, portable)
+   - Boucle d’exécution avec dispatch en switch
+   - Pile de valeurs, frames d’appel, globals, constantes
+   - Arithmétique entière/flottante, comparaisons, sauts, tables/strings
+   - Appels natifs (C) et fonctions bytecode, variadiques simples
+   - Chargement d’images via undump.{h,c} ("VTBC": CODE,KCON,STRS,SYMS,FUNC)
+   - Gestion des erreurs, pas de dépendances système non-portables
+   - Licence: MIT.
+   ============================================================================
+ */
+#include <assert.h>
+#include <errno.h>
+#include <math.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "api.h"      // VL_Value, VL_Status, vlv_*
-#include "ctype.h"    // conversions
-#include "object.h"   // VL_String, vl_make_strn
-#include "opcodes.h"  // codes + vl_op_* helpers
-#include "state.h"    // introspection
-#include "undump.h"   // VL_Module
-
-// ───────────────────────── Contexte interne ─────────────────────────
-#ifndef VL_STACK_INIT
-#define VL_STACK_INIT 256u
+/* --- Headers du projet (tous optionnels mais recommandés) ----------------- */
+#if defined(__has_include)
+#if __has_include("debug.h")
+#include "debug.h"
 #endif
-#ifndef VL_GLOBAL_INIT
-#define VL_GLOBAL_INIT 64u
+#if __has_include("object.h")
+#include "object.h"
+#endif
+#if __has_include("string.h")
+#include "string.h"
+#endif
+#if __has_include("table.h")
+#include "table.h"
+#endif
+#if __has_include("gc.h")
+#include "gc.h"
+#endif
+#if __has_include("undump.h")
+#include "undump.h"
+#endif
+#if __has_include("opcodes.h")
+#include "opcodes.h"
+#endif
+#if __has_include("state.h")
+#include "state.h"
+#endif
 #endif
 
-typedef struct VL_Native {
-  uint32_t name_si;  // index dans kstr (résolu au moment de l'attache;
-                     // UINT32_MAX si inconnu)
-  char *name_c;      // fallback par cstr pour recherche tardive
-  // Signature: args[0..argc-1], ret out peut être nil
-  VL_Status (*fn)(struct VL_Context *ctx, const VL_Value *args, uint8_t argc,
-                  VL_Value *ret, void *udata);
-  void *udata;
-} VL_Native;
+/* --- Fallbacks si certains headers ne sont pas encore disponibles ----------
+ */
+#ifndef VT_DEBUG
+#define VT_TRACE(...) ((void)0)
+#define VT_DEBUG(...) ((void)0)
+#define VT_INFO(...) ((void)0)
+#define VT_WARN(...) ((void)0)
+#define VT_ERROR(...) ((void)0)
+#define VT_FATAL(...)                           \
+  do {                                          \
+    fprintf(stderr, "FATAL: vm: " __VA_ARGS__); \
+    fputc('\n', stderr);                        \
+    abort();                                    \
+  } while (0)
+#endif
 
-struct VL_Context {
-  // code + kstr
-  const uint8_t *code;
-  size_t code_len;
-  size_t ip;
-  char **kstr;
-  uint32_t kcount;
+#ifndef VT_MALLOC
+#define VT_MALLOC(sz) malloc(sz)
+#define VT_FREE(p) free(p)
+#define VT_REALLOC(p, sz) realloc((p), (sz))
+#endif
 
-  // pile
-  VL_Value *stack;
-  size_t sp, cap;
+/* Valeur dynamique de base, si object.h indisponible.
+   Adapter à votre representation réelle le moment venu. */
+#ifndef VT_OBJECT_H
+typedef enum {
+  VT_T_NIL = 0,
+  VT_T_BOOL,
+  VT_T_INT,
+  VT_T_FLOAT,
+  VT_T_STR,
+  VT_T_NATIVE,
+  VT_T_OBJ
+} vt_type;
 
-  // globals indexés par si (taille = kcount au moment de l'attache)
-  VL_Value *globals;
-  size_t gcap;  // gcap==kcount actuel
+typedef struct vt_string_stub {
+  size_t len;
+  char* data;
+} vt_string_stub;
 
-  // natives dynamiques
-  VL_Native *nats;
-  size_t nnat, ncap;
-
-  // compteurs / traces
-  uint64_t steps_total;
-  uint32_t trace_mask;
-  VL_StepHook step_hook;
-  void *hook_user;
-
-  // I/O
-  FILE *out;
-};
-
-// ───────────────────────── Utils ─────────────────────────
-static inline int rd_u8(const uint8_t *p, size_t n, size_t *io, uint8_t *out) {
-  if (*io + 1 > n) return 0;
-  *out = p[(*io)++];
-  return 1;
-}
-static inline int rd_u32(const uint8_t *p, size_t n, size_t *io,
-                         uint32_t *out) {
-  if (*io + 4 > n) return 0;
-  *out = (uint32_t)p[*io] | ((uint32_t)p[*io + 1] << 8) |
-         ((uint32_t)p[*io + 2] << 16) | ((uint32_t)p[*io + 3] << 24);
-  *io += 4;
-  return 1;
-}
-static inline int rd_u64(const uint8_t *p, size_t n, size_t *io,
-                         uint64_t *out) {
-  if (*io + 8 > n) return 0;
-  uint64_t v = 0;
-  for (int i = 0; i < 8; i++) v |= ((uint64_t)p[*io + i]) << (8 * i);
-  *io += 8;
-  *out = v;
-  return 1;
-}
-static inline int rd_f64(const uint8_t *p, size_t n, size_t *io, double *out) {
+typedef struct vt_value {
+  uint8_t t;
   union {
-    uint64_t u;
-    double d;
-  } u;
-  if (!rd_u64(p, n, io, &u.u)) return 0;
-  *out = u.d;
-  return 1;
-}
+    int64_t i;
+    double f;
+    int b;
+    vt_string_stub* s;
+    void* p;
+  };
+} vt_value;
 
-static inline VL_Value vdup(VL_Value v) { return v; }
-
-static int stack_reserve(struct VL_Context *ctx, size_t need) {
-  if (need <= ctx->cap) return 1;
-  size_t cap = ctx->cap ? ctx->cap * 2 : VL_STACK_INIT;
-  while (cap < need) cap += cap / 2;
-  VL_Value *np = (VL_Value *)realloc(ctx->stack, cap * sizeof(VL_Value));
-  if (!np) return 0;
-  ctx->stack = np;
-  ctx->cap = cap;
-  return 1;
+static inline vt_value vt_nil(void) {
+  vt_value v;
+  v.t = VT_T_NIL;
+  v.i = 0;
+  return v;
 }
-static int push(struct VL_Context *ctx, VL_Value v) {
-  if (!stack_reserve(ctx, ctx->sp + 1)) return 0;
-  ctx->stack[ctx->sp++] = v;
-  return 1;
+static inline vt_value vt_bool(int b) {
+  vt_value v;
+  v.t = VT_T_BOOL;
+  v.b = !!b;
+  return v;
 }
-static int pop(struct VL_Context *ctx, VL_Value *out) {
-  if (ctx->sp == 0) return 0;
-  VL_Value v = ctx->stack[--ctx->sp];
-  if (out) *out = v;
-  return 1;
+static inline vt_value vt_int(int64_t x) {
+  vt_value v;
+  v.t = VT_T_INT;
+  v.i = x;
+  return v;
 }
-static int peek(const struct VL_Context *ctx, size_t idx_from_top,
-                VL_Value *out) {
-  if (idx_from_top >= ctx->sp) return 0;
-  if (out) *out = ctx->stack[ctx->sp - 1 - idx_from_top];
-  return 1;
+static inline vt_value vt_float(double x) {
+  vt_value v;
+  v.t = VT_T_FLOAT;
+  v.f = x;
+  return v;
 }
-
-static VL_Status st_io(struct VL_Context *ctx) {
-  return ctx ? VL_OK : VL_ERR_INVAL;
-}
-
-// Résolution si -> index pool
-static uint32_t kstr_index_of(const struct VL_Context *ctx, const char *name) {
-  if (!ctx || !name) return UINT32_MAX;
-  for (uint32_t i = 0; i < ctx->kcount; i++) {
-    if (ctx->kstr[i] && strcmp(ctx->kstr[i], name) == 0) return i;
-  }
-  return UINT32_MAX;
-}
-
-// ───────────────────────── Natives ─────────────────────────
-static int nat_reserve(struct VL_Context *ctx, size_t need) {
-  if (need <= ctx->ncap) return 1;
-  size_t nc = ctx->ncap ? ctx->ncap * 2 : 8;
-  while (nc < need) nc += nc / 2;
-  VL_Native *np = (VL_Native *)realloc(ctx->nats, nc * sizeof(VL_Native));
-  if (!np) return 0;
-  ctx->nats = np;
-  ctx->ncap = nc;
-  return 1;
-}
-
-static int nat_find_by_si(const struct VL_Context *ctx, uint32_t si) {
-  for (size_t i = 0; i < ctx->nnat; i++)
-    if (ctx->nats[i].name_si == si) return (int)i;
-  return -1;
-}
-static int nat_find_by_c(const struct VL_Context *ctx, const char *name) {
-  for (size_t i = 0; i < ctx->nnat; i++) {
-    const char *n = ctx->nats[i].name_si != UINT32_MAX
-                        ? ctx->kstr[ctx->nats[i].name_si]
-                        : ctx->nats[i].name_c;
-    if (n && strcmp(n, name) == 0) return (int)i;
-  }
-  return -1;
-}
-
-static int nat_bind_si(struct VL_Context *ctx, size_t idx) {
-  if (!ctx || idx >= ctx->nnat) return 0;
-  if (ctx->nats[idx].name_si != UINT32_MAX) return 1;
-  if (!ctx->kstr) return 1;
-  uint32_t si = kstr_index_of(ctx, ctx->nats[idx].name_c);
-  if (si != UINT32_MAX) ctx->nats[idx].name_si = si;
-  return 1;
-}
-
-VL_Status vl_register_native(struct VL_Context *ctx, const char *name,
-                             VL_Status (*fn)(struct VL_Context *,
-                                             const VL_Value *, uint8_t,
-                                             VL_Value *, void *),
-                             void *ud) {
-  if (!ctx || !name || !fn) return VL_ERR_INVAL;
-  if (!nat_reserve(ctx, ctx->nnat + 1)) return VL_ERR_OOM;
-  VL_Native n;
-  n.name_si = UINT32_MAX;
-  n.name_c = strdup(name);
-  n.fn = fn;
-  n.udata = ud;
-  ctx->nats[ctx->nnat++] = n;  // binding si au moment attach module
-  // essai d'association immédiate si kstr présente
-  nat_bind_si(ctx, ctx->nnat - 1);
-  return VL_OK;
-}
-
-// ───────────────────────── Contexte / module ─────────────────────────
-struct VL_Context *vl_ctx_new(void) {
-  struct VL_Context *c = (struct VL_Context *)calloc(1, sizeof(*c));
-  if (!c) return NULL;
-  c->out = stdout;
-  return c;
-}
-
-void vl_ctx_free(struct VL_Context *c) {
-  if (!c) return;
-  free(c->stack);
-  free(c->globals);
-  if (c->nats) {
-    for (size_t i = 0; i < c->nnat; i++) free(c->nats[i].name_c);
-    free(c->nats);
-  }
-  free(c);
-}
-
-VL_Status vl_ctx_attach_module(struct VL_Context *c, const VL_Module *m) {
-  if (!c || !m) return VL_ERR_INVAL;
-  c->code = m->code;
-  c->code_len = m->code_len;
-  c->ip = 0;
-  c->kstr = m->kstr;
-  c->kcount = m->kcount;  // globals = tableau aligné sur kcount
-  free(c->globals);
-  c->globals = (VL_Value *)calloc(
-      c->kcount > VL_GLOBAL_INIT ? c->kcount : VL_GLOBAL_INIT,
-      sizeof(VL_Value));
-  if (!c->globals && c->kcount) return VL_ERR_OOM;
-  c->gcap = (c->kcount > VL_GLOBAL_INIT ? c->kcount : VL_GLOBAL_INIT);
-  // rebinder les natives par si si possible
-  for (size_t i = 0; i < c->nnat; i++) nat_bind_si(c, i);
-  return VL_OK;
-}
-
-void vl_ctx_detach_module(struct VL_Context *c) {
-  if (!c) return;
-  c->code = NULL;
-  c->code_len = 0;
-  c->ip = 0;
-  c->kstr = NULL;
-  c->kcount = 0;
-  memset(c->globals, 0, c->gcap * sizeof(VL_Value));
-}
-
-// ───────────────────────── Builtins optionnels ─────────────────────────
-static VL_Status nat_print(struct VL_Context *ctx, const VL_Value *args,
-                           uint8_t argc, VL_Value *ret, void *ud) {
-  FILE *out = ud ? (FILE *)ud : (ctx ? ctx->out : stdout);
-  for (uint8_t i = 0; i < argc; i++) {
-    vl_value_print(&args[i], out);
-    if (i + 1 < argc) fputc(' ', out);
-  }
-  fputc('\n', out);
-  if (ret) *ret = vlv_nil();
-  return VL_OK;
-}
-
-void vl_ctx_register_std(struct VL_Context *c) {
-  if (!c) return;
-  vl_register_native(c, "print", nat_print, c->out);
-}
-
-// ───────────────────────── Exécution ─────────────────────────
-static inline void trace_op(struct VL_Context *ctx, uint8_t op, size_t ip0) {
-  if (!ctx) return;
-  if (!(ctx->trace_mask & VL_TRACE_OP)) return;
-  const char *name = vl_op_name(op);
-  fprintf(ctx->out ? ctx->out : stdout, "[%08zu] %s\n", ip0, name ? name : "?");
-}
-static inline void trace_stack(struct VL_Context *ctx) {
-  if (!ctx) return;
-  if (!(ctx->trace_mask & VL_TRACE_STACK)) return;
-  vl_state_dump_stack(ctx, ctx->out);
-}
-
-VL_Status vl_step(struct VL_Context *ctx) {
-  if (!ctx || !ctx->code) return VL_ERR_INVAL;
-  if (ctx->ip >= ctx->code_len) return VL_ERR_BAD_BYTECODE;
-  size_t ip0 = ctx->ip;
-  uint8_t op = ctx->code[ctx->ip++];
-  if (ctx->step_hook) ctx->step_hook(ctx, op, ctx->hook_user);
-  trace_op(ctx, op, ip0);
-
-  switch (op) {
-    case OP_NOP:
-      break;
-    case OP_PUSHI: {
-      uint64_t u = 0;
-      if (!rd_u64(ctx->code, ctx->code_len, &ctx->ip, &u))
-        return VL_ERR_BAD_BYTECODE;
-      if (!push(ctx, vlv_int((int64_t)u))) return VL_ERR_OOM;
-    } break;
-    case OP_PUSHF: {
-      double d = 0;
-      if (!rd_f64(ctx->code, ctx->code_len, &ctx->ip, &d))
-        return VL_ERR_BAD_BYTECODE;
-      if (!push(ctx, vlv_float(d))) return VL_ERR_OOM;
-    } break;
-    case OP_PUSHS: {
-      uint32_t si = 0;
-      if (!rd_u32(ctx->code, ctx->code_len, &ctx->ip, &si))
-        return VL_ERR_BAD_BYTECODE;
-      if (si >= ctx->kcount) return VL_ERR_BAD_BYTECODE;
-      const char *s = ctx->kstr[si];
-      uint32_t L = (uint32_t)strlen(s);
-      VL_Value v = vl_make_strn(ctx, s, L);
-      if (v.type != VT_STR) return VL_ERR_OOM;
-      if (!push(ctx, v)) return VL_ERR_OOM;
-    } break;
-    case OP_ADD:
-    case OP_SUB:
-    case OP_MUL:
-    case OP_DIV: {
-      VL_Value b, a;
-      if (!pop(ctx, &b) || !pop(ctx, &a)) return VL_ERR_BAD_STATE;
-      double x, y;
-      int isf = 0;
-      if (a.type == VT_FLOAT || b.type == VT_FLOAT) {
-        isf = 1;
-      }
-      if (isf) {
-        if (!vl_value_as_float(&a, &x) || !vl_value_as_float(&b, &y))
-          return VL_ERR_TYPE;
-        double r = (op == OP_ADD)   ? x + y
-                   : (op == OP_SUB) ? x - y
-                   : (op == OP_MUL) ? x * y
-                                    : x / y;
-        if (!push(ctx, vlv_float(r))) return VL_ERR_OOM;
-      } else {
-        int64_t ia, ib;
-        if (!vl_value_as_int(&a, &ia) || !vl_value_as_int(&b, &ib))
-          return VL_ERR_TYPE;
-        int64_t r = (op == OP_ADD)   ? ia + ib
-                    : (op == OP_SUB) ? ia - ib
-                    : (op == OP_MUL) ? ia * ib
-                                     : (ib == 0 ? 0 : ia / ib);
-        if (!push(ctx, vlv_int(r))) return VL_ERR_OOM;
-      }
-    } break;
-    case OP_EQ:
-    case OP_NEQ:
-    case OP_LT:
-    case OP_GT:
-    case OP_LE:
-    case OP_GE: {
-      VL_Value b, a;
-      if (!pop(ctx, &b) || !pop(ctx, &a)) return VL_ERR_BAD_STATE;
-      int res = 0;
-      if (a.type == VT_STR && b.type == VT_STR &&
-          (op == OP_EQ || op == OP_NEQ)) {
-        res = (a.as.s && b.as.s)
-                  ? (a.as.s == b.as.s ||
-                     (a.as.s->len == b.as.s->len &&
-                      memcmp(a.as.s->data, b.as.s->data, a.as.s->len) == 0))
-                  : (a.as.s == b.as.s);
-        if (op == OP_NEQ) res = !res;
-      } else {
-        double x, y;
-        if (!vl_value_as_float(&a, &x) || !vl_value_as_float(&b, &y))
-          return VL_ERR_TYPE;
-        switch (op) {
-          case OP_EQ:
-            res = (x == y);
-            break;
-          case OP_NEQ:
-            res = (x != y);
-            break;
-          case OP_LT:
-            res = (x < y);
-            break;
-          case OP_GT:
-            res = (x > y);
-            break;
-          case OP_LE:
-            res = (x <= y);
-            break;
-          case OP_GE:
-            res = (x >= y);
-            break;
-          default:
-            break;
-        }
-      }
-      if (!push(ctx, vlv_bool(res))) return VL_ERR_OOM;
-    } break;
-    case OP_PRINT: {
-      VL_Value v;
-      if (!peek(ctx, 0, &v)) return VL_ERR_BAD_STATE;
-      vl_value_print(&v, ctx->out ? ctx->out : stdout);
-      fputc('\n', ctx->out ? ctx->out : stdout);
-    } break;
-    case OP_POP: {
-      VL_Value tmp;
-      if (!pop(ctx, &tmp)) return VL_ERR_BAD_STATE;
-      (void)tmp;
-    } break;
-    case OP_STOREG: {
-      uint32_t si = 0;
-      if (!rd_u32(ctx->code, ctx->code_len, &ctx->ip, &si))
-        return VL_ERR_BAD_BYTECODE;
-      if (si >= ctx->gcap) return VL_ERR_BAD_STATE;
-      VL_Value v;
-      if (!pop(ctx, &v)) return VL_ERR_BAD_STATE;
-      ctx->globals[si] = v;
-      if (ctx->trace_mask & VL_TRACE_GLOBAL) {
-        fprintf(ctx->out ? ctx->out : stdout, "STOREG[%u]=", (unsigned)si);
-        vl_value_print(&v, ctx->out ? ctx->out : stdout);
-        fputc('\n', ctx->out ? ctx->out : stdout);
-      }
-    } break;
-    case OP_LOADG: {
-      uint32_t si = 0;
-      if (!rd_u32(ctx->code, ctx->code_len, &ctx->ip, &si))
-        return VL_ERR_BAD_BYTECODE;
-      if (si >= ctx->gcap) return VL_ERR_BAD_STATE;
-      if (!push(ctx, vdup(ctx->globals[si]))) return VL_ERR_OOM;
-      if (ctx->trace_mask & VL_TRACE_GLOBAL) {
-        fprintf(ctx->out ? ctx->out : stdout, "LOADG[%u]\n", (unsigned)si);
-      }
-    } break;
-    case OP_CALLN: {
-      uint32_t si = 0;
-      uint8_t argc = 0;
-      if (!rd_u32(ctx->code, ctx->code_len, &ctx->ip, &si))
-        return VL_ERR_BAD_BYTECODE;
-      if (!rd_u8(ctx->code, ctx->code_len, &ctx->ip, &argc))
-        return VL_ERR_BAD_BYTECODE;
-      // collect args (ordre: a0..a{argc-1}) avec a{argc-1}=top
-      VL_Value *args =
-          argc ? (VL_Value *)alloca(sizeof(VL_Value) * argc) : NULL;
-      for (int i = (int)argc - 1; i >= 0; i--) {
-        if (!pop(ctx, &args[i])) return VL_ERR_BAD_STATE;
-      }
-      int idx = nat_find_by_si(ctx, si);
-      if (idx < 0) {  // fallback par nom
-        if (si >= ctx->kcount) return VL_ERR_BAD_BYTECODE;
-        idx = nat_find_by_c(ctx, ctx->kstr[si]);
-        if (idx < 0) return VL_ERR_NOT_FOUND;
-      }
-      VL_Value ret = vlv_nil();
-      VL_Status st =
-          ctx->nats[idx].fn(ctx, args, argc, &ret, ctx->nats[idx].udata);
-      if (st != VL_OK) return st;
-      if (ret.type != VT_NIL) {
-        if (!push(ctx, ret)) return VL_ERR_OOM;
-      }
-      if (ctx->trace_mask & VL_TRACE_CALL) {
-        fprintf(ctx->out ? ctx->out : stdout, "CALLN %s/%u\n",
-                (si < ctx->kcount ? ctx->kstr[si] : "<bad>"), (unsigned)argc);
-      }
-    } break;
-    case OP_STOREG + 1:
+static inline int vt_truthy(vt_value v) {
+  switch (v.t) {
+    case VT_T_NIL:
+      return 0;
+    case VT_T_BOOL:
+      return v.b;
+    case VT_T_INT:
+      return v.i != 0;
+    case VT_T_FLOAT:
+      return v.f != 0.0;
     default:
-      return VL_ERR_BAD_BYTECODE;
-    case OP_HALT:
-      return VL_DONE;
+      return 1;
   }
-
-  ctx->steps_total++;
-  trace_stack(ctx);
-  return VL_OK;
 }
-
-VL_Status vl_run(struct VL_Context *ctx, uint64_t max_steps) {
-  if (!ctx) return VL_ERR_INVAL;
-  VL_Status st = VL_OK;
-  uint64_t n = 0;
-  while (st == VL_OK) {
-    st = vl_step(ctx);
-    if (st == VL_DONE) return VL_OK;
-    if (st != VL_OK) return st;
-    if (max_steps && ++n >= max_steps) break;
+static inline const char* vt_typename(uint8_t t) {
+  switch (t) {
+    case VT_T_NIL:
+      return "nil";
+    case VT_T_BOOL:
+      return "bool";
+    case VT_T_INT:
+      return "int";
+    case VT_T_FLOAT:
+      return "float";
+    case VT_T_STR:
+      return "str";
+    case VT_T_NATIVE:
+      return "native";
+    default:
+      return "obj";
   }
-  return st;
+}
+#endif /* VT_OBJECT_H */
+
+/* Opcodes fallback si opcodes.h pas encore écrit. Ajustez pour votre ISA. */
+#ifndef VT_OPCODES_H
+typedef enum {
+  OP_HALT = 0,
+  OP_CONST, /* u16 kidx                   -> push KCON[kidx]        */
+  OP_POP,   /*                            -> pop                     */
+  OP_DUP,   /*                            -> dup top                 */
+  OP_ADD,
+  OP_SUB,
+  OP_MUL,
+  OP_DIV,
+  OP_MOD,
+  OP_NEG,
+  OP_NOT,
+  OP_EQ,
+  OP_NE,
+  OP_LT,
+  OP_LE,
+  OP_GT,
+  OP_GE,
+  OP_JMP,       /* s32 rel                    -> pc += rel               */
+  OP_JMP_IF,    /* s32 rel  (pop cond)        -> if cond pc+=rel         */
+  OP_JMP_IFNOT, /* s32 rel                    -> if !cond pc+=rel        */
+  OP_LOADG,     /* u16 sym                    -> push globals[sym]       */
+  OP_STOREG,    /* u16 sym  (pop v)           -> globals[sym]=v          */
+  OP_LOADL,     /* u8 slot                    -> push locals[base+slot]  */
+  OP_STOREL,    /* u8 slot (pop v)            -> locals[base+slot]=v     */
+  OP_CALL,      /* u8 argc                    -> call top-argc-...       */
+  OP_RET,       /* u8 nret                    -> return nret             */
+  OP_PRINT,     /* (pop v) print              -> side effect             */
+  OP_CONV_I2F,  /* (int -> float) */
+  OP_CONV_F2I,  /* (float -> int, trunc) */
+  OP_ASSERT,    /* (pop cond,stridx) if !cond -> runtime error           */
+  OP_NARGS,     /* push argc courant (variadique) */
+  OP__COUNT
+} vt_opcode;
+#endif
+
+/* -------------------------------------------------------------------------- */
+/*                              VM DEFINITIONS */
+/* -------------------------------------------------------------------------- */
+
+typedef vt_value (*vt_cfunc)(struct vt_vm* vm, int argc, vt_value* argv);
+
+typedef struct vt_global {
+  /* mapping symbol -> value: dans une vraie impl, utilisez table.h */
+  vt_value v;
+  int inited;
+} vt_global;
+
+typedef struct vt_chunk {
+  const uint8_t* code;
+  size_t size;
+} vt_chunk;
+
+typedef struct vt_frame {
+  const uint8_t* code;
+  size_t code_sz;
+  const vt_value* kcon; /* pool des constantes typées */
+  size_t kcon_sz;
+  int base;   /* base index dans la pile */
+  int pc;     /* compteur en octets */
+  int ret_sp; /* pile sp de retour */
+} vt_frame;
+
+typedef struct vt_vm {
+  /* Pile de valeurs */
+  vt_value* stack;
+  int sp; /* next free index */
+  int cap;
+
+  /* Frames d'appel */
+  vt_frame* frames;
+  int fp; /* next free frame index */
+  int fcap;
+
+  /* Globals */
+  vt_global* globals;
+  size_t gcount;
+
+  /* Constantes (kcon) décodées en vt_value si dispo, sinon brutes */
+  vt_value* kcon;
+  size_t kcount;
+
+  /* Image chargée */
+#ifdef VT_UNDUMP_H
+  vt_img* image;
+#endif
+
+  /* Strings/STRS brutes pour messages */
+  const uint8_t* strs;
+  size_t strs_sz;
+
+  /* Limites d’exécution */
+  uint64_t step_limit;
+  uint64_t steps;
+
+  /* Dernière erreur */
+  char errmsg[256];
+
+  /* Natives (table simple indexée par symbole si souhaité) */
+  vt_cfunc* natives;
+  size_t n_natives;
+} vt_vm;
+
+/* -------------------------------------------------------------------------- */
+/*                              UTILITAIRES */
+/* -------------------------------------------------------------------------- */
+
+static inline void vm_set_err(vt_vm* vm, const char* msg) {
+  if (!vm) return;
+  size_t n = strlen(msg);
+  if (n >= sizeof(vm->errmsg)) n = sizeof(vm->errmsg) - 1;
+  memcpy(vm->errmsg, msg, n);
+  vm->errmsg[n] = 0;
 }
 
-// ───────────────────────── State API ─────────────────────────
-size_t vl_state_ip(const struct VL_Context *ctx) { return ctx ? ctx->ip : 0; }
-VL_Status vl_state_set_ip(struct VL_Context *ctx, size_t ip) {
-  if (!ctx || !ctx->code) return VL_ERR_INVAL;
-  size_t sz = vl_insn_size_at(ctx->code, ctx->code_len, ip);
-  if (!sz) return VL_ERR_BAD_BYTECODE;
-  ctx->ip = ip;
-  return VL_OK;
+static inline void vm_oob(void) { VT_FATAL("bytecode out of bounds"); }
+
+/* Lecture little-endian depuis code */
+static inline uint8_t rd_u8(const uint8_t* p) { return p[0]; }
+static inline int8_t rd_i8(const uint8_t* p) { return (int8_t)p[0]; }
+static inline uint16_t rd_u16(const uint8_t* p) {
+  return (uint16_t)(p[0] | (p[1] << 8));
 }
-const uint8_t *vl_state_code(const struct VL_Context *ctx, size_t *out_len) {
-  if (!ctx) return NULL;
-  if (out_len) *out_len = ctx->code_len;
-  return ctx->code;
+static inline int16_t rd_i16(const uint8_t* p) { return (int16_t)rd_u16(p); }
+static inline uint32_t rd_u32(const uint8_t* p) {
+  return (uint32_t)(p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24));
 }
-uint64_t vl_state_steps_total(const struct VL_Context *ctx) {
-  return ctx ? ctx->steps_total : 0;
+static inline int32_t rd_i32(const uint8_t* p) { return (int32_t)rd_u32(p); }
+
+/* Pile */
+static inline int vm_stack_ok(vt_vm* vm, int need) {
+  if (vm->sp + need <= vm->cap) return 1;
+  int newcap = vm->cap ? vm->cap * 2 : 128;
+  while (vm->sp + need > newcap) newcap *= 2;
+  vt_value* s2 =
+      (vt_value*)VT_REALLOC(vm->stack, (size_t)newcap * sizeof(vt_value));
+  if (!s2) return 0;
+  vm->stack = s2;
+  vm->cap = newcap;
+  return 1;
+}
+static inline void push(vt_vm* vm, vt_value v) {
+  if (!vm_stack_ok(vm, 1)) VT_FATAL("OOM stack");
+  vm->stack[vm->sp++] = v;
+}
+static inline vt_value pop(vt_vm* vm) {
+  if (vm->sp <= 0) VT_FATAL("stack underflow");
+  return vm->stack[--vm->sp];
+}
+static inline vt_value* topn(vt_vm* vm, int n) { /* 0=top-1 */
+  if (vm->sp - 1 - n < 0) VT_FATAL("stack access OOB");
+  return &vm->stack[vm->sp - 1 - n];
 }
 
-size_t vl_state_stack_size(const struct VL_Context *ctx) {
-  return ctx ? ctx->sp : 0;
-}
-int vl_state_stack_peek(const struct VL_Context *ctx, size_t idx,
-                        VL_Value *out) {
-  return peek(ctx, idx, out);
-}
-int vl_state_stack_at(const struct VL_Context *ctx, size_t index,
-                      VL_Value *out) {
-  if (!ctx || index >= ctx->sp) return 0;
-  if (out) *out = ctx->stack[index];
+/* Frames */
+static inline int vm_frames_ok(vt_vm* vm, int need) {
+  if (vm->fp + need <= vm->fcap) return 1;
+  int newcap = vm->fcap ? vm->fcap * 2 : 16;
+  while (vm->fp + need > newcap) newcap *= 2;
+  vt_frame* f2 =
+      (vt_frame*)VT_REALLOC(vm->frames, (size_t)newcap * sizeof(vt_frame));
+  if (!f2) return 0;
+  vm->frames = f2;
+  vm->fcap = newcap;
   return 1;
 }
 
-size_t vl_state_globals_count(const struct VL_Context *ctx) {
-  return ctx ? ctx->gcap : 0;
-}
-int vl_state_global_get(const struct VL_Context *ctx, uint32_t name_si,
-                        VL_Value *out) {
-  if (!ctx || name_si >= ctx->gcap) return 0;
-  if (out) *out = ctx->globals[name_si];
-  return 1;
-}
-VL_Status vl_state_global_set(struct VL_Context *ctx, uint32_t name_si,
-                              VL_Value v) {
-  if (!ctx || name_si >= ctx->gcap) return VL_ERR_INVAL;
-  ctx->globals[name_si] = v;
-  return VL_OK;
+/* Constantes KCON par défaut: entier signé 64, double, bool, nil, string.
+   Ici on suppose que KCON a été décodé en vt_value ailleurs. */
+static inline vt_value kget(vt_vm* vm, uint16_t idx) {
+  if (idx >= vm->kcount) VT_FATAL("kconst index OOB");
+  return vm->kcon[idx];
 }
 
-uint32_t vl_state_kstr_count(const struct VL_Context *ctx) {
-  return ctx ? ctx->kcount : 0;
+/* Globals simples indexées par symbole id. */
+static inline vt_value gget(vt_vm* vm, uint16_t sym) {
+  if (sym >= vm->gcount || !vm->globals[sym].inited) return vt_nil();
+  return vm->globals[sym].v;
 }
-const char *vl_state_kstr_at(const struct VL_Context *ctx, uint32_t si,
-                             uint32_t *out_len) {
-  if (!ctx || si >= ctx->kcount) return NULL;
-  if (out_len) *out_len = (uint32_t)strlen(ctx->kstr[si]);
-  return ctx->kstr[si];
+static inline void gset(vt_vm* vm, uint16_t sym, vt_value v) {
+  if (sym >= vm->gcount) {
+    size_t newc = vm->gcount ? vm->gcount * 2 : 64;
+    while (sym >= newc) newc *= 2;
+    vt_global* g2 =
+        (vt_global*)VT_REALLOC(vm->globals, newc * sizeof(vt_global));
+    if (!g2) VT_FATAL("OOM globals");
+    /* init tail */
+    for (size_t i = vm->gcount; i < newc; i++) {
+      g2[i].inited = 0;
+      g2[i].v = vt_nil();
+    }
+    vm->globals = g2;
+    vm->gcount = newc;
+  }
+  vm->globals[sym].v = v;
+  vm->globals[sym].inited = 1;
 }
 
-uint32_t vl_trace_mask(const struct VL_Context *ctx) {
-  return ctx ? ctx->trace_mask : 0;
+/* Conversions dynamiques */
+static inline int is_num(vt_value v) {
+  return v.t == VT_T_INT || v.t == VT_T_FLOAT;
 }
-void vl_trace_enable(struct VL_Context *ctx, uint32_t mask) {
-  if (ctx) ctx->trace_mask |= mask;
+static inline double as_f(vt_value v) {
+  return (v.t == VT_T_FLOAT) ? v.f : (double)v.i;
 }
-void vl_trace_disable(struct VL_Context *ctx, uint32_t mask) {
-  if (ctx) ctx->trace_mask &= ~mask;
+static inline vt_value add_num(vt_value a, vt_value b) {
+  if (a.t == VT_T_FLOAT || b.t == VT_T_FLOAT)
+    return vt_float(as_f(a) + as_f(b));
+  return vt_int(a.i + b.i);
 }
-void vl_set_step_hook(struct VL_Context *ctx, VL_StepHook hook, void *user) {
-  if (ctx) {
-    ctx->step_hook = hook;
-    ctx->hook_user = user;
+static inline vt_value sub_num(vt_value a, vt_value b) {
+  if (a.t == VT_T_FLOAT || b.t == VT_T_FLOAT)
+    return vt_float(as_f(a) - as_f(b));
+  return vt_int(a.i - b.i);
+}
+static inline vt_value mul_num(vt_value a, vt_value b) {
+  if (a.t == VT_T_FLOAT || b.t == VT_T_FLOAT)
+    return vt_float(as_f(a) * as_f(b));
+  return vt_int(a.i * b.i);
+}
+static inline vt_value div_num(vt_value a, vt_value b) {
+  double denom = as_f(b);
+  if (denom == 0.0) VT_FATAL("division by zero");
+  return vt_float(as_f(a) / denom);
+}
+static inline vt_value mod_num(vt_value a, vt_value b) {
+  if (a.t == VT_T_FLOAT || b.t == VT_T_FLOAT)
+    return vt_float(fmod(as_f(a), as_f(b)));
+  if (b.i == 0) VT_FATAL("mod by zero");
+  return vt_int(a.i % b.i);
+}
+
+/* Impression simple pour OP_PRINT (debug). Adapter à votre String API. */
+static void vm_print_value(vt_value v) {
+  switch (v.t) {
+    case VT_T_NIL:
+      fputs("nil", stdout);
+      break;
+    case VT_T_BOOL:
+      fputs(v.b ? "true" : "false", stdout);
+      break;
+    case VT_T_INT:
+      printf("%lld", (long long)v.i);
+      break;
+    case VT_T_FLOAT:
+      printf("%.17g", v.f);
+      break;
+    case VT_T_STR:
+      if (v.s && v.s->data)
+        fwrite(v.s->data, 1, v.s->len, stdout);
+      else
+        fputs("<str?>", stdout);
+      break;
+    default:
+      printf("<%s@%p>", vt_typename(v.t), (void*)v.p);
+      break;
   }
 }
 
-VL_Status vl_state_dump_stack(const struct VL_Context *ctx, FILE *out) {
-  if (!ctx) return VL_ERR_INVAL;
-  if (!out) out = stdout;
-  fprintf(out, "-- stack size=%zu --\n", ctx->sp);
-  for (size_t i = 0; i < ctx->sp; i++) {
-    fprintf(out, "[%zu] ", i);
-    vl_value_print(&ctx->stack[i], out);
-    fputc('\n', out);
-  }
-  return VL_OK;
+/* -------------------------------------------------------------------------- */
+/*                              API PUBLIQUE VM */
+/* -------------------------------------------------------------------------- */
+
+typedef struct {
+  int dummy;
+} vt_vm_config;
+
+vt_vm* vt_vm_new(const vt_vm_config* cfg) {
+  (void)cfg;
+  vt_vm* vm = (vt_vm*)calloc(1, sizeof *vm);
+  if (!vm) return NULL;
+  vm->cap = vm->fcap = 0;
+  vm->stack = NULL;
+  vm->frames = NULL;
+  vm->sp = vm->fp = 0;
+  vm->gcount = 0;
+  vm->globals = NULL;
+  vm->kcon = NULL;
+  vm->kcount = 0;
+  vm->n_natives = 0;
+  vm->natives = NULL;
+  vm->strs = NULL;
+  vm->strs_sz = 0;
+  vm->step_limit = 0;
+  vm->steps = 0;
+  vm->errmsg[0] = 0;
+  return vm;
 }
 
-VL_Status vl_state_dump(const struct VL_Context *ctx, FILE *out,
-                        uint32_t mask) {
-  if (!ctx) return VL_ERR_INVAL;
-  if (!out) out = stdout;
-  size_t ip = ctx->ip;
-  fprintf(out, "== VM state ==\nIP=%zu/%zu steps=%" PRIu64 "\n", ip,
-          ctx->code_len, ctx->steps_total);  // fenêtre d'instruction
-  if (ctx->code && ip < ctx->code_len) {
-    char line[128];
-    size_t insz = vl_insn_size_at(ctx->code, ctx->code_len, ip);
-    vl_disasm_one(ctx->code, ctx->code_len, ip, line, sizeof(line));
-    fprintf(out, "%04zu: %-16s  ", ip, line);
-    for (size_t j = 0; j < insz; j++) fprintf(out, "%02X ", ctx->code[ip + j]);
-    fputc('\n', out);
-  }
-  if (mask & VL_TRACE_STACK) vl_state_dump_stack(ctx, out);
-  return VL_OK;
+void vt_vm_free(vt_vm* vm) {
+  if (!vm) return;
+  VT_FREE(vm->stack);
+  VT_FREE(vm->frames);
+  VT_FREE(vm->globals);
+  VT_FREE(vm->kcon);
+  VT_FREE(vm->natives);
+#ifdef VT_UNDUMP_H
+  if (vm->image) vt_img_release(vm->image);
+#endif
+  free(vm);
 }
 
-// ───────────────────────── Mini driver de test ─────────────────────────
-#ifdef VL_VM_TEST_MAIN
-int main(void) {
-  // Construire un module trivial avec opcodes helpers
-  const char *kstr[] = {"hello", "print", "x"};
-  uint8_t buf[512];
-  uint8_t *p = buf;
-  vl_bc_emit_header(&p, (uint8_t)VLBC_VERSION);
-  vl_bc_emit_kstr(&p, kstr, 3);
-  uint8_t *code_size = vl_bc_begin_code(&p);
-  uint8_t *cbeg = p;
-  vl_emit_PUSHS(&p, 0);     // "hello"
-  vl_emit_CALLN(&p, 1, 1);  // print(1)
-  vl_emit_HALT(&p);
-  uint8_t *cend = p;
-  vl_bc_end_code(code_size, cbeg, cend);
+/* Enregistre une native dans un slot symbol (option simple). */
+int vt_vm_set_native(vt_vm* vm, uint16_t sym, vt_cfunc fn) {
+  if (!vm || !fn) return -EINVAL;
+  /* On schématise: stocker la fonction comme global VT_T_NATIVE via pointeur.
+   */
+  vt_value v;
+  v.t = VT_T_NATIVE;
+  v.p = (void*)fn;
+  gset(vm, sym, v);
+  return 0;
+}
 
-  // Décoder le VLBC avec undump
-  VL_Module mod;
-  char err[128];
-  VL_Status st =
-      vl_module_from_buffer(buf, (size_t)(p - buf), &mod, err, sizeof(err));
-  if (st != VL_OK) {
-    fprintf(stderr, "undump: %s\n", err);
+/* Charge une image VTBC depuis un chemin. Remplit CODE/KCON/STRS. */
+int vt_vm_load_image(vt_vm* vm, const char* path) {
+#ifndef VT_UNDUMP_H
+  (void)vm;
+  (void)path;
+  vm_set_err(vm, "undump.h absent");
+  return -ENOSYS;
+#else
+  if (!vm || !path) return -EINVAL;
+  if (vm->image) {
+    vt_img_release(vm->image);
+    vm->image = NULL;
+  }
+  int rc = vt_img_load_file(path, &vm->image);
+  if (rc != 0) {
+    vm_set_err(vm, "load image failed");
+    return rc;
+  }
+
+  /* Map sections */
+  const uint8_t *code = NULL, *strs = NULL;
+  size_t code_sz = 0, strs_sz = 0;
+  vt_img_find(vm->image, (const char[4]){'C', 'O', 'D', 'E'}, &code, &code_sz);
+  vt_img_find(vm->image, (const char[4]){'S', 'T', 'R', 'S'}, &strs, &strs_sz);
+  vm->strs = strs;
+  vm->strs_sz = strs_sz;
+
+  /* KCON: dans une impl réelle, KCON contient un flux sérialisé → décoder.
+     Ici on suppose KCON = tableau de vt_value matérialisé (didactique). */
+  const uint8_t* kraw = NULL;
+  size_t kraw_sz = 0;
+  if (vt_img_find(vm->image, (const char[4]){'K', 'C', 'O', 'N'}, &kraw,
+                  &kraw_sz) == 0) {
+    /* Format jouet: [u32 count][count x {u8 tag, union payload}] */
+    if (kraw_sz < 4) VT_FATAL("KCON too small");
+    uint32_t cnt = rd_u32(kraw);
+    size_t off = 4;
+    vm->kcon = (vt_value*)VT_MALLOC(cnt * sizeof(vt_value));
+    if (!vm->kcon) VT_FATAL("OOM kcon");
+    vm->kcount = cnt;
+    for (uint32_t i = 0; i < cnt; i++) {
+      if (off >= kraw_sz) VT_FATAL("KCON OOB");
+      uint8_t tag = kraw[off++];
+      switch (tag) {
+        case 0:
+          vm->kcon[i] = vt_nil();
+          break;
+        case 1:
+          if (off + 8 > kraw_sz) VT_FATAL("KCON int OOB");
+          {
+            int64_t x;
+            memcpy(&x, kraw + off, 8);
+            off += 8;
+            vm->kcon[i] = vt_int(x);
+          }
+          break;
+        case 2:
+          if (off + 8 > kraw_sz) VT_FATAL("KCON float OOB");
+          {
+            double d;
+            memcpy(&d, kraw + off, 8);
+            off += 8;
+            vm->kcon[i] = vt_float(d);
+          }
+          break;
+        case 3: { /* string: u32 len + bytes */
+          if (off + 4 > kraw_sz) VT_FATAL("KCON str hdr OOB");
+          uint32_t n = rd_u32(kraw + off);
+          off += 4;
+          if (off + n > kraw_sz) VT_FATAL("KCON str bytes OOB");
+          vt_string_stub* s = (vt_string_stub*)VT_MALLOC(sizeof(*s));
+          s->len = n;
+          s->data = (char*)VT_MALLOC(n + 1);
+          memcpy(s->data, kraw + off, n);
+          s->data[n] = 0;
+          off += n;
+          vt_value v;
+          v.t = VT_T_STR;
+          v.s = s;
+          vm->kcon[i] = v;
+        } break;
+        case 4: /* bool */
+          if (off >= kraw_sz) VT_FATAL("KCON bool OOB");
+          vm->kcon[i] = vt_bool(kraw[off++] != 0);
+          break;
+        default:
+          VT_FATAL("KCON unknown tag");
+      }
+    }
+  } else {
+    vm->kcon = NULL;
+    vm->kcount = 0;
+  }
+
+  /* CODE: on crée un frame racine qui pointe sur le code module principal. */
+  if (code && code_sz > 0) {
+    if (!vm_frames_ok(vm, 1)) VT_FATAL("OOM frames");
+    vm->frames[vm->fp++] = (vt_frame){.code = code,
+                                      .code_sz = code_sz,
+                                      .kcon = vm->kcon,
+                                      .kcon_sz = vm->kcount,
+                                      .base = 0,
+                                      .pc = 0,
+                                      .ret_sp = 0};
+  }
+  return 0;
+#endif
+}
+
+/* Exécute jusqu’à HALT ou fin code. step_limit=0 => illimité. */
+int vt_vm_run(vt_vm* vm, uint64_t step_limit) {
+  if (!vm) return -EINVAL;
+  vm->step_limit = step_limit;
+  vm->steps = 0;
+  if (vm->fp <= 0) return 0;
+
+  vt_frame* f = &vm->frames[vm->fp - 1];
+
+#define FETCH1() \
+  ((f->pc < 0 || (size_t)f->pc >= f->code_sz) ? vm_oob(), 0 : f->code[f->pc++])
+#define FETCH2U()                 \
+  ({                              \
+    uint16_t x;                   \
+    uint8_t a = FETCH1();         \
+    uint8_t b = FETCH1();         \
+    x = (uint16_t)(a | (b << 8)); \
+    x;                            \
+  })
+#define FETCH4S()                                                   \
+  ({                                                                \
+    int32_t x;                                                      \
+    uint8_t a = FETCH1(), b = FETCH1(), c = FETCH1(), d = FETCH1(); \
+    x = (int32_t)(a | (b << 8) | (c << 16) | (d << 24));            \
+    x;                                                              \
+  })
+
+  for (;;) {
+    if (vm->step_limit && vm->steps++ >= vm->step_limit) {
+      vm_set_err(vm, "step limit reached");
+      return -EAGAIN;
+    }
+    uint8_t op = FETCH1();
+
+    switch (op) {
+      case OP_HALT:
+        VT_TRACE("HALT");
+        return 0;
+
+      case OP_CONST: {
+        uint16_t k = FETCH2U();
+        push(vm, kget(vm, k));
+      } break;
+
+      case OP_POP:
+        (void)pop(vm);
+        break;
+      case OP_DUP: {
+        vt_value v = *topn(vm, 0);
+        push(vm, v);
+      } break;
+
+      case OP_NEG: {
+        vt_value a = pop(vm);
+        if (a.t == VT_T_INT)
+          push(vm, vt_int(-a.i));
+        else
+          push(vm, vt_float(-as_f(a)));
+      } break;
+
+      case OP_NOT: {
+        vt_value a = pop(vm);
+        push(vm, vt_bool(!vt_truthy(a)));
+      } break;
+
+      case OP_ADD: {
+        vt_value b = pop(vm), a = pop(vm);
+        push(vm, add_num(a, b));
+      } break;
+      case OP_SUB: {
+        vt_value b = pop(vm), a = pop(vm);
+        push(vm, sub_num(a, b));
+      } break;
+      case OP_MUL: {
+        vt_value b = pop(vm), a = pop(vm);
+        push(vm, mul_num(a, b));
+      } break;
+      case OP_DIV: {
+        vt_value b = pop(vm), a = pop(vm);
+        push(vm, div_num(a, b));
+      } break;
+      case OP_MOD: {
+        vt_value b = pop(vm), a = pop(vm);
+        push(vm, mod_num(a, b));
+      } break;
+
+      case OP_EQ: {
+        vt_value b = pop(vm), a = pop(vm);
+        int eq = 0;
+        if (a.t == b.t) {
+          switch (a.t) {
+            case VT_T_NIL:
+              eq = 1;
+              break;
+            case VT_T_BOOL:
+              eq = (a.b == b.b);
+              break;
+            case VT_T_INT:
+              eq = (a.i == b.i);
+              break;
+            case VT_T_FLOAT:
+              eq = (a.f == b.f);
+              break;
+            case VT_T_STR:
+              eq = (a.s && b.s && a.s->len == b.s->len &&
+                    memcmp(a.s->data, b.s->data, a.s->len) == 0);
+              break;
+            default:
+              eq = (a.p == b.p);
+              break;
+          }
+        } else if (is_num(a) && is_num(b)) {
+          eq = (as_f(a) == as_f(b));
+        } else
+          eq = 0;
+        push(vm, vt_bool(eq));
+      } break;
+      case OP_NE: {
+        vt_value b = pop(vm), a = pop(vm); /* reuse EQ then not */
+        int eq = 0;
+        if (a.t == b.t) {
+          switch (a.t) {
+            case VT_T_NIL:
+              eq = 1;
+              break;
+            case VT_T_BOOL:
+              eq = (a.b == b.b);
+              break;
+            case VT_T_INT:
+              eq = (a.i == b.i);
+              break;
+            case VT_T_FLOAT:
+              eq = (a.f == b.f);
+              break;
+            case VT_T_STR:
+              eq = (a.s && b.s && a.s->len == b.s->len &&
+                    memcmp(a.s->data, b.s->data, a.s->len) == 0);
+              break;
+            default:
+              eq = (a.p == b.p);
+              break;
+          }
+        } else if (is_num(a) && is_num(b)) {
+          eq = (as_f(a) == as_f(b));
+        } else
+          eq = 0;
+        push(vm, vt_bool(!eq));
+      } break;
+      case OP_LT: {
+        vt_value b = pop(vm), a = pop(vm);
+        push(vm, vt_bool(as_f(a) < as_f(b)));
+      } break;
+      case OP_LE: {
+        vt_value b = pop(vm), a = pop(vm);
+        push(vm, vt_bool(as_f(a) <= as_f(b)));
+      } break;
+      case OP_GT: {
+        vt_value b = pop(vm), a = pop(vm);
+        push(vm, vt_bool(as_f(a) > as_f(b)));
+      } break;
+      case OP_GE: {
+        vt_value b = pop(vm), a = pop(vm);
+        push(vm, vt_bool(as_f(a) >= as_f(b)));
+      } break;
+
+      case OP_JMP: {
+        int32_t rel = FETCH4S();
+        f->pc += rel;
+        if ((size_t)f->pc > f->code_sz) vm_oob();
+      } break;
+      case OP_JMP_IF: {
+        int32_t rel = FETCH4S();
+        vt_value c = pop(vm);
+        if (vt_truthy(c)) {
+          f->pc += rel;
+          if ((size_t)f->pc > f->code_sz) vm_oob();
+        }
+      } break;
+      case OP_JMP_IFNOT: {
+        int32_t rel = FETCH4S();
+        vt_value c = pop(vm);
+        if (!vt_truthy(c)) {
+          f->pc += rel;
+          if ((size_t)f->pc > f->code_sz) vm_oob();
+        }
+      } break;
+
+      case OP_LOADG: {
+        uint16_t s = FETCH2U();
+        push(vm, gget(vm, s));
+      } break;
+      case OP_STOREG: {
+        uint16_t s = FETCH2U();
+        vt_value v = pop(vm);
+        gset(vm, s, v);
+      } break;
+
+      case OP_LOADL: {
+        uint8_t slot = FETCH1();
+        int idx = f->base + (int)slot;
+        if (idx < 0 || idx >= vm->sp) VT_FATAL("LOADL OOB");
+        push(vm, vm->stack[idx]);
+      } break;
+      case OP_STOREL: {
+        uint8_t slot = FETCH1();
+        int idx = f->base + (int)slot;
+        if (idx < 0 || idx >= vm->sp) VT_FATAL("STOREL OOB");
+        vm->stack[idx] = pop(vm);
+      } break;
+
+      case OP_CONV_I2F: {
+        vt_value a = pop(vm);
+        if (a.t == VT_T_FLOAT)
+          push(vm, a);
+        else if (a.t == VT_T_INT)
+          push(vm, vt_float((double)a.i));
+        else
+          VT_FATAL("I2F on non-number");
+      } break;
+      case OP_CONV_F2I: {
+        vt_value a = pop(vm);
+        if (a.t == VT_T_INT)
+          push(vm, a);
+        else if (a.t == VT_T_FLOAT)
+          push(vm, vt_int((int64_t)a.f));
+        else
+          VT_FATAL("F2I on non-number");
+      } break;
+
+      case OP_ASSERT: {
+        /* Format exemple: u16 str_idx (dans STRS), pop cond */
+        uint16_t sidx = FETCH2U();
+        vt_value cond = pop(vm);
+        if (!vt_truthy(cond)) {
+          const char* msg = "<assert>";
+          if (vm->strs && sidx < vm->strs_sz) {
+            const char* z = (const char*)vm->strs + sidx;
+            msg = z;
+          }
+          vm_set_err(vm, msg);
+          VT_ERROR("assert failed: %s", msg);
+          return -EINVAL;
+        }
+      } break;
+
+      case OP_PRINT: {
+        vt_value v = pop(vm);
+        vm_print_value(v);
+        fputc('\n', stdout);
+      } break;
+
+      case OP_NARGS: {
+        /* Pousse un nombre arbitraire: ici on ne stocke pas argc implicite,
+           donc on met 0 par défaut. Adapter si vous encodez argc dans frame. */
+        push(vm, vt_int(0));
+      } break;
+
+      case OP_CALL: {
+        uint8_t argc = FETCH1();
+        /* Convention: pile [..., callee, arg0, arg1, ... argN-1]
+           On supporte deux types de callee: native (VT_T_NATIVE) et
+           fonction bytecode représentée par une adresse PC + base. Dans
+           cette version didactique, on suppose callee est un global VT_T_NATIVE
+           ou un KCON VT_T_NATIVE. */
+        if (vm->sp < 1 + argc) VT_FATAL("CALL stack underflow");
+        vt_value* argv = &vm->stack[vm->sp - argc];
+        vt_value callee = vm->stack[vm->sp - argc - 1];
+
+        if (callee.t == VT_T_NATIVE) {
+          vt_cfunc fn = (vt_cfunc)callee.p;
+          vt_value ret = fn(vm, argc, argv);
+          /* pop callee + args */
+          vm->sp -= (1 + argc);
+          push(vm, ret);
+        } else {
+          /* Bytecode call: on attend que callee soit un entier KCON indiquant
+             PC, ou on pourrait avoir un proto structuré dans FUNC. Par
+             simplicité: callee INT = offset relatif en octets dans le même
+             chunk. */
+          int new_base = vm->sp - argc; /* arguments deviennent locals[0..] */
+          int ret_sp = new_base - 1; /* position de callee, remplacée par ret */
+          int32_t entry_pc = 0;
+          if (callee.t == VT_T_INT)
+            entry_pc = (int32_t)callee.i;
+          else
+            VT_FATAL("bytecode call target unsupported");
+
+          if (!vm_frames_ok(vm, 1)) VT_FATAL("OOM frames");
+          /* Empiler frame courant et passer sur le nouveau */
+          vt_frame nf = *f;
+          nf.base = new_base;
+          nf.ret_sp = ret_sp;
+          nf.pc = entry_pc;
+          vm->frames[vm->fp++] = nf;
+          f = &vm->frames[vm->fp - 1];
+          /* Continuer dans la boucle */
+        }
+      } break;
+
+      case OP_RET: {
+        uint8_t nret = FETCH1();
+        vt_value rv = vt_nil();
+        if (nret > 0) {
+          if (vm->sp <= 0) VT_FATAL("RET stack underflow");
+          rv = pop(vm);
+        }
+        if (vm->fp <= 1) {
+          /* Retour de frame racine => HALT implicite */
+          if (nret > 0) push(vm, rv);
+          return 0;
+        }
+        /* Revenir au caller */
+        vt_frame done = vm->frames[--vm->fp];
+        f = &vm->frames[vm->fp - 1]; /* caller frame */
+        /* Restaure sp au ret_sp et poser la valeur de retour */
+        vm->sp = done.ret_sp;
+        if (nret > 0) push(vm, rv);
+      } break;
+
+      default:
+        VT_FATAL("unknown opcode %u at pc=%d", (unsigned)op, f->pc - 1);
+    }
+  }
+
+#undef FETCH1
+#undef FETCH2U
+#undef FETCH4S
+}
+
+/* Expose une fonction utilitaire pour appeler une native directe. */
+vt_value vt_make_native(vt_cfunc fn) {
+  vt_value v;
+  v.t = VT_T_NATIVE;
+  v.p = (void*)fn;
+  return v;
+}
+
+/* Exemple de native: print(args...) → nil */
+static vt_value vt_native_print(vt_vm* vm, int argc, vt_value* argv) {
+  (void)vm;
+  for (int i = 0; i < argc; i++) {
+    if (i) fputc(' ', stdout);
+    vm_print_value(argv[i]);
+  }
+  fputc('\n', stdout);
+  return vt_nil();
+}
+
+/* Option de démarrage simple si vous souhaitez tester en exécutable. */
+#ifdef VM_MAIN
+int main(int argc, char** argv) {
+  vt_vm* vm = vt_vm_new(NULL);
+  if (!vm) {
+    fprintf(stderr, "OOM\n");
     return 1;
   }
+  /* Registre une native sur le symbole 0 (exemple) */
+  vt_vm_set_native(vm, 0, vt_native_print);
 
-  struct VL_Context *ctx = vl_ctx_new();
-  vl_ctx_register_std(ctx);
-  vl_ctx_attach_module(ctx, &mod);
-  vl_trace_enable(ctx, VL_TRACE_OP);
-  st = vl_run(ctx, 0);
-  if (st != VL_OK) {
-    fprintf(stderr, "run: %d\n", st);
+#ifdef VT_UNDUMP_H
+  if (argc > 1) {
+    int rc = vt_vm_load_image(vm, argv[1]);
+    if (rc != 0) {
+      fprintf(stderr, "load error: %s (%d)\n", vm->errmsg, rc);
+      return 2;
+    }
+  } else {
+    fprintf(stderr, "usage: %s <image.vtbc>\n", argv[0]);
+    return 2;
   }
-  vl_ctx_free(ctx);
-  vl_module_free(&mod);
+  int rc = vt_vm_run(vm, 0);
+  if (rc != 0) {
+    fprintf(stderr, "runtime error: %s (%d)\n", vm->errmsg, rc);
+  }
+#else
+  fprintf(stderr, "undump.h manquant. Re-compiler avec le loader.\n");
+#endif
+  vt_vm_free(vm);
   return 0;
 }
 #endif
