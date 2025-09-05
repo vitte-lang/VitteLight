@@ -1,0 +1,11 @@
+{
+  "files.associations": { "*.h": "c" },
+  "editor.formatOnSave": true,
+  "C_Cpp.default.compilerPath": "/usr/bin/clang",
+  "C_Cpp.default.cStandard": "c11",
+  "C_Cpp.default.intelliSenseMode": "linux-clang-x64",
+  "C_Cpp.clang_format_style": "file",
+  "C_Cpp.codeAnalysis.clangTidy.enabled": true,
+  "C_Cpp.codeAnalysis.clangTidy.checks": "*",
+  "terminal.integrated.defaultProfile.linux": "bash"
+}
