@@ -1,15 +1,74 @@
 {
-  "version": 4,
-  "configurations": [{
-    "name": "Windows-MSVC-manual",
-    "compilerPath": "C:/Program Files/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC/<ver>/bin/Hostx64/x64/cl.exe",
-    "intelliSenseMode": "windows-msvc-x64",
-    "cStandard": "c17",
-    "includePath": [
-      "${env:VCToolsInstallDir}include",
-      "${env:WindowsSdkDir}Include/${env:WindowsSdkVersion}/ucrt",
-      "${env:WindowsSdkDir}Include/${env:WindowsSdkVersion}/um",
-      "${env:WindowsSdkDir}Include/${env:WindowsSdkVersion}/shared"
+    "version": 4,
+    "configurations": [
+        {
+            "name": "Windows-MSVC-manual",
+            "compilerPath": "C:/Program Files/LLVM/bin/clang.exe",
+            "intelliSenseMode": "linux-gcc-x64",
+            "cStandard": "c17",
+            "includePath": [
+                "${env:VCToolsInstallDir}include",
+                "${env:WindowsSdkDir}Include/${env:WindowsSdkVersion}/ucrt",
+                "${env:WindowsSdkDir}Include/${env:WindowsSdkVersion}/um",
+                "${env:WindowsSdkDir}Include/${env:WindowsSdkVersion}/shared",
+                "c:/Users/vince/Documents/GitHub/VitteLight/includes"
+            ],
+            "compilerPathInCppPropertiesJson": "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/cl.exe",
+            "mergeConfigurations": true,
+            "recursiveIncludes": {
+                "reduce": "always"
+            },
+            "browse": {
+                "limitSymbolsToIncludedHeaders": true
+            }
+        },
+        {
+            "name": "Win64",
+            "includePath": [
+                "${workspaceFolder}/**"
+            ],
+            "defines": [
+                "_DEBUG",
+                "UNICODE",
+                "_UNICODE"
+            ],
+            "cStandard": "c17",
+            "cppStandard": "c++20",
+            "intelliSenseMode": "windows-clang-x64",
+            "compilerPath": "C:/Program Files/LLVM/bin/clang++.exe",
+            "configurationProvider": "ms-vscode.cmake-tools",
+            "browse": {
+                "limitSymbolsToIncludedHeaders": true
+            },
+            "mergeConfigurations": true
+        },
+        {
+            "name": "Win64-1",
+            "includePath": [
+                "${workspaceFolder}/**"
+            ],
+            "defines": [
+                "_DEBUG",
+                "UNICODE",
+                "_UNICODE"
+            ],
+            "cStandard": "c17",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "windows-msvc-x64"
+        },
+        {
+            "name": "W64-2",
+            "includePath": [
+                "${workspaceFolder}/**"
+            ],
+            "defines": [
+                "_DEBUG",
+                "UNICODE",
+                "_UNICODE"
+            ],
+            "cStandard": "c17",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "windows-msvc-x64"
+        }
     ]
-  }]
 }
