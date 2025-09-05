@@ -1,0 +1,114 @@
+# --- OS / fichiers parasites ---
+.DS_Store
+._*
+Thumbs.db
+
+# --- Éditeurs / temporaires ---
+*~
+*.swp
+*.swo
+*.swn
+*.swm
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
+tags
+
+# --- Dossiers de build courants ---
+/build/
+/build-*/
+/out/
+/bin/
+/lib/
+/dist/
+/debug/
+/release/
+/cmake-build-*/
+
+# --- Artefacts C/C++ ---
+*.o
+*.lo
+*.la
+*.obj
+*.a
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.elf
+*.map
+*.d
+
+# --- macOS symboles / crash ---
+*.dSYM/
+*.dSYM.zip
+*.crash
+*.ips
+
+# --- CMake / Ninja ---
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+CTestTestfile.cmake
+compile_commands.json
+_deps/
+build.ninja
+rules.ninja
+.ninja_deps
+.ninja_log
+
+# --- Autotools (si générés) ---
+/autom4te.cache/
+/aclocal.m4
+/configure
+/config.log
+/config.status
+/ltmain.sh
+/libtool
+/m4/
+
+# --- Outils / caches ---
+.ccache/
+.cache/
+.clangd/
+.clangd-cache/
+
+# --- Couverture / profils ---
+*.gcno
+*.gcda
+*.gcov
+coverage/
+lcov.info
+.profraw
+.profdata
+gmon.out
+
+# --- Sanitizers / core dumps ---
+core
+core.*
+*.core
+*.asan.*
+*.tsan.*
+*.lsan.*
+sanitizer.*
+*.trace
+*.log
+logs/
+
+# --- Artefacts Vitte Light ---
+*.vitbc
+*.ir
+# (générés par vitlc --emit-bytecode / redirections IR)
+
+# --- VS Code ---
+# On garde la config projet dans le repo. Ne PAS ignorer .vscode/
+# Si vous préférez ignorer tout sauf la config, décommentez ci-dessous :
+# .vscode/*
+# !.vscode/settings.json
+# !.vscode/tasks.json
+# !.vscode/launch.json
+# !.vscode/extensions.json
