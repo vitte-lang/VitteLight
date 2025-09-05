@@ -1,457 +1,408 @@
-// vitte-light/libraries/mathlib.c
-// Mathlib pour VitteLight: enregistrement de natives numériques complètes.
-// Portabilité C99. Sans dépendance forte au runtime, mais expose
-//   void vl_register_mathlib(struct VL_Context *ctx);
-// pour attacher les fonctions dans l'espace global de la VM.
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Fonctions fournies (toutes scalaires, doubles):
-//  - trig: sin, cos, tan, asin, acos, atan, atan2
-//  - exp/log: exp, log, log10, pow
-//  - racines/arrondi: sqrt, cbrt, floor, ceil, round, fmod, hypot
-//  - helpers: abs, min, max, clamp(x,lo,hi), lerp(a,b,t), mix(a,b,t)
-//  - unités: rad(deg), deg(rad), pi(), tau(), e()
-//  - stats varargs: sum(...), mean(...), var(...), stddev(...)
-//  - aléa: srand(seed), rand()∈[0,1), rand_u32(), randn() (loi normale ~N(0,1))
-//  - approx: approx_eq(a,b[,eps])
+// mathlib.c — Vitte Light math standard library (C17, portable)
+// Namespace: "math"
 //
-// Build: cc -std=c99 -O2 -Wall -Wextra -pedantic -Icore -c libraries/mathlib.c
+// Coverage:
+//   Trigonometry:   sin, cos, tan, asin, acos, atan, atan2
+//   Hyperbolic:     sinh, cosh, tanh, asinh, acosh, atanh
+//   Exponentials:   exp, exp2, log, log10, log2, pow, sqrt, cbrt
+//   Rounding:       floor, ceil, trunc, round
+//   Arithmetic:     fmod, hypot, copysign, nextafter
+//   Decompose:      frexp -> mantissa, exp;  ldexp(x, exp)
+//   Conversions:    rad(deg), deg(rad)
+//   Predicates:     isfinite, isinf, isnan, sign -> -1|0|1
+//   Helpers:        clamp(x, lo, hi), lerp(a,b,t), min(a,b), max(a,b)
+//   Constants:      pi(), tau(), e(), inf(), nan()
+//   Random:         random([m[, n]]), randomseed(seed)
+//
+// Depends: includes/auxlib.h, state.h, object.h, vm.h
 
+#include <float.h>
 #include <math.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "api.h"
-#include "ctype.h"  // vl_value_as_int/float, vl_value_truthy
-#include "tm.h"     // vl_mono_time_ns (seed optionnelle)
+#include "auxlib.h"
+#include "object.h"
+#include "state.h"
+#include "vm.h"
 
 #ifndef M_PI
-#define M_PI 3.141592653589793238462643383279502884
+#define M_PI 3.141592653589793238462643383279502884L
 #endif
 #ifndef M_E
-#define M_E 2.718281828459045235360287471352662497
+#define M_E 2.718281828459045235360287471352662498L
 #endif
 
-// ───────────────────────── Helpers VM ─────────────────────────
-#define RET_NIL()                \
-  do {                           \
-    if (ret) *(ret) = vlv_nil(); \
-    return VL_OK;                \
-  } while (0)
-#define RET_INT(v)                           \
-  do {                                       \
-    if (ret) *(ret) = vlv_int((int64_t)(v)); \
-    return VL_OK;                            \
-  } while (0)
-#define RET_FLOAT(v)                          \
-  do {                                        \
-    if (ret) *(ret) = vlv_float((double)(v)); \
-    return VL_OK;                             \
-  } while (0)
-#define RET_BOOL(v)                       \
-  do {                                    \
-    if (ret) *(ret) = vlv_bool((v) != 0); \
-    return VL_OK;                         \
-  } while (0)
+// ---------------------------------------------------------------------
+// VM helpers
+// ---------------------------------------------------------------------
 
-static int to_double(const VL_Value *x, double *out) {
-  if (!x) return 0;
-  switch (x->type) {
-    case VT_FLOAT:
-      if (out) *out = x->as.f;
-      return 1;
-    case VT_INT:
-      if (out) *out = (double)x->as.i;
-      return 1;
-    case VT_BOOL:
-      if (out) *out = x->as.b ? 1.0 : 0.0;
-      return 1;
-    default:
-      return 0;
+static double m_check_num(VL_State *S, int idx) {
+  VL_Value *v = vl_get(S, idx);
+  if (!v) {
+    vl_errorf(S, "argument #%d: number expected", idx);
+    return vl_error(S);
   }
-}
-static int to_int(const VL_Value *x, int64_t *out) {
-  return vl_value_as_int(x, out);
+  return vl_tonumber(S, v);
 }
 
-static double fmin_many(const VL_Value *a, uint8_t c, int *ok) {
-  double m = 0.0, v = 0.0;
-  *ok = 0;
-  for (uint8_t i = 0; i < c; i++) {
-    if (!to_double(&a[i], &v)) return 0.0;
-    if (!*ok || v < m) m = v;
-    *ok = 1;
+static int64_t m_check_int(VL_State *S, int idx) {
+  VL_Value *v = vl_get(S, idx);
+  if (!v || !(vl_isint(S, idx) || vl_isfloat(S, idx))) {
+    vl_errorf(S, "argument #%d: integer expected", idx);
+    return vl_error(S);
   }
-  return m;
-}
-static double fmax_many(const VL_Value *a, uint8_t c, int *ok) {
-  double M = 0.0, v = 0.0;
-  *ok = 0; for(uint8_t i=0;i<c;i"){ if(!to_double(&a[i],&v)) return 0.0; if(!*ok || v>M) M=v; *ok=1; } return M; }
-
-// ───────────────────────── PRNG ─────────────────────────
-static uint64_t g_rng = 0; // 0 => non-initialisé
-static inline uint64_t xorshift64(void){
-    if (g_rng == 0) {  // seed à partir de l'horloge
-      uint64_t t = (uint64_t)vl_mono_time_ns();
-      g_rng = t ? t : 88172645463393265ull;
-    }
-    uint64_t x = g_rng;
-    x ^= x << 13;
-    x ^= x >> 7;
-    x ^= x << 17;
-    g_rng = x;
-    return x; }
-static inline uint32_t xorshift32(void){
-    return (uint32_t)(xorshift64() >> 32); }
-static inline double   urand01(void){
-    return (xorshift64() >> 11) * (1.0 / 9007199254740992.0); } // 53 bits -> [0,1)
-
-// ───────────────────────── Impl natives ─────────────────────────
-// trig
-static VL_Status nb_sin (struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    double x;
-    if (c < 1 || !to_double(&a[0], &x)) return VL_ERR_TYPE;
-    RET_FLOAT(sin(x)); }
-static VL_Status nb_cos (struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    double x;
-    if (c < 1 || !to_double(&a[0], &x)) return VL_ERR_TYPE;
-    RET_FLOAT(cos(x)); }
-static VL_Status nb_tan (struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    double x;
-    if (c < 1 || !to_double(&a[0], &x)) return VL_ERR_TYPE;
-    RET_FLOAT(tan(x)); }
-static VL_Status nb_asin(struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    double x;
-    if (c < 1 || !to_double(&a[0], &x)) return VL_ERR_TYPE;
-    RET_FLOAT(asin(x)); }
-static VL_Status nb_acos(struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    double x;
-    if (c < 1 || !to_double(&a[0], &x)) return VL_ERR_TYPE;
-    RET_FLOAT(acos(x)); }
-static VL_Status nb_atan(struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    double x;
-    if (c < 1 || !to_double(&a[0], &x)) return VL_ERR_TYPE;
-    RET_FLOAT(atan(x)); }
-static VL_Status nb_atan2(struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    double y, x;
-    if (c < 2 || !to_double(&a[0], &y) || !to_double(&a[1], &x))
-      return VL_ERR_TYPE;
-    RET_FLOAT(atan2(y, x)); }
-
-// exp/log
-static VL_Status nb_exp (struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    double x;
-    if (c < 1 || !to_double(&a[0], &x)) return VL_ERR_TYPE;
-    RET_FLOAT(exp(x)); }
-static VL_Status nb_log (struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    double x;
-    if (c < 1 || !to_double(&a[0], &x)) return VL_ERR_TYPE;
-    RET_FLOAT(log(x)); }
-static VL_Status nb_log10(struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    double x;
-    if (c < 1 || !to_double(&a[0], &x)) return VL_ERR_TYPE;
-    RET_FLOAT(log10(x)); }
-static VL_Status nb_pow (struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    double x, y;
-    if (c < 2 || !to_double(&a[0], &x) || !to_double(&a[1], &y))
-      return VL_ERR_TYPE;
-    RET_FLOAT(pow(x, y)); }
-
-// racines / arrondis
-static VL_Status nb_sqrt (struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    double x;
-    if (c < 1 || !to_double(&a[0], &x)) return VL_ERR_TYPE;
-    RET_FLOAT(sqrt(x)); }
-static VL_Status nb_cbrt (struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    double x;
-    if (c < 1 || !to_double(&a[0], &x)) return VL_ERR_TYPE;
-#ifdef cbrt RET_FLOAT(cbrt(x));
-#else RET_FLOAT(pow(x, 1.0 / 3.0));
-#endif }
-static VL_Status nb_floor(struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    double x;
-    if (c < 1 || !to_double(&a[0], &x)) return VL_ERR_TYPE;
-    RET_FLOAT(floor(x)); }
-static VL_Status nb_ceil (struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    double x;
-    if (c < 1 || !to_double(&a[0], &x)) return VL_ERR_TYPE;
-    RET_FLOAT(ceil(x)); }
-static VL_Status nb_round(struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    double x;
-    if (c < 1 || !to_double(&a[0], &x)) return VL_ERR_TYPE;
-    RET_FLOAT(round(x)); }
-static VL_Status nb_fmod (struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    double x, y;
-    if (c < 2 || !to_double(&a[0], &x) || !to_double(&a[1], &y))
-      return VL_ERR_TYPE;
-    RET_FLOAT(fmod(x, y)); }
-static VL_Status nb_hypot(struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    double x, y;
-    if (c < 2 || !to_double(&a[0], &x) || !to_double(&a[1], &y))
-      return VL_ERR_TYPE;
-    RET_FLOAT(hypot(x, y)); }
-
-// helpers
-static VL_Status nb_abs (struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    if (c < 1) return VL_ERR_INVAL;
-    if (a[0].type == VT_INT) RET_INT((a[0].as.i < 0) ? -a[0].as.i : a[0].as.i);
-    double x;
-    if (!to_double(&a[0], &x)) return VL_ERR_TYPE;
-    RET_FLOAT(fabs(x)); }
-static VL_Status nb_min (struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    int ok = 0;
-    if (c < 1) return VL_ERR_INVAL;
-    double m = fmin_many(a, c, &ok);
-    if (!ok) return VL_ERR_TYPE;
-    RET_FLOAT(m); }
-static VL_Status nb_max (struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    int ok = 0;
-    if (c < 1) return VL_ERR_INVAL;
-    double M = fmax_many(a, c, &ok);
-    if (!ok) return VL_ERR_TYPE;
-    RET_FLOAT(M); }
-static VL_Status nb_clamp(struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    double x, lo, hi;
-    if (c < 3 || !to_double(&a[0], &x) || !to_double(&a[1], &lo) ||
-        !to_double(&a[2], &hi))
-      return VL_ERR_TYPE;
-    if (lo > hi) {
-      double t = lo;
-      lo = hi;
-      hi = t;
-    }
-    if (x < lo) x = lo;
-    if (x > hi) x = hi;
-    RET_FLOAT(x); }
-static VL_Status nb_lerp(struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    double x, y, t;
-    if (c < 3 || !to_double(&a[0], &x) || !to_double(&a[1], &y) ||
-        !to_double(&a[2], &t))
-      return VL_ERR_TYPE;
-    RET_FLOAT(x + (y - x) * t); }
-
-// unités/constantes
-static VL_Status nb_rad (struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    double d;
-    if (c < 1 || !to_double(&a[0], &d)) return VL_ERR_TYPE;
-    RET_FLOAT(d * (M_PI / 180.0)); }
-static VL_Status nb_deg (struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    double r;
-    if (c < 1 || !to_double(&a[0], &r)) return VL_ERR_TYPE;
-    RET_FLOAT(r * (180.0 / M_PI)); }
-static VL_Status nb_pi  (struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)a;
-    (void)c;
-    (void)u;
-    RET_FLOAT(M_PI); }
-static VL_Status nb_tau (struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)a;
-    (void)c;
-    (void)u;
-    RET_FLOAT(2.0 * M_PI); }
-static VL_Status nb_e   (struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)a;
-    (void)c;
-    (void)u;
-    RET_FLOAT(M_E); }
-
-// stats varargs
-static VL_Status nb_sum   (struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    if (c < 1) RET_FLOAT(0.0);
-    double s = 0.0, v;
-    for (uint8_t i = 0; i < c; i++) {
-      if (!to_double(&a[i], &v)) return VL_ERR_TYPE;
-      s += v;
-    }
-    RET_FLOAT(s); }
-static VL_Status nb_mean  (struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    if (c < 1) return VL_ERR_INVAL;
-    double s = 0.0, v;
-    for (uint8_t i = 0; i < c; i++) {
-      if (!to_double(&a[i], &v)) return VL_ERR_TYPE;
-      s += v;
-    }
-    RET_FLOAT(s / (double)c); }
-static VL_Status nb_var   (struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    if (c < 2) return VL_ERR_INVAL;
-    double s = 0.0, ss = 0.0, v;
-    for (uint8_t i = 0; i < c; i++) {
-      if (!to_double(&a[i], &v)) return VL_ERR_TYPE;
-      s += v;
-      ss += v * v;
-    }
-    double n = (double)c;
-    double var = (ss - (s * s) / n) / (n - 1.0);
-    RET_FLOAT(var); }
-static VL_Status nb_stddev(struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    VL_Value t;
-    (void)ctx;
-    (void)u;
-    VL_Status st = nb_var(ctx, a, c, &t, u);
-    if (st != VL_OK) return st;
-    if (t.type != VT_FLOAT) return VL_ERR_TYPE;
-    RET_FLOAT(sqrt(t.as.f)); }
-
-// approx
-static VL_Status nb_approx(struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    double x, y, eps = 1e-9;
-    if (c < 2 || !to_double(&a[0], &x) || !to_double(&a[1], &y))
-      return VL_ERR_TYPE;
-    if (c >= 3 && !to_double(&a[2], &eps)) return VL_ERR_TYPE;
-    RET_BOOL(fabs(x - y) <= eps); }
-
-// aléa
-static VL_Status nb_srand (struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    if (c < 1) return VL_ERR_INVAL;
-    int64_t s = 0;
-    if (!to_int(&a[0], &s)) return VL_ERR_TYPE;
-    g_rng = (uint64_t)s;
-    if (g_rng == 0) g_rng = 1;
-    RET_NIL(); }
-static VL_Status nb_rand01(struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)a;
-    (void)c;
-    (void)u;
-    RET_FLOAT(urand01()); }
-static VL_Status nb_rand_u32(struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)a;
-    (void)c;
-    (void)u;
-    RET_INT((int64_t)xorshift32()); }
-static VL_Status nb_randn (struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)a;
-    (void)c;
-    (void)u;  // Box-Muller
-    double u1 = urand01();
-    if (u1 <= 0.0) u1 = 1e-12;
-    double u2 = urand01();
-    double r = sqrt(-2.0 * log(u1));
-    double th = 2.0 * M_PI * u2;
-    RET_FLOAT(r * cos(th)); }
-
-// ───────────────────────── Enregistrement ─────────────────────────
-void vl_register_mathlib(struct VL_Context *ctx){
-    if (!ctx) return;
-    vl_register_native(ctx, "sin", nb_sin, NULL);
-    vl_register_native(ctx, "cos", nb_cos, NULL);
-    vl_register_native(ctx, "tan", nb_tan, NULL);
-    vl_register_native(ctx, "asin", nb_asin, NULL);
-    vl_register_native(ctx, "acos", nb_acos, NULL);
-    vl_register_native(ctx, "atan", nb_atan, NULL);
-    vl_register_native(ctx, "atan2", nb_atan2, NULL);
-
-    vl_register_native(ctx, "exp", nb_exp, NULL);
-    vl_register_native(ctx, "log", nb_log, NULL);
-    vl_register_native(ctx, "log10", nb_log10, NULL);
-    vl_register_native(ctx, "pow", nb_pow, NULL);
-
-    vl_register_native(ctx, "sqrt", nb_sqrt, NULL);
-    vl_register_native(ctx, "cbrt", nb_cbrt, NULL);
-    vl_register_native(ctx, "floor", nb_floor, NULL);
-    vl_register_native(ctx, "ceil", nb_ceil, NULL);
-    vl_register_native(ctx, "round", nb_round, NULL);
-    vl_register_native(ctx, "fmod", nb_fmod, NULL);
-    vl_register_native(ctx, "hypot", nb_hypot, NULL);
-
-    vl_register_native(ctx, "abs", nb_abs, NULL);
-    vl_register_native(ctx, "min", nb_min, NULL);
-    vl_register_native(ctx, "max", nb_max, NULL);
-    vl_register_native(ctx, "clamp", nb_clamp, NULL);
-    vl_register_native(ctx, "lerp", nb_lerp, NULL);
-    vl_register_native(ctx, "mix", nb_lerp, NULL);  // alias
-
-    vl_register_native(ctx, "rad", nb_rad, NULL);
-    vl_register_native(ctx, "deg", nb_deg, NULL);
-    vl_register_native(ctx, "pi", nb_pi, NULL);
-    vl_register_native(ctx, "tau", nb_tau, NULL);
-    vl_register_native(ctx, "e", nb_e, NULL);
-
-    vl_register_native(ctx, "sum", nb_sum, NULL);
-    vl_register_native(ctx, "mean", nb_mean, NULL);
-    vl_register_native(ctx, "var", nb_var, NULL);
-    vl_register_native(ctx, "stddev", nb_stddev, NULL);
-
-    vl_register_native(ctx, "approx_eq", nb_approx, NULL);
-
-    vl_register_native(ctx, "srand", nb_srand, NULL);
-    vl_register_native(ctx, "rand", nb_rand01, NULL);
-    vl_register_native(ctx, "rand_u32", nb_rand_u32, NULL);
-    vl_register_native(ctx, "randn", nb_randn, NULL);
+  return vl_isint(S, idx) ? vl_toint(S, v) : (int64_t)vl_tonumber(S, v);
 }
 
-// ───────────────────────── Test rapide ─────────────────────────
-#ifdef VL_MATHLIB_TEST_MAIN
-int main(void){
-    // Smoke tests côté C
-    printf("sin(pi/2)=%.3f\n", sin(M_PI / 2));
-    // Pas de VM ici; les natives sont destinées au runtime VL.
-    return 0;
+static double m_opt_num(VL_State *S, int idx, double defv) {
+  VL_Value *v = vl_get(S, idx);
+  if (!v) return defv;
+  return vl_tonumber(S, v);
 }
+
+// ---------------------------------------------------------------------
+// RNG (xorshift64*), thread-local
+// ---------------------------------------------------------------------
+
+#if defined(_WIN32)
+#define TLS_SPEC __declspec(thread)
+#else
+#define TLS_SPEC __thread
 #endif
+
+static TLS_SPEC uint64_t g_rng = 0;
+
+static inline uint64_t xorshift64s(uint64_t *s) {
+  uint64_t x = *s;
+  x ^= x >> 12;
+  x ^= x << 25;
+  x ^= x >> 27;
+  *s = x;
+  return x * 0x2545F4914F6CDD1DULL;
+}
+
+static void rng_seed_if_needed(void) {
+  if (g_rng == 0) {
+    uint64_t v = 0;
+    if (aux_rand_bytes(&v, sizeof v) != AUX_OK || v == 0) {
+      v = aux_now_nanos() ^ 0x9E3779B97F4A7C15ULL;
+    }
+    if (v == 0) v = 0xD1B54A32D192ED03ULL;
+    g_rng = v;
+  }
+}
+
+static double rng_u01(void) {
+  rng_seed_if_needed();
+  uint64_t r = xorshift64s(&g_rng);
+  // 53-bit to double in [0,1)
+  return (double)((r >> 11) & ((1ULL << 53) - 1)) * (1.0 / 9007199254740992.0);
+}
+
+// ---------------------------------------------------------------------
+// Macros for thin wrappers
+// ---------------------------------------------------------------------
+
+#define M_UN(name, op)                \
+  static int vm_##name(VL_State *S) { \
+    double x = m_check_num(S, 1);     \
+    vl_push_float(S, op(x));          \
+    return 1;                         \
+  }
+
+#define M_BIN(name, op)               \
+  static int vm_##name(VL_State *S) { \
+    double a = m_check_num(S, 1);     \
+    double b = m_check_num(S, 2);     \
+    vl_push_float(S, op(a, b));       \
+    return 1;                         \
+  }
+
+// ---------------------------------------------------------------------
+// Trigonometry / Hyperbolic
+// ---------------------------------------------------------------------
+
+M_UN(sin, sin)
+M_UN(cos, cos)
+M_UN(tan, tan)
+M_UN(asin, asin)
+M_UN(acos, acos)
+M_UN(atan, atan)
+M_BIN(atan2, atan2)
+
+M_UN(sinh, sinh)
+M_UN(cosh, cosh)
+M_UN(tanh, tanh)
+M_UN(asinh, asinh)
+M_UN(acosh, acosh)
+M_UN(atanh, atanh)
+
+// ---------------------------------------------------------------------
+// Exponentials / Logs / Roots
+// ---------------------------------------------------------------------
+
+M_UN(exp, exp)
+M_UN(exp2, exp2)
+M_UN(log, log)
+M_UN(log10, log10)
+M_UN(log2, log2)
+M_BIN(pow, pow)
+M_UN(sqrt, sqrt)
+M_UN(cbrt, cbrt)
+
+// ---------------------------------------------------------------------
+// Rounding / Arithmetic / Decompose
+// ---------------------------------------------------------------------
+
+M_UN(floor, floor)
+M_UN(ceil, ceil)
+M_UN(trunc, trunc)
+M_UN(round, round)
+
+M_BIN(fmod, fmod)
+M_BIN(hypot, hypot)
+M_BIN(copysign, copysign)
+M_BIN(nextafter, nextafter)
+
+static int vm_frexp(VL_State *S) {
+  int e = 0;
+  double x = m_check_num(S, 1);
+  double m = frexp(x, &e);
+  vl_push_float(S, m);
+  vl_push_int(S, (int64_t)e);
+  return 2;
+}
+
+static int vm_ldexp(VL_State *S) {
+  double x = m_check_num(S, 1);
+  int e = (int)m_check_int(S, 2);
+  vl_push_float(S, ldexp(x, e));
+  return 1;
+}
+
+// ---------------------------------------------------------------------
+// Conversions / Predicates / Small helpers
+// ---------------------------------------------------------------------
+
+static int vm_rad(VL_State *S) {
+  double d = m_check_num(S, 1);
+  vl_push_float(S, d * (double)(M_PI / 180.0));
+  return 1;
+}
+static int vm_deg(VL_State *S) {
+  double r = m_check_num(S, 1);
+  vl_push_float(S, r * (double)(180.0 / M_PI));
+  return 1;
+}
+
+static int vm_isfinite(VL_State *S) {
+  double x = m_check_num(S, 1);
+  vl_push_bool(S, isfinite(x) != 0);
+  return 1;
+}
+static int vm_isinf(VL_State *S) {
+  double x = m_check_num(S, 1);
+  vl_push_bool(S, isinf(x) != 0);
+  return 1;
+}
+static int vm_isnan(VL_State *S) {
+  double x = m_check_num(S, 1);
+  vl_push_bool(S, isnan(x) != 0);
+  return 1;
+}
+
+static int vm_sign(VL_State *S) {
+  double x = m_check_num(S, 1);
+  int s = (x > 0) - (x < 0);
+  vl_push_int(S, (int64_t)s);
+  return 1;
+}
+
+static int vm_clamp(VL_State *S) {
+  double x = m_check_num(S, 1);
+  double lo = m_check_num(S, 2);
+  double hi = m_check_num(S, 3);
+  if (lo > hi) {
+    double t = lo;
+    lo = hi;
+    hi = t;
+  }
+  if (x < lo)
+    x = lo;
+  else if (x > hi)
+    x = hi;
+  vl_push_float(S, x);
+  return 1;
+}
+
+static int vm_lerp(VL_State *S) {
+  double a = m_check_num(S, 1);
+  double b = m_check_num(S, 2);
+  double t = m_check_num(S, 3);
+  vl_push_float(S, a + (b - a) * t);
+  return 1;
+}
+
+static int vm_min(VL_State *S) {
+  double a = m_check_num(S, 1), b = m_check_num(S, 2);
+  vl_push_float(S, a < b ? a : b);
+  return 1;
+}
+
+static int vm_max(VL_State *S) {
+  double a = m_check_num(S, 1), b = m_check_num(S, 2);
+  vl_push_float(S, a > b ? a : b);
+  return 1;
+}
+
+// ---------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------
+
+static int vm_pi(VL_State *S) {
+  vl_push_float(S, (double)M_PI);
+  return 1;
+}
+static int vm_tau(VL_State *S) {
+  vl_push_float(S, (double)(2.0 * M_PI));
+  return 1;
+}
+static int vm_e(VL_State *S) {
+  vl_push_float(S, (double)M_E);
+  return 1;
+}
+static int vm_inf(VL_State *S) {
+  vl_push_float(S, (double)INFINITY);
+  return 1;
+}
+static int vm_nan(VL_State *S) {
+  volatile double z = 0.0;
+  vl_push_float(S, 0.0 / z);
+  return 1;
+}
+
+// ---------------------------------------------------------------------
+// Random
+// ---------------------------------------------------------------------
+
+static int vm_randomseed(VL_State *S) {
+  uint64_t seed = (uint64_t)m_check_int(S, 1);
+  if (seed == 0) seed = 0xD1B54A32D192ED03ULL;
+  g_rng = seed;
+  vl_push_bool(S, 1);
+  return 1;
+}
+
+// random():
+//   - no args -> uniform double in [0,1)
+//   - one arg m -> int in [1, m]
+//   - two args m,n -> int in [m, n]
+static int vm_random(VL_State *S) {
+  int n = vl_gettop(S);
+  if (n <= 0) {
+    vl_push_float(S, rng_u01());
+    return 1;
+  }
+  if (n == 1) {
+    int64_t m = m_check_int(S, 1);
+    if (m <= 0) {
+      vl_push_nil(S);
+      vl_push_string(S, "ERANGE");
+      return 2;
+    }
+    // unbiased map using rejection sampling
+    uint64_t range = (uint64_t)m;
+    uint64_t limit = UINT64_MAX - (UINT64_MAX % range);
+    uint64_t r;
+    do {
+      r = xorshift64s(&g_rng);
+      rng_seed_if_needed();
+    } while (r > limit);
+    vl_push_int(S, (int64_t)(1 + (r % range)));
+    return 1;
+  }
+  int64_t a = m_check_int(S, 1), b = m_check_int(S, 2);
+  if (a > b) {
+    int64_t t = a;
+    a = b;
+    b = t;
+  }
+  uint64_t span = (uint64_t)(b - a + 1);
+  uint64_t limit = UINT64_MAX - (UINT64_MAX % span);
+  uint64_t r;
+  do {
+    r = xorshift64s(&g_rng);
+    rng_seed_if_needed();
+  } while (r > limit);
+  vl_push_int(S, (int64_t)(a + (r % span)));
+  return 1;
+}
+
+// ---------------------------------------------------------------------
+// Registration
+// ---------------------------------------------------------------------
+
+static const VL_Reg mathlib[] = {
+    // Trig
+    {"sin", vm_sin},
+    {"cos", vm_cos},
+    {"tan", vm_tan},
+    {"asin", vm_asin},
+    {"acos", vm_acos},
+    {"atan", vm_atan},
+    {"atan2", vm_atan2},
+    // Hyperbolic
+    {"sinh", vm_sinh},
+    {"cosh", vm_cosh},
+    {"tanh", vm_tanh},
+    {"asinh", vm_asinh},
+    {"acosh", vm_acosh},
+    {"atanh", vm_atanh},
+    // Exp/log
+    {"exp", vm_exp},
+    {"exp2", vm_exp2},
+    {"log", vm_log},
+    {"log10", vm_log10},
+    {"log2", vm_log2},
+    {"pow", vm_pow},
+    {"sqrt", vm_sqrt},
+    {"cbrt", vm_cbrt},
+    // Rounding / arithmetic
+    {"floor", vm_floor},
+    {"ceil", vm_ceil},
+    {"trunc", vm_trunc},
+    {"round", vm_round},
+    {"fmod", vm_fmod},
+    {"hypot", vm_hypot},
+    {"copysign", vm_copysign},
+    {"nextafter", vm_nextafter},
+    // Decompose
+    {"frexp", vm_frexp},
+    {"ldexp", vm_ldexp},
+    // Conversions, predicates, helpers
+    {"rad", vm_rad},
+    {"deg", vm_deg},
+    {"isfinite", vm_isfinite},
+    {"isinf", vm_isinf},
+    {"isnan", vm_isnan},
+    {"sign", vm_sign},
+    {"clamp", vm_clamp},
+    {"lerp", vm_lerp},
+    {"min", vm_min},
+    {"max", vm_max},
+    // Constants
+    {"pi", vm_pi},
+    {"tau", vm_tau},
+    {"e", vm_e},
+    {"inf", vm_inf},
+    {"nan", vm_nan},
+    // Random
+    {"random", vm_random},
+    {"randomseed", vm_randomseed},
+    {NULL, NULL}};
+
+void vl_open_mathlib(VL_State *S) { vl_register_lib(S, "math", mathlib); }

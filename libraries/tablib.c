@@ -1,506 +1,730 @@
-// vitte-light/libraries/mathlib.c
-// Mathlib pour VitteLight: enregistrement de natives numériques complètes.
-// Portabilité C99. Sans dépendance forte au runtime, mais expose
-//   void vl_register_mathlib(struct VL_Context *ctx);
-// pour attacher les fonctions dans l'espace global de la VM.
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Fonctions fournies (toutes scalaires, doubles):
-//  - trig: sin, cos, tan, asin, acos, atan, atan2
-//  - exp/log: exp, log, log10, pow
-//  - racines/arrondi: sqrt, cbrt, floor, ceil, round, fmod, hypot
-//  - helpers: abs, min, max, clamp(x,lo,hi), lerp(a,b,t), mix(a,b,t)
-//  - unités: rad(deg), deg(rad), pi(), tau(), e()
-//  - stats varargs: sum(...), mean(...), var(...), stddev(...)
-//  - aléa: srand(seed), rand()∈[0,1), rand_u32(), randn() (loi normale ~N(0,1))
-//  - approx: approx_eq(a,b[,eps])
+// tablib.c — Tabular data library for Vitte Light VM (C17, complet)
+// Namespace: "tab"
 //
-// Build: cc -std=c99 -O2 -Wall -Wextra -pedantic -Icore -c libraries/mathlib.c
+// Modèle: table en mémoire, lignes dynamiques, colonnes nommées, cellules
+// typées. Types cellule: 0=nil, 1=int64, 2=float64, 3=text(UTF-8 opaque).
+//
+// Gestion par identifiants entiers (slots), pas d’userdata VM.
+//
+// API:
+//   -- Lifecycle
+//     tab.new()                              -> id | (nil, errmsg)
+//     tab.free(id)                           -> true
+//     tab.clear(id)                          -> true
+//     tab.reserve(id, rows:int, cols:int)    -> true | (nil, errmsg)
+//     tab.clone(id)                          -> newid | (nil, errmsg)
+//
+//   -- Dimensions / colonnes
+//     tab.nrows(id)                          -> int
+//     tab.ncols(id)                          -> int
+//     tab.columns_csv(id[, sep=","])         -> string
+//     tab.add_col(id, name)                  -> colIndex | (nil, errmsg)     //
+//     append at end tab.insert_col(id, at:int, name)       -> true | (nil,
+//     errmsg) tab.drop_col(id, col)                  -> true | (nil, errmsg)
+//     tab.rename_col(id, col, newname)       -> true | (nil, errmsg)
+//     tab.col_index(id, name)                -> int (0 if not found)
+//
+//   -- Lignes
+//     tab.append_row(id)                     -> rowIndex | (nil, errmsg)
+//     tab.insert_row(id, at:int)             -> true | (nil, errmsg)
+//     tab.drop_row(id, row)                  -> true | (nil, errmsg)
+//
+//   -- Accès cellules (1-based row/col)
+//     tab.get(id, row, col)                  -> nil|int|float|string
+//     tab.set_null(id, row, col)             -> true | (nil, errmsg)
+//     tab.set_int(id, row, col, v:int64)     -> true | (nil, errmsg)
+//     tab.set_float(id, row, col, v:number)  -> true | (nil, errmsg)
+//     tab.set_text(id, row, col, s:string)   -> true | (nil, errmsg)
+//
+//   -- Recherche / tri
+//     tab.find_str(id, col, needle[, nocase=false]) -> row:int (0 if not found)
+//     tab.find_int(id, col, v:int64)                -> row:int
+//     tab.find_float(id, col, v:number[, eps=0])    -> row:int
+//     tab.sort_by(id, col[, numeric=false[, desc=false[, na_last=true]]]) ->
+//     true | (nil, errmsg)
+//
+//   -- Import/Export CSV (RFC 4180-like, CRLF/ LF, quote="")
+//     tab.to_csv(id[, sep=",", header=true])         -> csv:string
+//     tab.from_csv(id, csv[, sep=",", header=true])  -> true | (nil, errmsg)
+//     tab.set_header_from_first_row(id)              -> true | (nil, errmsg)
+//
+//   -- Export JSON Lines (une ligne par objet; valeurs nil -> null;
+//   int/float/text)
+//     tab.to_jsonl(id)                               -> string
+//
+// Dépendances: auxlib.h, state.h, object.h, vm.h
 
+#include <ctype.h>
 #include <math.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "api.h"
-#include "ctype.h"  // vl_value_as_int/float, vl_value_truthy
-#include "tm.h"     // vl_mono_time_ns (seed optionnelle)
+#include "auxlib.h"
+#include "object.h"
+#include "state.h"
+#include "vm.h"
 
-#ifndef M_PI
-#define M_PI 3.141592653589793238462643383279502884
-#endif
-#ifndef M_E
-#define M_E 2.718281828459045235360287471352662497
-#endif
+// ------------------------------------------------------------
+// VM helpers
+// ------------------------------------------------------------
+static const char *tb_check_str(VL_State *S, int idx) {
+  if (vl_get(S, idx) && vl_isstring(S, idx))
+    return vl_tocstring(S, vl_get(S, idx));
+  vl_errorf(S, "argument #%d: string expected", idx);
+  vl_error(S);
+  return NULL;
+}
+static int64_t tb_check_int(VL_State *S, int idx) {
+  if (vl_get(S, idx) && (vl_isint(S, idx) || vl_isfloat(S, idx)))
+    return vl_isint(S, idx) ? vl_toint(S, vl_get(S, idx))
+                            : (int64_t)vl_tonumber(S, vl_get(S, idx));
+  vl_errorf(S, "argument #%d: int expected", idx);
+  vl_error(S);
+  return 0;
+}
+static double tb_check_num(VL_State *S, int idx) {
+  VL_Value *v = vl_get(S, idx);
+  if (!v) {
+    vl_errorf(S, "argument #%d: number expected", idx);
+    return vl_error(S);
+  }
+  return vl_tonumber(S, v);
+}
+static int tb_opt_bool(VL_State *S, int idx, int defv) {
+  if (!vl_get(S, idx)) return defv;
+  return vl_tobool(vl_get(S, idx)) ? 1 : 0;
+}
+static int tb_opt_int(VL_State *S, int idx, int defv) {
+  if (!vl_get(S, idx)) return defv;
+  if (vl_isint(S, idx) || vl_isfloat(S, idx)) return (int)tb_check_int(S, idx);
+  return defv;
+}
+static char tb_opt_sep(VL_State *S, int idx, char defc) {
+  if (!vl_get(S, idx)) return defc;
+  if (vl_isstring(S, idx)) {
+    const char *p = tb_check_str(S, idx);
+    return p && *p ? p[0] : defc;
+  }
+  return defc;
+}
 
-// ───────────────────────── Helpers VM ─────────────────────────
-#define RET_NIL()                \
-  do {                           \
-    if (ret) *(ret) = vlv_nil(); \
-    return VL_OK;                \
-  } while (0)
-#define RET_INT(v)                           \
-  do {                                       \
-    if (ret) *(ret) = vlv_int((int64_t)(v)); \
-    return VL_OK;                            \
-  } while (0)
-#define RET_FLOAT(v)                          \
-  do {                                        \
-    if (ret) *(ret) = vlv_float((double)(v)); \
-    return VL_OK;                             \
-  } while (0)
-#define RET_BOOL(v)                       \
-  do {                                    \
-    if (ret) *(ret) = vlv_bool((v) != 0); \
-    return VL_OK;                         \
-  } while (0)
+// ------------------------------------------------------------
+// Core model
+// ------------------------------------------------------------
+typedef enum { TB_NIL = 0, TB_INT = 1, TB_FLOAT = 2, TB_TEXT = 3 } TbType;
+typedef struct {
+  TbType t;
+  union {
+    int64_t i;
+    double f;
+    char *s;
+  } v;
+} Cell;
 
-static int to_double(const VL_Value *x, double *out) {
-  if (!x) return 0;
-  switch (x->type) {
-    case VT_FLOAT:
-      if (out) *out = x->as.f;
-      return 1;
-    case VT_INT:
-      if (out) *out = (double)x->as.i;
-      return 1;
-    case VT_BOOL:
-      if (out) *out = x->as.b ? 1.0 : 0.0;
-      return 1;
-    default:
-      return 0;
+typedef struct {
+  int used;
+  size_t nrows, ncols;
+  size_t cap_rows, cap_cols;
+  char **colnames;  // ncols
+  Cell *cells;      // cap_rows * cap_cols
+} Table;
+
+static Table *g_tab = NULL;
+static int g_cap = 0;
+
+static int ensure_tab_cap(int need) {
+  if (need <= g_cap) return 1;
+  int ncap = g_cap ? g_cap : 16;
+  while (ncap < need) ncap <<= 1;
+  Table *nt = (Table *)realloc(g_tab, (size_t)ncap * sizeof *nt);
+  if (!nt) return 0;
+  for (int i = g_cap; i < ncap; i++) {
+    nt[i].used = 0;
+    nt[i].nrows = nt[i].ncols = 0;
+    nt[i].cap_rows = nt[i].cap_cols = 0;
+    nt[i].colnames = NULL;
+    nt[i].cells = NULL;
+  }
+  g_tab = nt;
+  g_cap = ncap;
+  return 1;
+}
+static int alloc_slot(void) {
+  for (int i = 1; i < g_cap; i++)
+    if (!g_tab[i].used) return i;
+  if (!ensure_tab_cap(g_cap ? g_cap * 2 : 16)) return 0;
+  for (int i = 1; i < g_cap; i++)
+    if (!g_tab[i].used) return i;
+  return 0;
+}
+
+static void cell_free(Cell *c) {
+  if (!c) return;
+  if (c->t == TB_TEXT && c->v.s) {
+    free(c->v.s);
+    c->v.s = NULL;
+  }
+  c->t = TB_NIL;
+}
+static void cell_set_text(Cell *c, const char *s) {
+  cell_free(c);
+  if (!s) {
+    c->t = TB_NIL;
+    return;
+  }
+  size_t n = strlen(s);
+  char *d = (char *)malloc(n + 1);
+  if (!d) {
+    c->t = TB_NIL;
+    return;
+  }
+  memcpy(d, s, n + 1);
+  c->t = TB_TEXT;
+  c->v.s = d;
+}
+static void cell_copy(Cell *dst, const Cell *src) {
+  cell_free(dst);
+  dst->t = src->t;
+  if (src->t == TB_TEXT) {
+    if (src->v.s) {
+      size_t n = strlen(src->v.s);
+      dst->v.s = (char *)malloc(n + 1);
+      if (dst->v.s)
+        memcpy(dst->v.s, src->v.s, n + 1);
+      else
+        dst->t = TB_NIL;
+    } else
+      dst->v.s = NULL;
+  } else if (src->t == TB_INT)
+    dst->v.i = src->v.i;
+  else if (src->t == TB_FLOAT)
+    dst->v.f = src->v.f;
+}
+static int ensure_colcap(Table *T, size_t cap_cols) {
+  if (cap_cols <= T->cap_cols) return 1;
+  size_t ncap = T->cap_cols ? T->cap_cols : 4;
+  while (ncap < cap_cols) ncap <<= 1;
+  // realloc colnames
+  char **nc = (char **)realloc(T->colnames, ncap * sizeof *nc);
+  if (!nc) return 0;
+  for (size_t i = T->cap_cols; i < ncap; i++) nc[i] = NULL;
+  T->colnames = nc;
+  // realloc cells with new row stride
+  size_t old_cap_cols = T->cap_cols ? T->cap_cols : cap_cols;  // handle 0
+  if (T->cells == NULL) {
+    T->cells =
+        (Cell *)calloc((T->cap_rows ? T->cap_rows : 1) * ncap, sizeof(Cell));
+    if (!T->cells) return 0;
+    T->cap_cols = ncap;
+    return 1;
+  }
+  Cell *ncells =
+      (Cell *)calloc((T->cap_rows ? T->cap_rows : 1) * ncap, sizeof(Cell));
+  if (!ncells) return 0;
+  // move old data row by row
+  for (size_t r = 0; r < T->cap_rows; r++) {
+    for (size_t c = 0; c < T->ncols && c < old_cap_cols; c++) {
+      Cell *src = &T->cells[r * old_cap_cols + c];
+      Cell *dst = &ncells[r * ncap + c];
+      if (r < T->nrows) cell_copy(dst, src);
+    }
+  }
+  // free old cells
+  for (size_t r = 0; r < T->nrows; r++) {
+    for (size_t c = T->ncols; c < old_cap_cols; c++) {
+      Cell *src = &T->cells[r * old_cap_cols + c];
+      cell_free(src);
+    }
+  }
+  free(T->cells);
+  T->cells = ncells;
+  T->cap_cols = ncap;
+  return 1;
+}
+static int ensure_rowcap(Table *T, size_t cap_rows) {
+  if (cap_rows <= T->cap_rows) return 1;
+  size_t ncap = T->cap_rows ? T->cap_rows : 4;
+  while (ncap < cap_rows) ncap <<= 1;
+  Cell *ncells = (Cell *)calloc(
+      ncap * (T->cap_cols ? T->cap_cols : (T->ncols ? T->ncols : 1)),
+      sizeof(Cell));
+  if (!ncells) return 0;
+  size_t stride_old = (T->cap_cols ? T->cap_cols : (T->ncols ? T->ncols : 1));
+  size_t stride_new = (T->cap_cols ? T->cap_cols : (T->ncols ? T->ncols : 1));
+  if (T->cells) {
+    for (size_t r = 0; r < T->nrows; r++) {
+      for (size_t c = 0; c < T->ncols; c++) {
+        Cell *src = &T->cells[r * stride_old + c];
+        Cell *dst = &ncells[r * stride_new + c];
+        cell_copy(dst, src);
+      }
+    }
+    // free old
+    for (size_t r = 0; r < T->nrows; r++) {
+      for (size_t c = 0; c < stride_old; c++) {
+        Cell *src = &T->cells[r * stride_old + c];
+        cell_free(src);
+      }
+    }
+    free(T->cells);
+  }
+  T->cells = ncells;
+  T->cap_rows = ncap;
+  return 1;
+}
+static inline Cell *at(Table *T, size_t r, size_t c) {
+  size_t stride = (T->cap_cols ? T->cap_cols : T->ncols);
+  return &T->cells[r * stride + c];
+}
+static int check_id(int id) { return id > 0 && id < g_cap && g_tab[id].used; }
+
+static void table_free(Table *T) {
+  if (!T) return;
+  // free cell heap
+  size_t stride = (T->cap_cols ? T->cap_cols : (T->ncols ? T->ncols : 1));
+  for (size_t r = 0; r < T->nrows; r++) {
+    for (size_t c = 0; c < stride; c++) {
+      cell_free(&T->cells[r * stride + c]);
+    }
+  }
+  free(T->cells);
+  T->cells = NULL;
+  // free colnames
+  for (size_t c = 0; c < T->ncols; c++) {
+    free(T->colnames[c]);
+    T->colnames[c] = NULL;
+  }
+  free(T->colnames);
+  T->colnames = NULL;
+  T->nrows = T->ncols = T->cap_rows = T->cap_cols = 0;
+  T->used = 0;
+}
+
+static int colname_set(Table *T, size_t idx, const char *name) {
+  if (idx >= T->cap_cols && !ensure_colcap(T, idx + 1)) return 0;
+  size_t n = strlen(name ? name : "");
+  char *d = (char *)malloc(n + 1);
+  if (!d) return 0;
+  memcpy(d, name ? name : "", n + 1);
+  if (idx < T->ncols && T->colnames[idx]) free(T->colnames[idx]);
+  T->colnames[idx] = d;
+  return 1;
+}
+static int colname_cmp_ci(const char *a, const char *b) {
+  for (;; a++, b++) {
+    int ca = tolower((unsigned char)*a);
+    int cb = tolower((unsigned char)*b);
+    if (ca != cb) return ca < cb ? -1 : 1;
+    if (!*a || !*b) return 0;
   }
 }
-static int to_int(const VL_Value *x, int64_t *out) {
-  return vl_value_as_int(x, out);
-}
 
-static double fmin_many(const VL_Value *a, uint8_t c, int *ok) {
-  double m = 0.0, v = 0.0;
-  *ok = 0;
-  for (uint8_t i = 0; i < c; i++) {
-    if (!to_double(&a[i], &v)) return 0.0;
-    if (!*ok || v < m) m = v;
-    *ok = 1;
+// ------------------------------------------------------------
+// VM — Lifecycle
+// ------------------------------------------------------------
+static int vltab_new(VL_State *S) {
+  int id = alloc_slot();
+  if (!id) {
+    vl_push_nil(S);
+    vl_push_string(S, "ENOMEM");
+    return 2;
   }
-  return m;
+  g_tab[id].used = 1;
+  g_tab[id].nrows = 0;
+  g_tab[id].ncols = 0;
+  g_tab[id].cap_rows = 0;
+  g_tab[id].cap_cols = 0;
+  g_tab[id].colnames = NULL;
+  g_tab[id].cells = NULL;
+  vl_push_int(S, (int64_t)id);
+  return 1;
 }
-static double fmax_many(const VL_Value *a, uint8_t c, int *ok) {
-  double M = 0.0, v = 0.0;
-  *ok = 0; for(uint8_t i=0;i<c;i"){ if(!to_double(&a[i],&v)) return 0.0; if(!*ok || v>M) M=v; *ok=1; } return M; }
 
-// ───────────────────────── PRNG ─────────────────────────
-static uint64_t g_rng = 0; // 0 => non-initialisé
-static inline uint64_t xorshift64(void){
-    if (g_rng == 0) {  // seed à partir de l'horloge
-      uint64_t t = (uint64_t)vl_mono_time_ns();
-      g_rng = t ? t : 88172645463393265ull;
-    }
-    uint64_t x = g_rng;
-    x ^= x << 13;
-    x ^= x >> 7;
-    x ^= x << 17;
-    g_rng = x;
-    return x; }
-static inline uint32_t xorshift32(void){
-    return (uint32_t)(xorshift64() >> 32); }
-static inline double   urand01(void){
-    return (xorshift64() >> 11) * (1.0 / 9007199254740992.0); } // 53 bits -> [0,1)
+static int vltab_free(VL_State *S) {
+  int id = (int)tb_check_int(S, 1);
+  if (check_id(id)) table_free(&g_tab[id]);
+  vl_push_bool(S, 1);
+  return 1;
+}
 
-// ───────────────────────── Impl natives ─────────────────────────
-// trig
-static VL_Status nb_sin (struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    double x;
-    if (c < 1 || !to_double(&a[0], &x)) return VL_ERR_TYPE;
-    RET_FLOAT(sin(x)); }
-static VL_Status nb_cos (struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    double x;
-    if (c < 1 || !to_double(&a[0], &x)) return VL_ERR_TYPE;
-    RET_FLOAT(cos(x)); }
-static VL_Status nb_tan (struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    double x;
-    if (c < 1 || !to_double(&a[0], &x)) return VL_ERR_TYPE;
-    RET_FLOAT(tan(x)); }
-static VL_Status nb_asin(struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    double x;
-    if (c < 1 || !to_double(&a[0], &x)) return VL_ERR_TYPE;
-    RET_FLOAT(asin(x)); }
-static VL_Status nb_acos(struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    double x;
-    if (c < 1 || !to_double(&a[0], &x)) return VL_ERR_TYPE;
-    RET_FLOAT(acos(x)); }
-static VL_Status nb_atan(struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    double x;
-    if (c < 1 || !to_double(&a[0], &x)) return VL_ERR_TYPE;
-    RET_FLOAT(atan(x)); }
-static VL_Status nb_atan2(struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    double y, x;
-    if (c < 2 || !to_double(&a[0], &y) || !to_double(&a[1], &x))
-      return VL_ERR_TYPE;
-    RET_FLOAT(atan2(y, x)); }
+static int vltab_clear(VL_State *S) {
+  int id = (int)tb_check_int(S, 1);
+  if (!check_id(id)) {
+    vl_push_nil(S);
+    vl_push_string(S, "EINVAL");
+    return 2;
+  }
+  Table *T = &g_tab[id];
+  // clear cells
+  size_t stride = (T->cap_cols ? T->cap_cols : (T->ncols ? T->ncols : 1));
+  for (size_t r = 0; r < T->nrows; r++)
+    for (size_t c = 0; c < stride; c++) cell_free(&T->cells[r * stride + c]);
+  T->nrows = 0;
+  vl_push_bool(S, 1);
+  return 1;
+}
 
-// exp/log
-static VL_Status nb_exp (struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    double x;
-    if (c < 1 || !to_double(&a[0], &x)) return VL_ERR_TYPE;
-    RET_FLOAT(exp(x)); }
-static VL_Status nb_log (struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    double x;
-    if (c < 1 || !to_double(&a[0], &x)) return VL_ERR_TYPE;
-    RET_FLOAT(log(x)); }
-static VL_Status nb_log10(struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    double x;
-    if (c < 1 || !to_double(&a[0], &x)) return VL_ERR_TYPE;
-    RET_FLOAT(log10(x)); }
-static VL_Status nb_pow (struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    double x, y;
-    if (c < 2 || !to_double(&a[0], &x) || !to_double(&a[1], &y))
-      return VL_ERR_TYPE;
-    RET_FLOAT(pow(x, y)); }
+static int vltab_reserve(VL_State *S) {
+  int id = (int)tb_check_int(S, 1);
+  int rows = (int)tb_check_int(S, 2);
+  int cols = (int)tb_check_int(S, 3);
+  if (!check_id(id) || rows < 0 || cols < 0) {
+    vl_push_nil(S);
+    vl_push_string(S, "EINVAL");
+    return 2;
+  }
+  Table *T = &g_tab[id];
+  if (cols > 0 && !ensure_colcap(T, (size_t)cols)) {
+    vl_push_nil(S);
+    vl_push_string(S, "ENOMEM");
+    return 2;
+  }
+  if (rows > 0 && !ensure_rowcap(T, (size_t)rows)) {
+    vl_push_nil(S);
+    vl_push_string(S, "ENOMEM");
+    return 2;
+  }
+  vl_push_bool(S, 1);
+  return 1;
+}
 
-// racines / arrondis
-static VL_Status nb_sqrt (struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    double x;
-    if (c < 1 || !to_double(&a[0], &x)) return VL_ERR_TYPE;
-    RET_FLOAT(sqrt(x)); }
-static VL_Status nb_cbrt (struct VL_Context *ctx, const VL_Value *a, uint8_t c, VL_Value *ret, void *u){
-    (void)ctx;
-    (void)u;
-    double x;
-    if (c < 1 || !to_double(&a[0], &x)) return VL_ERR_TYPE;
-#ifdef cbrt RET_FLOAT(cbrt(x));
-#else RET_FLOAT(pow(x, 1.0 / 3.0));
-#endif }
-    static VL_Status nb_floor(struct VL_Context * ctx, const VL_Value *a,
-                              uint8_t c, VL_Value *ret, void *u) {
-      (void)ctx;
-      (void)u;
-      double x;
-      if (c < 1 || !to_double(&a[0], &x)) return VL_ERR_TYPE;
-      RET_FLOAT(floor(x));
-    }
-    static VL_Status nb_ceil(struct VL_Context * ctx, const VL_Value *a,
-                             uint8_t c, VL_Value *ret, void *u) {
-      (void)ctx;
-      (void)u;
-      double x;
-      if (c < 1 || !to_double(&a[0], &x)) return VL_ERR_TYPE;
-      RET_FLOAT(ceil(x));
-    }
-    static VL_Status nb_round(struct VL_Context * ctx, const VL_Value *a,
-                              uint8_t c, VL_Value *ret, void *u) {
-      (void)ctx;
-      (void)u;
-      double x;
-      if (c < 1 || !to_double(&a[0], &x)) return VL_ERR_TYPE;
-      RET_FLOAT(round(x));
-    }
-    static VL_Status nb_fmod(struct VL_Context * ctx, const VL_Value *a,
-                             uint8_t c, VL_Value *ret, void *u) {
-      (void)ctx;
-      (void)u;
-      double x, y;
-      if (c < 2 || !to_double(&a[0], &x) || !to_double(&a[1], &y))
-        return VL_ERR_TYPE;
-      RET_FLOAT(fmod(x, y));
-    }
-    static VL_Status nb_hypot(struct VL_Context * ctx, const VL_Value *a,
-                              uint8_t c, VL_Value *ret, void *u) {
-      (void)ctx;
-      (void)u;
-      double x, y;
-      if (c < 2 || !to_double(&a[0], &x) || !to_double(&a[1], &y))
-        return VL_ERR_TYPE;
-      RET_FLOAT(hypot(x, y));
-    }
+static int vltab_clone(VL_State *S) {
+  int id = (int)tb_check_int(S, 1);
+  if (!check_id(id)) {
+    vl_push_nil(S);
+    vl_push_string(S, "EINVAL");
+    return 2;
+  }
+  int nid = alloc_slot();
+  if (!nid) {
+    vl_push_nil(S);
+    vl_push_string(S, "ENOMEM");
+    return 2;
+  }
+  Table *A = &g_tab[id], *B = &g_tab[nid];
+  B->used = 1;
+  B->nrows = A->nrows;
+  B->ncols = A->ncols;
+  B->cap_rows = A->nrows;
+  B->cap_cols = A->ncols ? A->ncols : 1;
+  B->colnames = (char **)calloc(B->cap_cols, sizeof(char *));
+  B->cells = (Cell *)calloc(
+      (B->cap_rows ? B->cap_rows : 1) * (B->cap_cols ? B->cap_cols : 1),
+      sizeof(Cell));
+  if (!B->colnames || !B->cells) {
+    table_free(B);
+    vl_push_nil(S);
+    vl_push_string(S, "ENOMEM");
+    return 2;
+  }
+  for (size_t c = 0; c < B->ncols; c++)
+    colname_set(B, c, A->colnames[c] ? A->colnames[c] : "");
+  for (size_t r = 0; r < B->nrows; r++)
+    for (size_t c = 0; c < B->ncols; c++) cell_copy(at(B, r, c), at(A, r, c));
+  vl_push_int(S, (int64_t)nid);
+  return 1;
+}
 
-    // helpers
-    static VL_Status nb_abs(struct VL_Context * ctx, const VL_Value *a,
-                            uint8_t c, VL_Value *ret, void *u) {
-      (void)ctx;
-      (void)u;
-      if (c < 1) return VL_ERR_INVAL;
-      if (a[0].type == VT_INT)
-        RET_INT((a[0].as.i < 0) ? -a[0].as.i : a[0].as.i);
-      double x;
-      if (!to_double(&a[0], &x)) return VL_ERR_TYPE;
-      RET_FLOAT(fabs(x));
-    }
-    static VL_Status nb_min(struct VL_Context * ctx, const VL_Value *a,
-                            uint8_t c, VL_Value *ret, void *u) {
-      (void)ctx;
-      (void)u;
-      int ok = 0;
-      if (c < 1) return VL_ERR_INVAL;
-      double m = fmin_many(a, c, &ok);
-      if (!ok) return VL_ERR_TYPE;
-      RET_FLOAT(m);
-    }
-    static VL_Status nb_max(struct VL_Context * ctx, const VL_Value *a,
-                            uint8_t c, VL_Value *ret, void *u) {
-      (void)ctx;
-      (void)u;
-      int ok = 0;
-      if (c < 1) return VL_ERR_INVAL;
-      double M = fmax_many(a, c, &ok);
-      if (!ok) return VL_ERR_TYPE;
-      RET_FLOAT(M);
-    }
-    static VL_Status nb_clamp(struct VL_Context * ctx, const VL_Value *a,
-                              uint8_t c, VL_Value *ret, void *u) {
-      (void)ctx;
-      (void)u;
-      double x, lo, hi;
-      if (c < 3 || !to_double(&a[0], &x) || !to_double(&a[1], &lo) ||
-          !to_double(&a[2], &hi))
-        return VL_ERR_TYPE;
-      if (lo > hi) {
-        double t = lo;
-        lo = hi;
-        hi = t;
+// ------------------------------------------------------------
+// VM — Dimensions / colonnes
+// ------------------------------------------------------------
+static int vltab_nrows(VL_State *S) {
+  int id = (int)tb_check_int(S, 1);
+  if (!check_id(id)) {
+    vl_push_int(S, 0);
+    return 1;
+  }
+  vl_push_int(S, (int64_t)g_tab[id].nrows);
+  return 1;
+}
+static int vltab_ncols(VL_State *S) {
+  int id = (int)tb_check_int(S, 1);
+  if (!check_id(id)) {
+    vl_push_int(S, 0);
+    return 1;
+  }
+  vl_push_int(S, (int64_t)g_tab[id].ncols);
+  return 1;
+}
+
+static int vltab_columns_csv(VL_State *S) {
+  int id = (int)tb_check_int(S, 1);
+  char sep = tb_opt_sep(S, 2, ',');
+  if (!check_id(id)) {
+    vl_push_string(S, "");
+    return 1;
+  }
+  Table *T = &g_tab[id];
+  AuxBuffer b = {0};
+  for (size_t c = 0; c < T->ncols; c++) {
+    const char *nm = T->colnames[c] ? T->colnames[c] : "";
+    // CSV escaping minimal if sep present or quotes
+    int needq = 0;
+    for (const char *p = nm; *p; ++p)
+      if (*p == sep || *p == '"' || *p == '\n' || *p == '\r') {
+        needq = 1;
+        break;
       }
-      if (x < lo) x = lo;
-      if (x > hi) x = hi;
-      RET_FLOAT(x);
-    }
-    static VL_Status nb_lerp(struct VL_Context * ctx, const VL_Value *a,
-                             uint8_t c, VL_Value *ret, void *u) {
-      (void)ctx;
-      (void)u;
-      double x, y, t;
-      if (c < 3 || !to_double(&a[0], &x) || !to_double(&a[1], &y) ||
-          !to_double(&a[2], &t))
-        return VL_ERR_TYPE;
-      RET_FLOAT(x + (y - x) * t);
-    }
-
-    // unités/constantes
-    static VL_Status nb_rad(struct VL_Context * ctx, const VL_Value *a,
-                            uint8_t c, VL_Value *ret, void *u) {
-      (void)ctx;
-      (void)u;
-      double d;
-      if (c < 1 || !to_double(&a[0], &d)) return VL_ERR_TYPE;
-      RET_FLOAT(d * (M_PI / 180.0));
-    }
-    static VL_Status nb_deg(struct VL_Context * ctx, const VL_Value *a,
-                            uint8_t c, VL_Value *ret, void *u) {
-      (void)ctx;
-      (void)u;
-      double r;
-      if (c < 1 || !to_double(&a[0], &r)) return VL_ERR_TYPE;
-      RET_FLOAT(r * (180.0 / M_PI));
-    }
-    static VL_Status nb_pi(struct VL_Context * ctx, const VL_Value *a,
-                           uint8_t c, VL_Value *ret, void *u) {
-      (void)ctx;
-      (void)a;
-      (void)c;
-      (void)u;
-      RET_FLOAT(M_PI);
-    }
-    static VL_Status nb_tau(struct VL_Context * ctx, const VL_Value *a,
-                            uint8_t c, VL_Value *ret, void *u) {
-      (void)ctx;
-      (void)a;
-      (void)c;
-      (void)u;
-      RET_FLOAT(2.0 * M_PI);
-    }
-    static VL_Status nb_e(struct VL_Context * ctx, const VL_Value *a, uint8_t c,
-                          VL_Value *ret, void *u) {
-      (void)ctx;
-      (void)a;
-      (void)c;
-      (void)u;
-      RET_FLOAT(M_E);
-    }
-
-    // stats varargs
-    static VL_Status nb_sum(struct VL_Context * ctx, const VL_Value *a,
-                            uint8_t c, VL_Value *ret, void *u) {
-      (void)ctx;
-      (void)u;
-      if (c < 1) RET_FLOAT(0.0);
-      double s = 0.0, v;
-      for (uint8_t i = 0; i < c; i++) {
-        if (!to_double(&a[i], &v)) return VL_ERR_TYPE;
-        s += v;
+    if (c) aux_buffer_append_byte(&b, (uint8_t)sep);
+    if (!needq)
+      aux_buffer_append(&b, (const uint8_t *)nm, strlen(nm));
+    else {
+      aux_buffer_append_byte(&b, '"');
+      for (const char *p = nm; *p; ++p) {
+        if (*p == '"') {
+          aux_buffer_append_byte(&b, '"');
+          aux_buffer_append_byte(&b, '"');
+        } else
+          aux_buffer_append_byte(&b, (uint8_t)*p);
       }
-      RET_FLOAT(s);
+      aux_buffer_append_byte(&b, '"');
     }
-    static VL_Status nb_mean(struct VL_Context * ctx, const VL_Value *a,
-                             uint8_t c, VL_Value *ret, void *u) {
-      (void)ctx;
-      (void)u;
-      if (c < 1) return VL_ERR_INVAL;
-      double s = 0.0, v;
-      for (uint8_t i = 0; i < c; i++) {
-        if (!to_double(&a[i], &v)) return VL_ERR_TYPE;
-        s += v;
-      }
-      RET_FLOAT(s / (double)c);
+  }
+  vl_push_lstring(S, (const char *)b.data, (int)b.len);
+  aux_buffer_free(&b);
+  return 1;
+}
+
+static int vltab_add_col(VL_State *S) {
+  int id = (int)tb_check_int(S, 1);
+  const char *name = tb_check_str(S, 2);
+  if (!check_id(id)) {
+    vl_push_nil(S);
+    vl_push_string(S, "EINVAL");
+    return 2;
+  }
+  Table *T = &g_tab[id];
+  if (!ensure_colcap(T, T->ncols + 1)) {
+    vl_push_nil(S);
+    vl_push_string(S, "ENOMEM");
+    return 2;
+  }
+  if (!colname_set(T, T->ncols, name)) {
+    vl_push_nil(S);
+    vl_push_string(S, "ENOMEM");
+    return 2;
+  }
+  // Make sure rows have capacity
+  if (!ensure_rowcap(T, T->nrows ? T->nrows : 1)) {
+    vl_push_nil(S);
+    vl_push_string(S, "ENOMEM");
+    return 2;
+  }
+  T->ncols++;
+  vl_push_int(S, (int64_t)T->ncols);
+  return 1;
+}
+
+static int vltab_insert_col(VL_State *S) {
+  int id = (int)tb_check_int(S, 1);
+  int at = (int)tb_check_int(S, 2);
+  const char *name = tb_check_str(S, 3);
+  if (!check_id(id) || at < 1) {
+    vl_push_nil(S);
+    vl_push_string(S, "EINVAL");
+    return 2;
+  }
+  Table *T = &g_tab[id];
+  if ((size_t)at > T->ncols + 1) at = (int)T->ncols + 1;
+  if (!ensure_colcap(T, T->ncols + 1)) {
+    vl_push_nil(S);
+    vl_push_string(S, "ENOMEM");
+    return 2;
+  }
+  size_t stride = T->cap_cols;
+  // shift names
+  for (size_t c = T->ncols; c >= (size_t)at && c > 0; c--) {
+    T->colnames[c] = T->colnames[c - 1];
+  }
+  T->colnames[at - 1] = NULL;
+  if (!colname_set(T, at - 1, name)) {
+    vl_push_nil(S);
+    vl_push_string(S, "ENOMEM");
+    return 2;
+  }
+  // shift cells right
+  for (size_t r = 0; r < T->nrows; r++) {
+    for (size_t c = T->ncols; c >= (size_t)at && c > 0; c--) {
+      Cell *dst = &T->cells[r * stride + c];
+      Cell *src = &T->cells[r * stride + (c - 1)];
+      cell_copy(dst, src);
     }
-    static VL_Status nb_var(struct VL_Context * ctx, const VL_Value *a,
-                            uint8_t c, VL_Value *ret, void *u) {
-      (void)ctx;
-      (void)u;
-      if (c < 2) return VL_ERR_INVAL;
-      double s = 0.0, ss = 0.0, v;
-      for (uint8_t i = 0; i < c; i++) {
-        if (!to_double(&a[i], &v)) return VL_ERR_TYPE;
-        s += v;
-        ss += v * v;
-      }
-      double n = (double)c;
-      double var = (ss - (s * s) / n) / (n - 1.0);
-      RET_FLOAT(var);
+    // clear new cell
+    Cell *nc = &T->cells[r * stride + (at - 1)];
+    cell_free(nc);
+    nc->t = TB_NIL;
+  }
+  T->ncols++;
+  vl_push_bool(S, 1);
+  return 1;
+}
+
+static int vltab_drop_col(VL_State *S) {
+  int id = (int)tb_check_int(S, 1);
+  int col = (int)tb_check_int(S, 2);
+  if (!check_id(id) || col < 1) {
+    vl_push_nil(S);
+    vl_push_string(S, "EINVAL");
+    return 2;
+  }
+  Table *T = &g_tab[id];
+  if ((size_t)col > T->ncols || T->ncols == 0) {
+    vl_push_nil(S);
+    vl_push_string(S, "ERANGE");
+    return 2;
+  }
+  size_t stride = T->cap_cols;
+  // free cells of that column
+  for (size_t r = 0; r < T->nrows; r++)
+    cell_free(&T->cells[r * stride + (col - 1)]);
+  // shift cells left
+  for (size_t r = 0; r < T->nrows; r++) {
+    for (size_t c = (size_t)col; c < T->ncols; c++) {
+      Cell *dst = &T->cells[r * stride + (c - 1)];
+      Cell *src = &T->cells[r * stride + c];
+      cell_free(dst);
+      cell_copy(dst, src);
     }
-    static VL_Status nb_stddev(struct VL_Context * ctx, const VL_Value *a,
-                               uint8_t c, VL_Value *ret, void *u) {
-      VL_Value t;
-      (void)ctx;
-      (void)u;
-      VL_Status st = nb_var(ctx, a, c, &t, u);
-      if (st != VL_OK) return st;
-      if (t.type != VT_FLOAT) return VL_ERR_TYPE;
-      RET_FLOAT(sqrt(t.as.f));
+    // clear tail cell
+    cell_free(&T->cells[r * stride + (T->ncols - 1)]);
+  }
+  // free name
+  if (T->colnames[col - 1]) {
+    free(T->colnames[col - 1]);
+    T->colnames[col - 1] = NULL;
+  }
+  for (size_t c = (size_t)col; c < T->ncols; c++)
+    T->colnames[c - 1] = T->colnames[c];
+  T->colnames[T->ncols - 1] = NULL;
+  T->ncols--;
+  vl_push_bool(S, 1);
+  return 1;
+}
+
+static int vltab_rename_col(VL_State *S) {
+  int id = (int)tb_check_int(S, 1);
+  int col = (int)tb_check_int(S, 2);
+  const char *name = tb_check_str(S, 3);
+  if (!check_id(id) || col < 1) {
+    vl_push_nil(S);
+    vl_push_string(S, "EINVAL");
+    return 2;
+  }
+  Table *T = &g_tab[id];
+  if ((size_t)col > T->ncols) {
+    vl_push_nil(S);
+    vl_push_string(S, "ERANGE");
+    return 2;
+  }
+  if (!colname_set(T, (size_t)col - 1, name)) {
+    vl_push_nil(S);
+    vl_push_string(S, "ENOMEM");
+    return 2;
+  }
+  vl_push_bool(S, 1);
+  return 1;
+}
+
+static int vltab_col_index(VL_State *S) {
+  int id = (int)tb_check_int(S, 1);
+  const char *name = tb_check_str(S, 2);
+  if (!check_id(id)) {
+    vl_push_int(S, 0);
+    return 1;
+  }
+  Table *T = &g_tab[id];
+  for (size_t c = 0; c < T->ncols; c++) {
+    if (!T->colnames[c]) continue;
+    if (strcmp(T->colnames[c], name) == 0) {
+      vl_push_int(S, (int64_t)(c + 1));
+      return 1;
     }
+  }
+  vl_push_int(S, 0);
+  return 1;
+}
 
-    // approx
-    static VL_Status nb_approx(struct VL_Context * ctx, const VL_Value *a,
-                               uint8_t c, VL_Value *ret, void *u) {
-      (void)ctx;
-      (void)u;
-      double x, y, eps = 1e-9;
-      if (c < 2 || !to_double(&a[0], &x) || !to_double(&a[1], &y))
-        return VL_ERR_TYPE;
-      if (c >= 3 && !to_double(&a[2], &eps)) return VL_ERR_TYPE;
-      RET_BOOL(fabs(x - y) <= eps);
+// ------------------------------------------------------------
+// VM — Lignes
+// ------------------------------------------------------------
+static int vltab_append_row(VL_State *S) {
+  int id = (int)tb_check_int(S, 1);
+  if (!check_id(id)) {
+    vl_push_nil(S);
+    vl_push_string(S, "EINVAL");
+    return 2;
+  }
+  Table *T = &g_tab[id];
+  if (!ensure_rowcap(T, T->nrows + 1)) {
+    vl_push_nil(S);
+    vl_push_string(S, "ENOMEM");
+    return 2;
+  }
+  // init row nil
+  size_t stride = (T->cap_cols ? T->cap_cols : (T->ncols ? T->ncols : 1));
+  for (size_t c = 0; c < T->ncols; c++) {
+    Cell *x = &T->cells[T->nrows * stride + c];
+    cell_free(x);
+    x->t = TB_NIL;
+  }
+  T->nrows++;
+  vl_push_int(S, (int64_t)T->nrows);
+  return 1;
+}
+static int vltab_insert_row(VL_State *S) {
+  int id = (int)tb_check_int(S, 1);
+  int at = (int)tb_check_int(S, 2);
+  if (!check_id(id) || at < 1) {
+    vl_push_nil(S);
+    vl_push_string(S, "EINVAL");
+    return 2;
+  }
+  Table *T = &g_tab[id];
+  if ((size_t)at > T->nrows + 1) at = (int)T->nrows + 1;
+  if (!ensure_rowcap(T, T->nrows + 1)) {
+    vl_push_nil(S);
+    vl_push_string(S, "ENOMEM");
+    return 2;
+  }
+  size_t stride = T->cap_cols ? T->cap_cols : T->ncols;
+  // shift down
+  for (size_t r = T->nrows; r >= (size_t)at && r > 0; r--) {
+    for (size_t c = 0; c < T->ncols; c++) {
+      Cell *dst = &T->cells[r * stride + c];
+      Cell *src = &T->cells[(r - 1) * stride + c];
+      cell_copy(dst, src);
     }
-
-    // aléa
-    static VL_Status nb_srand(struct VL_Context * ctx, const VL_Value *a,
-                              uint8_t c, VL_Value *ret, void *u) {
-      (void)ctx;
-      (void)u;
-      if (c < 1) return VL_ERR_INVAL;
-      int64_t s = 0;
-      if (!to_int(&a[0], &s)) return VL_ERR_TYPE;
-      g_rng = (uint64_t)s;
-      if (g_rng == 0) g_rng = 1;
-      RET_NIL();
-    }
-    static VL_Status nb_rand01(struct VL_Context * ctx, const VL_Value *a,
-                               uint8_t c, VL_Value *ret, void *u) {
-      (void)ctx;
-      (void)a;
-      (void)c;
-      (void)u;
-      RET_FLOAT(urand01());
-    }
-    static VL_Status nb_rand_u32(struct VL_Context * ctx, const VL_Value *a,
-                                 uint8_t c, VL_Value *ret, void *u) {
-      (void)ctx;
-      (void)a;
-      (void)c;
-      (void)u;
-      RET_INT((int64_t)xorshift32());
-    }
-    static VL_Status nb_randn(struct VL_Context * ctx, const VL_Value *a,
-                              uint8_t c, VL_Value *ret, void *u) {
-      (void)ctx;
-      (void)a;
-      (void)c;
-      (void)u;  // Box-Muller
-      double u1 = urand01();
-      if (u1 <= 0.0) u1 = 1e-12;
-      double u2 = urand01();
-      double r = sqrt(-2.0 * log(u1));
-      double th = 2.0 * M_PI * u2;
-      RET_FLOAT(r * cos(th));
-    }
-
-    // ───────────────────────── Enregistrement ─────────────────────────
-    void vl_register_mathlib(struct VL_Context * ctx) {
-      if (!ctx) return;
-      vl_register_native(ctx, "sin", nb_sin, NULL);
-      vl_register_native(ctx, "cos", nb_cos, NULL);
-      vl_register_native(ctx, "tan", nb_tan, NULL);
-      vl_register_native(ctx, "asin", nb_asin, NULL);
-      vl_register_native(ctx, "acos", nb_acos, NULL);
-      vl_register_native(ctx, "atan", nb_atan, NULL);
-      vl_register_native(ctx, "atan2", nb_atan2, NULL);
-
-      vl_register_native(ctx, "exp", nb_exp, NULL);
-      vl_register_native(ctx, "log", nb_log, NULL);
-      vl_register_native(ctx, "log10", nb_log10, NULL);
-      vl_register_native(ctx, "pow", nb_pow, NULL);
-
-      vl_register_native(ctx, "sqrt", nb_sqrt, NULL);
-      vl_register_native(ctx, "cbrt", nb_cbrt, NULL);
-      vl_register_native(ctx, "floor", nb_floor, NULL);
-      vl_register_native(ctx, "ceil", nb_ceil, NULL);
-      vl_register_native(ctx, "round", nb_round, NULL);
-      vl_register_native(ctx, "fmod", nb_fmod, NULL);
-      vl_register_native(ctx, "hypot", nb_hypot, NULL);
-
-      vl_register_native(ctx, "abs", nb_abs, NULL);
-      vl_register_native(ctx, "min", nb_min, NULL);
-      vl_register_native(ctx, "max", nb_max, NULL);
-      vl_register_native(ctx, "clamp", nb_clamp, NULL);
-      vl_register_native(ctx, "lerp", nb_lerp, NULL);
-      vl_register_native(ctx, "mix", nb_lerp, NULL);  // alias
-
-      vl_register_native(ctx, "rad", nb_rad, NULL);
-      vl_register_native(ctx, "deg", nb_deg, NULL);
-      vl_register_native(ctx, "pi", nb_pi, NULL);
-      vl_register_native(ctx, "tau", nb_tau, NULL);
-      vl_register_native(ctx, "e", nb_e, NULL);
-
-      vl_register_native(ctx, "sum", nb_sum, NULL);
-      vl_register_native(ctx, "mean", nb_mean, NULL);
-      vl_register_native(ctx, "var", nb_var, NULL);
-      vl_register_native(ctx, "stddev", nb_stddev, NULL);
-
-      vl_register_native(ctx, "approx_eq", nb_approx, NULL);
-
-      vl_register_native(ctx, "srand", nb_srand, NULL);
-      vl_register_native(ctx, "rand", nb_rand01, NULL);
-      vl_register_native(ctx, "rand_u32", nb_rand_u32, NULL);
-      vl_register_native(ctx, "randn", nb_randn, NULL);
-    }
-
-// ───────────────────────── Test rapide ─────────────────────────
-#ifdef VL_MATHLIB_TEST_MAIN
-    int main(void) {
-      // Smoke tests côté C
-      printf("sin(pi/2)=%.3f\n", sin(M_PI / 2));
-      // Pas de VM ici; les natives sont destinées au runtime VL.
-      return 0;
-    }
-#endif
+  }
+  // clear new row
+  for (size_t c = 0; c < T->ncols; c++) {
+    Cell *x = &T->cells[((size_t)at - 1) * stride + c];
+    cell_free(x);
+    x->t = TB_NIL;
+  }
+  T->nrows++;
+  vl_push_bool(S, 1);
+  return 1;
+}
+static int vltab_drop_row(VL_State *S) {
+  int id = (int)tb_check_int(S, 1);
+  int row = (int)tb_check_int(S, 2);
+  if (!check_id(id) || row < 1) {
+    vl_push_nil(S);
+    vl_push_string(S, "EINVAL");
+    return 2;
+  }
+  Table *T = &g_tab[id];
+  if ((size_t)row > T->nrows || T->nrows == 0) {
+    vl_push_nil(S);
+    vl_push_string(S, "ERANGE");
+    return 2;
+  }
+  size_t stride = T->cap_cols ? T->cap_cols : T->ncols;
+  // free row cells
+  for (size_t c = 0; c < T->ncols; c++)
+    cell_free(&T->cells[((size_t)row - 1) * stride + c]);
+  // shift up
+    for (size_t r=(size_t
