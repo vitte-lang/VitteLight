@@ -1,537 +1,801 @@
-// vitte-light/compiler/vitlc.c
-// VitteLight Compiler/Linker CLI (vitlc)
-// Sous-commandes: compile, link, build, inspect, help, version
-// Entrées acceptées: .asm (assemble vers VLBC) et .vlbc (objet binaire VL)
-// Sortie: VLBC monolithique (pool de chaînes fusionné, code patché)
-//
-// Tâches majeures:
-//  - Assemblage ASM -> VLBC via parser.h (vl_asm / vl_asm_file)
-//  - Chargement VLBC via undump.h (VL_Module)
-//  - Fusion des pools kstr avec déduplication
-//  - Réécriture des indices kstr dans le code (PUSHS, CALLN, LOADG, STOREG)
-//  - Écriture d'un VLBC final (en-tête + kstr + code)
-//  - Fichiers auxiliaires: --map pour tracer les remappings de si
-//
-// Build (Unix):
-//   cc -std=c99 -O2 -Wall -Wextra -pedantic -Icore -o vitlc \
-//      compiler/vitlc.c \
-//      core/parser.c core/undump.c core/opcodes.c core/mem.c core/zio.c \
-//      core/table.c core/string.c
-//
-// Exemple:
-//   ./vitlc compile in.asm -o out.vlbc
-//   ./vitlc link lib1.vlbc lib2.asm -o prog.vlbc --map prog.map
-//   ./vitlc inspect prog.vlbc --strings
+/* vitlc.c — Vitte Light Compiler Driver (C17)
+   SPDX-License-Identifier: MIT
 
+   Rôle:
+     - Parse CLI et fichiers @response
+     - Pipeline: lex → parse → sema → IR → bytecode (BC)
+     - Sorties: --emit={bc,obj,asm,ir,ast,tokens,pp} ; -c ; -S ; -E
+     - -o, -O0..3, -g, -Wall, -Werror, --color, --json-diagnostics
+     - Dépendances: -MMD [-MF file] [-MT target]
+     - Chrono des passes: --time-passes
+     - Lecture stdin avec "-"
+     - Écriture atomique + mkdir -p implicite du dossier de sortie
+     - Toolchain externe optionnelle: --cc, --ld, --as, --ar, --sysroot, --target
+     - Inclut/Libs: -I, -L, -l
+     - Mode multi-fichiers: compile et link en une commande si pas -c/-S/-E
+
+   Intégrations cœur (déclarées extern, à fournir par core/):
+     Diagnostics:
+       typedef struct VL_DiagSink VL_DiagSink;
+       VL_DiagSink* vl_diag_create(FILE* err, int use_color, int json);
+       void vl_diag_destroy(VL_DiagSink*);
+       void vl_diag_error(VL_DiagSink*, const char* file, int line, int col,
+                          const char* code, const char* fmt, ...);
+       void vl_diag_warn (VL_DiagSink*, const char* file, int line, int col,
+                          const char* code, const char* fmt, ...);
+
+     Lexing/Parsing/IR/BC:
+       typedef struct VL_Tokens   VL_Tokens;
+       typedef struct VL_Ast      VL_Ast;
+       typedef struct VL_Module   VL_Module;   // après Sema
+       typedef struct VL_Ir       VL_Ir;
+       typedef struct VL_Bytecode VL_Bytecode;
+
+       int  vl_lex_source (const char* path_or_null_for_stdin,
+                           const char* src_or_null,
+                           VL_Tokens** out_tokens, VL_DiagSink* d);
+       void vl_tokens_free(VL_Tokens*);
+
+       int  vl_parse      (const VL_Tokens*, VL_Ast** out_ast, VL_DiagSink* d);
+       void vl_ast_free   (VL_Ast*);
+
+       int  vl_sema       (const VL_Ast*, VL_Module** out_mod, VL_DiagSink* d);
+       void vl_module_free(VL_Module*);
+
+       int  vl_ir_build   (const VL_Module*, VL_Ir** out_ir, VL_DiagSink* d);
+       void vl_ir_free    (VL_Ir*);
+
+       int  vl_bc_emit    (const VL_Ir*, VL_Bytecode** out_bc, VL_DiagSink* d,
+                           int opt_level, int compress /*0=none,1=zstd?*/);
+void vl_bc_free(VL_Bytecode*);
+
+// Sérialisation:
+int vl_bc_write_file(const VL_Bytecode*, const char* out_path, VL_DiagSink* d);
+// Dumps lisibles:
+int vl_dump_tokens(const VL_Tokens*, FILE* out);
+int vl_dump_ast(const VL_Ast*, FILE* out, int pretty);
+int vl_dump_ir(const VL_Ir*, FILE* out, int pretty);
+
+Préprocesseur(optionnel, sinon stub interne pass - through)
+    : int vl_preprocess_file(const char* in_path_or_null_for_stdin,
+                             const char* include_paths[], size_t n_includes,
+                             FILE* out, VL_DiagSink* d);
+
+Construire : cc - std =
+    c17 - O2 - Wall - Wextra - pedantic -
+    o vitlc vitlc.c core /*.o ...
+                          */
+
+#define _POSIX_C_SOURCE 200809L
 #include <errno.h>
 #include <inttypes.h>
 #include <stdarg.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#ifdef _WIN32
-#include <io.h>
-#define isatty _isatty
-#define fileno _fileno
-#define strcasecmp _stricmp
+#include <sys/stat.h>
+#include <time.h>
+
+#if defined(_WIN32)
+#include <direct.h>
+#define MKDIR_P(path) (_mkdir(path) == 0 || errno == EEXIST)
+#define PATH_SEP '\\'
 #else
-#include <strings.h>
+#include <libgen.h>
 #include <unistd.h>
+#define MKDIR_P(path) (mkdir(path, 0777) == 0 || errno == EEXIST)
+#define PATH_SEP '/'
 #endif
 
-#include "api.h"
-#include "mem.h"      // VL_Buffer, vl_write_file
-#include "opcodes.h"  // OP_* et helpers de disasm/validate
-#include "parser.h"   // vl_asm / vl_asm_file
-#include "table.h"    // VL_Table cstr -> index
-#include "undump.h"   // VL_Module, vl_module_from_* / VLBC_VERSION
-#include "zio.h"      // vl_read_file_all, VL_Writer
+    /* ========= Extern core API (voir en-tête ci-dessus) ========= */
+    typedef struct VL_DiagSink VL_DiagSink;
+typedef struct VL_Tokens VL_Tokens;
+typedef struct VL_Ast VL_Ast;
+typedef struct VL_Module VL_Module;
+typedef struct VL_Ir VL_Ir;
+typedef struct VL_Bytecode VL_Bytecode;
 
-#ifndef VITLC_VERSION
-#define VITLC_VERSION "0.3"
+extern VL_DiagSink* vl_diag_create(FILE* err, int use_color, int json);
+extern void vl_diag_destroy(VL_DiagSink*);
+extern void vl_diag_error(VL_DiagSink*, const char*, int, int, const char*,
+                          const char*, ...);
+extern void vl_diag_warn(VL_DiagSink*, const char*, int, int, const char*,
+                         const char*, ...);
+
+extern int vl_preprocess_file(const char*, const char*[], size_t, FILE*,
+                              VL_DiagSink*);
+
+extern int vl_lex_source(const char*, const char*, VL_Tokens**, VL_DiagSink*);
+extern void vl_tokens_free(VL_Tokens*);
+
+extern int vl_parse(const VL_Tokens*, VL_Ast**, VL_DiagSink*);
+extern void vl_ast_free(VL_Ast*);
+
+extern int vl_sema(const VL_Ast*, VL_Module**, VL_DiagSink*);
+extern void vl_module_free(VL_Module*);
+
+extern int vl_ir_build(const VL_Module*, VL_Ir**, VL_DiagSink*);
+extern void vl_ir_free(VL_Ir*);
+
+extern int vl_bc_emit(const VL_Ir*, VL_Bytecode**, VL_DiagSink*, int, int);
+extern void vl_bc_free(VL_Bytecode*);
+
+extern int vl_bc_write_file(const VL_Bytecode*, const char*, VL_DiagSink*);
+
+extern int vl_dump_tokens(const VL_Tokens*, FILE*);
+extern int vl_dump_ast(const VL_Ast*, FILE*, int);
+extern int vl_dump_ir(const VL_Ir*, FILE*, int);
+
+/* ========= Utilitaires ========= */
+
+static double now_seconds(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+}
+
+static char* xstrdup(const char* s) {
+  if (!s) return NULL;
+  size_t n = strlen(s) + 1;
+  char* p = (char*)malloc(n);
+  if (!p) {
+    perror("malloc");
+    exit(1);
+  }
+  memcpy(p, s, n);
+  return p;
+}
+
+static void* xmalloc(size_t n) {
+  void* p = malloc(n);
+  if (!p) {
+    perror("malloc");
+    exit(1);
+  }
+  return p;
+}
+
+static char* path_dirname(const char* path) {
+  if (!path) return NULL;
+  char* tmp = xstrdup(path);
+#if defined(_WIN32)
+  // rudimentaire
+  char* last = tmp + strlen(tmp);
+  while (last > tmp && *last != '\\' && *last != '/') last--;
+  if (last == tmp) {
+    tmp[1] = '\0';
+    return tmp;
+  }
+  *last = '\0';
+  return tmp;
+#else
+  char* d = xstrdup(tmp);
+  // basename/dirname posix modifient le buffer, on duplique
+  char* dn = xstrdup(dirname(tmp));
+  free(d);
+  free(tmp);
+  return dn;
 #endif
-#ifndef VLBC_MAGIC
-#define VLBC_MAGIC "VLBC"
-#endif
-
-// ───────────────────────── UI ─────────────────────────
-static int want_color(FILE *f) {
-  const char *e = getenv("NO_COLOR");
-  if (e && *e) return 0;
-  return isatty(fileno(f));
-}
-static void eprintf_col(int usec, const char *fmt, ...) {
-  va_list ap;
-  va_start(ap, fmt);
-  if (usec) fprintf(stderr, "\x1b[31m");
-  vfprintf(stderr, fmt, ap);
-  if (usec) fprintf(stderr, "\x1b[0m");
-  fputc('\n', stderr);
-  va_end(ap);
-}
-static void dief(const char *fmt, ...) {
-  va_list ap;
-  va_start(ap, fmt);
-  vfprintf(stderr, fmt, ap);
-  va_end(ap);
-  fputc('\n', stderr);
-  exit(1);
 }
 
-static void usage(FILE *out) {
-  fprintf(out,
-          "vitlc %s (compiler/linker)\n\n"
-          "Usage: vitlc <cmd> [options] [files]\n\n"
-          "Commands:\n"
-          "  compile <in.asm>|- [-o out.vlbc]\n"
-          "  link <in.{vlbc|asm}>... [-o out.vlbc] [--map file] [--disasm "
-          "out.txt]\n"
-          "  build ...            alias de link\n"
-          "  inspect <in.vlbc> [--strings] [--hexdump]\n"
-          "  version | --version\n"
-          "  help | --help\n",
-          VITLC_VERSION);
+static int mkdirs_for_file(const char* out_path) {
+  if (!out_path) return 0;
+  char* dir = path_dirname(out_path);
+  if (!dir) return 0;
+  // créer hiérarchie simple "a/b/c"
+  char* p = dir;
+  if (p[0] == PATH_SEP) p++;
+  for (; *p; ++p) {
+    if (*p == '/' || *p == '\\') {
+      char saved = *p;
+      *p = '\0';
+      if (dir[0]) MKDIR_P(dir);
+      *p = saved;
+    }
+  }
+  if (dir[0]) MKDIR_P(dir);
+  free(dir);
+  return 0;
 }
 
-// ───────────────────────── I/O helpers ─────────────────────────
-static int write_all(const char *path, const void *data, size_t n) {
-  return vl_write_file(path, data, n);
-}
-
-static char *slurp_stdin(size_t *out_n) {
-  VL_Buffer b;
-  vl_buf_init(&b);
+static int atomic_write_bytes(const void* data, size_t n, const char* path) {
+  mkdirs_for_file(path);
   char tmp[4096];
-  size_t rd;
-  while ((rd = fread(tmp, 1, sizeof(tmp), stdin)) > 0) {
-    vl_buf_append(&b, tmp, rd);
+  snprintf(tmp, sizeof(tmp), "%s.tmp.%ld", path, (long)getpid());
+  FILE* f = fopen(tmp, "wb");
+  if (!f) {
+    perror("fopen tmp");
+    return -1;
   }
-  char *s = (char *)malloc(b.n + 1);
-  if (!s) {
-    vl_buf_free(&b);
-    return NULL;
+  if (n && fwrite(data, 1, n, f) != n) {
+    perror("fwrite");
+    fclose(f);
+    remove(tmp);
+    return -1;
   }
-  memcpy(s, b.d, b.n);
-  s[b.n] = '\0';
-  if (out_n) *out_n = b.n;
-  vl_buf_free(&b);
-  return s;
-}
-
-static int has_ext(const char *p, const char *ext) {
-  size_t lp = strlen(p), le = strlen(ext);
-  if (lp < le) return 0;
-  return strcasecmp(p + lp - le, ext) == 0;
-}
-
-// ───────────────────────── Assemblage ─────────────────────────
-static int asm_from_path(const char *in, uint8_t **out_bytes,
-                         size_t *out_size) {
-  char err[512];
-  if (!vl_asm_file(in, out_bytes, out_size, err, sizeof(err))) {
-    eprintf_col(want_color(stderr), "asm(%s): %s", in, err);
-    return 0;
+  if (fclose(f) != 0) {
+    perror("fclose");
+    remove(tmp);
+    return -1;
   }
-  return 1;
-}
-static int asm_from_string(const char *src, uint8_t **out_bytes,
-                           size_t *out_size) {
-  char err[512];
-  if (!vl_asm(src, strlen(src), out_bytes, out_size, err, sizeof(err))) {
-    eprintf_col(want_color(stderr), "asm(stdin): %s", err);
-    return 0;
+#if defined(_WIN32)
+  remove(path);  // Windows remplace pas atomiquement toujours
+#endif
+  if (rename(tmp, path) != 0) {
+    perror("rename");
+    remove(tmp);
+    return -1;
   }
-  return 1;
-}
-
-// ───────────────────────── Module loader ─────────────────────────
-static int module_from_vlbc_buf(const uint8_t *bytes, size_t n,
-                                VL_Module *out) {
-  char err[256];
-  VL_Status st = vl_module_from_buffer(bytes, n, out, err, sizeof(err));
-  if (st != VL_OK) {
-    eprintf_col(want_color(stderr), "undump: %s", err[0] ? err : "error");
-    return 0;
-  }
-  return 1;
-}
-static int module_from_path(const char *path, VL_Module *out) {
-  char err[256];
-  VL_Status st = vl_module_from_file(path, out, err, sizeof(err));
-  if (st != VL_OK) {
-    eprintf_col(want_color(stderr), "undump(%s): %s", path,
-                err[0] ? err : "error");
-    return 0;
-  }
-  return 1;
-}
-
-// ───────────────────────── KSTR fusion ─────────────────────────
-// Map cstr -> new_si, via VL_Table (clé dupliquée)
-static uint32_t add_kstr_dedup(VL_Table *map, char ***out_arr, uint32_t *out_n,
-                               const char *s) {
-  void *v = NULL;
-  if (vl_tab_get_cstr(map, s, &v)) {
-    uintptr_t u = (uintptr_t)v;
-    return (uint32_t)(u - 1u);
-  }
-  // nouveau
-  uint32_t new_si = *out_n;
-  char *dup = (char *)malloc(strlen(s) + 1);
-  if (!dup) dief("OOM kstr");
-  strcpy(dup, s);
-  // étendre tableau
-  char **arr = *out_arr;
-  arr = (char **)realloc(arr, (size_t)(new_si + 1u) * sizeof(char *));
-  if (!arr) dief("OOM kstr arr");
-  arr[new_si] = dup;
-  *out_arr = arr;
-  *out_n = new_si + 1u;
-  vl_tab_put_cstr(map, dup, (void *)(uintptr_t)(new_si + 1u));  // stocke si+1
-  return new_si;
-}
-
-// pour un module, bâtit old->new mapping
-static uint32_t *build_si_map(VL_Table *glob, char ***dst_kstr, uint32_t *dst_n,
-                              const VL_Module *m) {
-  uint32_t *map = (uint32_t *)malloc((size_t)m->kcount * sizeof(uint32_t));
-  if (!map) dief("OOM si map");
-  for (uint32_t i = 0; i < m->kcount; i++) {
-    const char *s = m->kstr[i] ? m->kstr[i] : "";
-    map[i] = add_kstr_dedup(glob, dst_kstr, dst_n, s);
-  }
-  return map;
-}
-
-// ───────────────────────── Patching code ─────────────────────────
-static inline uint32_t rd_u32le(const uint8_t *p) {
-  return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
-         ((uint32_t)p[3] << 24);
-}
-static inline void wr_u32le(uint8_t *p, uint32_t v) {
-  p[0] = (uint8_t)v;
-  p[1] = (uint8_t)(v >> 8);
-  p[2] = (uint8_t)(v >> 16);
-  p[3] = (uint8_t)(v >> 24);
-}
-static inline uint64_t rd_u64le(const uint8_t *p) {
-  uint64_t v = 0;
-  for (int i = 0; i < 8; i++) v |= ((uint64_t)p[i]) << (8 * i);
-  return v;
-}
-
-static size_t insn_size(uint8_t op) {
-  switch (op) {
-    case OP_NOP:
-      return 1;
-    case OP_PUSHI:
-      return 1 + 8;  // u64
-    case OP_PUSHF:
-      return 1 + 8;  // f64
-    case OP_PUSHS:
-      return 1 + 4;  // u32 si
-    case OP_ADD:
-    case OP_SUB:
-    case OP_MUL:
-    case OP_DIV:
-    case OP_EQ:
-    case OP_NEQ:
-    case OP_LT:
-    case OP_GT:
-    case OP_LE:
-    case OP_GE:
-    case OP_PRINT:
-    case OP_POP:
-    case OP_HALT:
-      return 1;
-    case OP_STOREG:
-      return 1 + 4;  // u32 si
-    case OP_LOADG:
-      return 1 + 4;  // u32 si
-    case OP_CALLN:
-      return 1 + 4 + 1;  // u32 si + u8 argc
-    default:
-      return 0;  // inconnu -> invalide
-  }
-}
-
-static int patch_code_kstr(uint8_t *dst, const uint8_t *src, size_t n,
-                           const uint32_t *si_map, uint32_t map_len) {
-  size_t i = 0;
-  while (i < n) {
-    uint8_t op = src[i];
-    size_t sz = insn_size(op);
-    if (sz == 0 || i + sz > n) return 0;  // invalide
-    memcpy(dst + i, src + i, sz);
-    switch (op) {
-      case OP_PUSHS:
-      case OP_STOREG:
-      case OP_LOADG: {
-        uint32_t old = rd_u32le(src + i + 1);
-        if (old >= map_len) return 0;
-        uint32_t neu = si_map[old];
-        wr_u32le(dst + i + 1, neu);
-      } break;
-      case OP_CALLN: {
-        uint32_t old = rd_u32le(src + i + 1);
-        if (old >= map_len) return 0;
-        uint32_t neu = si_map[old];
-        wr_u32le(dst + i + 1, neu); /* argc byte left as-is */
-      } break;
-      default:
-        break;
-    }
-    i += sz;
-  }
-  return 1;
-}
-
-// ───────────────────────── Linker ─────────────────────────
-typedef struct InMod {
-  VL_Module m;
-  uint8_t *tmp_bc;
-  size_t tmp_bn;
-  char *name;
-  uint32_t *si_map;
-} InMod;
-
-static void free_inmod(InMod *im) {
-  if (!im) return;
-  if (im->si_map) free(im->si_map);
-  if (im->tmp_bc) free(im->tmp_bc);
-  if (im->name) free(im->name);
-  vl_module_free(&im->m);
-  memset(im, 0, sizeof(*im));
-}
-
-static int load_input(const char *path, InMod *out) {
-  memset(out, 0, sizeof(*out));
-  out->name = strdup(path);
-  if (has_ext(path, ".vlbc")) return module_from_path(path, &out->m);
-  if (has_ext(path, ".asm")) {
-    if (!asm_from_path(path, &out->tmp_bc, &out->tmp_bn)) return 0;
-    return module_from_vlbc_buf(out->tmp_bc, out->tmp_bn, &out->m);
-  }
-  eprintf_col(want_color(stderr), "format non supporté: %s", path);
   return 0;
 }
 
-static int link_modules(int n, InMod *imods, const char *out_vlbc,
-                        const char *map_path, const char *disasm_out) {
-  // 1) fusion kstr
-  VL_Table dict;
-  vl_tab_init_cstr(&dict, 256);
-  char **kstr = NULL;
-  uint32_t kcount = 0;
-  for (int i = 0; i < n; i++) {
-    imods[i].si_map = build_si_map(&dict, &kstr, &kcount, &imods[i].m);
+/* ========= CLI ========= */
+
+typedef enum {
+  EMIT_AUTO = 0,
+  EMIT_PP,
+  EMIT_TOKENS,
+  EMIT_AST,
+  EMIT_IR,
+  EMIT_BC,
+  EMIT_ASM,
+  EMIT_OBJ
+} EmitKind;
+
+typedef struct {
+  char** items;
+  size_t count, cap;
+} StrVec;
+
+static void sv_init(StrVec* v) {
+  v->items = NULL;
+  v->count = 0;
+  v->cap = 0;
+}
+static void sv_push(StrVec* v, const char* s) {
+  if (v->count == v->cap) {
+    v->cap = v->cap ? v->cap * 2 : 8;
+    v->items = (char**)realloc(v->items, v->cap * sizeof(char*));
+    if (!v->items) {
+      perror("realloc");
+      exit(1);
+    }
   }
+  v->items[v->count++] = xstrdup(s);
+}
+static void sv_free(StrVec* v) {
+  for (size_t i = 0; i < v->count; i++) free(v->items[i]);
+  free(v->items);
+}
 
-  // 2) taille code total
-  size_t total_code = 0;
-  for (int i = 0; i < n; i++) {
-    total_code += imods[i].m.code_len;
+typedef struct {
+  // Frontend
+  EmitKind emit;
+  int opt_level;        // 0..3
+  int compress;         // 0 none, 1 zstd
+  int pretty;           // pretty-print dumps
+  int color;            // 0|1|auto(2) — ici 0/1
+  int json_diag;        // JSON diagnostics
+  int werror;           // warnings as error
+  int debug;            // -g
+  int wall;             // -Wall equivalent
+  int time_passes;      // --time-passes
+  int preprocess_only;  // -E
+  int compile_only;     // -c
+  int assemble_only;    // -S
+  int pic, pie;
+  int sanitize_addr, sanitize_ub;
+
+  const char* output;   // -o
+  const char* target;   // --target
+  const char* sysroot;  // --sysroot
+
+  StrVec include_dirs;  // -I
+  StrVec lib_dirs;      // -L
+  StrVec libs;          // -l
+  StrVec inputs;        // fichiers en entrée
+
+  // Dépendances
+  int gen_deps;            // -MMD
+  const char* dep_file;    // -MF
+  const char* dep_target;  // -MT
+
+  // Toolchain externe
+  const char* cc;       // --cc
+  const char* ld;       // --ld
+  const char* as_path;  // --as
+  const char* ar_path;  // --ar
+} Options;
+
+static void options_init(Options* o) {
+  memset(o, 0, sizeof(*o));
+  o->emit = EMIT_AUTO;
+  o->opt_level = 2;
+  o->color = 1;
+  sv_init(&o->include_dirs);
+  sv_init(&o->lib_dirs);
+  sv_init(&o->libs);
+  sv_init(&o->inputs);
+}
+
+static void options_free(Options* o) {
+  sv_free(&o->include_dirs);
+  sv_free(&o->lib_dirs);
+  sv_free(&o->libs);
+  sv_free(&o->inputs);
+}
+
+static void usage(FILE* out) {
+  fprintf(out,
+          "Usage: vitlc [options] file1.vitl [file2.vitl ...]\n"
+          "  -o <file>               Spécifie le fichier de sortie\n"
+          "  -c / -S / -E            Compile-only / Assemble-only / "
+          "Preprocess-only\n"
+          "  --emit=<kind>           kind = pp|tokens|ast|ir|bc|asm|obj\n"
+          "  -O0..-O3                Niveau d'optimisation\n"
+          "  -g                      Infos debug\n"
+          "  -Wall -Werror           Avertissements, erreurs fatales\n"
+          "  --color[=0|1]           Couleurs diagnostics\n"
+          "  --json-diagnostics      Diagnostics en JSON\n"
+          "  --time-passes           Chronométrer les passes\n"
+          "  -I <dir>                Inclure\n"
+          "  -L <dir> -l <name>      Liens\n"
+          "  --target <triple>       Triplet cible\n"
+          "  --sysroot <path>        Sysroot\n"
+          "  -MMD -MF <file> [-MT t] Générer dépendances Make\n"
+          "  --cc/--ld/--as/--ar     Outils externes\n"
+          "  --compress=zstd         Compression BC (si supportée)\n"
+          "  @rspfile                Lire options depuis un fichier\n");
+}
+
+/* Expand @response files into argv vector */
+static int is_space(int c) {
+  return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' ||
+         c == '\v';
+}
+static void expand_response(StrVec* out, int argc, char** argv) {
+  for (int i = 0; i < argc; i++) {
+    const char* a = argv[i];
+    if (a[0] == '@' && a[1]) {
+      FILE* f = fopen(a + 1, "rb");
+      if (!f) {
+        perror("open @file");
+        exit(1);
+      }
+      fseek(f, 0, SEEK_END);
+      long n = ftell(f);
+      fseek(f, 0, SEEK_SET);
+      char* buf = (char*)xmalloc((size_t)n + 1);
+      fread(buf, 1, (size_t)n, f);
+      buf[n] = 0;
+      fclose(f);
+      // simple tokenizer: whitespace separated, supports quotes
+      char* p = buf;
+      while (*p) {
+        while (is_space(*p)) p++;
+        if (!*p) break;
+        char* start = p;
+        int inq = 0;
+        StrVec tmp;
+        sv_init(&tmp);
+        char tok[4096];
+        size_t tlen = 0;
+        while (*p) {
+          if (*p == '"') {
+            inq = !inq;
+            p++;
+            continue;
+          }
+          if (!inq && is_space(*p)) break;
+          if (tlen + 1 < sizeof(tok)) tok[tlen++] = *p;
+          p++;
+        }
+        tok[tlen] = '\0';
+        sv_push(out, tok);
+        if (*p) p++;
+        sv_free(&tmp);
+      }
+      free(buf);
+    } else {
+      sv_push(out, a);
+    }
   }
+}
 
-  // 3) patch + concat code
-  uint8_t *code = (uint8_t *)malloc(total_code ? total_code : 1);
-  if (!code) dief("OOM code");
-  size_t off = 0;
-  for (int i = 0; i < n; i++) {
-    if (!patch_code_kstr(code + off, imods[i].m.code, imods[i].m.code_len,
-                         imods[i].si_map, imods[i].m.kcount))
-      dief("patch échec dans %s", imods[i].name);
-    off += imods[i].m.code_len;
+/* Parse CLI simple, sans getopt-long pour portabilité minimale */
+static int starts_with(const char* s, const char* p) {
+  return strncmp(s, p, strlen(p)) == 0;
+}
+
+static int parse_args(Options* o, int argc, char** argv) {
+  StrVec v;
+  sv_init(&v);
+  expand_response(&v, argc, argv);
+  int i = 1;
+  while (i < (int)v.count) {
+    const char* a = v.items[i];
+    if (strcmp(a, "-h") == 0 || strcmp(a, "--help") == 0) {
+      usage(stdout);
+      options_free(o);
+      sv_free(&v);
+      exit(0);
+    } else if (strcmp(a, "-o") == 0 && i + 1 < (int)v.count) {
+      o->output = v.items[++i];
+    } else if (strcmp(a, "-c") == 0) {
+      o->compile_only = 1;
+    } else if (strcmp(a, "-S") == 0) {
+      o->assemble_only = 1;
+    } else if (strcmp(a, "-E") == 0) {
+      o->preprocess_only = 1;
+      o->emit = EMIT_PP;
+    } else if (starts_with(a, "--emit=")) {
+      const char* k = a + 7;
+      if (strcmp(k, "pp") == 0)
+        o->emit = EMIT_PP;
+      else if (strcmp(k, "tokens") == 0)
+        o->emit = EMIT_TOKENS;
+      else if (strcmp(k, "ast") == 0)
+        o->emit = EMIT_AST;
+      else if (strcmp(k, "ir") == 0)
+        o->emit = EMIT_IR;
+      else if (strcmp(k, "bc") == 0)
+        o->emit = EMIT_BC;
+      else if (strcmp(k, "asm") == 0)
+        o->emit = EMIT_ASM;
+      else if (strcmp(k, "obj") == 0)
+        o->emit = EMIT_OBJ;
+      else {
+        fprintf(stderr, "unknown --emit=%s\n", k);
+        return -1;
+      }
+    } else if (strcmp(a, "-g") == 0) {
+      o->debug = 1;
+    } else if (strcmp(a, "-Wall") == 0) {
+      o->wall = 1;
+    } else if (strcmp(a, "-Werror") == 0) {
+      o->werror = 1;
+    } else if (starts_with(a, "-O")) {
+      int lvl = a[2] ? atoi(a + 2) : 2;
+      if (lvl < 0 || lvl > 3) {
+        fprintf(stderr, "invalid %s\n", a);
+        return -1;
+      }
+      o->opt_level = lvl;
+    } else if (starts_with(a, "--color")) {
+      const char* eq = strchr(a, '=');
+      o->color = eq ? atoi(eq + 1) : 1;
+    } else if (strcmp(a, "--json-diagnostics") == 0) {
+      o->json_diag = 1;
+    } else if (strcmp(a, "--time-passes") == 0) {
+      o->time_passes = 1;
+    } else if (strcmp(a, "-I") == 0 && i + 1 < (int)v.count) {
+      sv_push(&o->include_dirs, v.items[++i]);
+    } else if (strcmp(a, "-L") == 0 && i + 1 < (int)v.count) {
+      sv_push(&o->lib_dirs, v.items[++i]);
+    } else if (strcmp(a, "-l") == 0 && i + 1 < (int)v.count) {
+      sv_push(&o->libs, v.items[++i]);
+    } else if (strcmp(a, "--target") == 0 && i + 1 < (int)v.count) {
+      o->target = v.items[++i];
+    } else if (strcmp(a, "--sysroot") == 0 && i + 1 < (int)v.count) {
+      o->sysroot = v.items[++i];
+    } else if (strcmp(a, "-MMD") == 0) {
+      o->gen_deps = 1;
+    } else if (strcmp(a, "-MF") == 0 && i + 1 < (int)v.count) {
+      o->dep_file = v.items[++i];
+    } else if (strcmp(a, "-MT") == 0 && i + 1 < (int)v.count) {
+      o->dep_target = v.items[++i];
+    } else if (strcmp(a, "--cc") == 0 && i + 1 < (int)v.count) {
+      o->cc = v.items[++i];
+    } else if (strcmp(a, "--ld") == 0 && i + 1 < (int)v.count) {
+      o->ld = v.items[++i];
+    } else if (strcmp(a, "--as") == 0 && i + 1 < (int)v.count) {
+      o->as_path = v.items[++i];
+    } else if (strcmp(a, "--ar") == 0 && i + 1 < (int)v.count) {
+      o->ar_path = v.items[++i];
+    } else if (strcmp(a, "--compress=zstd") == 0) {
+      o->compress = 1;
+    } else if (a[0] == '-' && a[1]) {
+      fprintf(stderr, "Unknown option: %s\n", a);
+      sv_free(&v);
+      return -1;
+    } else {
+      sv_push(&o->inputs, a);
+    }
+    i++;
   }
-
-  // 4) validation structurelle
-  if (vl_validate_code(code, (uint32_t)total_code, kcount) != VL_OK)
-    dief("bytecode final invalide");
-
-  // 5) écrire VLBC
-  VL_Writer w;
-  if (!vl_w_init_file(&w, out_vlbc ? out_vlbc : "a.vlbc")) dief("open sortie");
-  // magic + version
-  vl_w_write(&w, VLBC_MAGIC, 4);
-  vl_w_u8(&w, (uint8_t)VLBC_VERSION);
-  // kcount
-  vl_w_u32le(&w, kcount);
-  for (uint32_t i = 0; i; kcount && i < kcount; i++) {
-  }  // keep compiler quiet if unused
-  for (uint32_t i = 0; i < kcount; i++) {
-    uint32_t L = (uint32_t)strlen(kstr[i]);
-    vl_w_u32le(&w, L);
-    vl_w_write(&w, kstr[i], L);
+  if (o->inputs.count == 0) {
+    fprintf(stderr, "No input files\n");
+    sv_free(&v);
+    return -1;
   }
-  // code
-  vl_w_u32le(&w, (uint32_t)total_code);
-  vl_w_write(&w, code, total_code);
-  vl_w_close(&w);
+  sv_free(&v);
+  return 0;
+}
 
-  // 6) map optionnelle
-  if (map_path) {
-    FILE *fp = fopen(map_path, "wb");
-    if (!fp) dief("open map");
-    fprintf(fp, "# vitte-light link map\n");
-    for (int i = 0; i < n; i++) {
-      fprintf(fp, "[%s]\n", imods[i].name);
-      for (uint32_t si = 0; si < imods[i].m.kcount; si++) {
-        fprintf(fp, "  %u -> %u\n", si, imods[i].si_map[si]);
+/* ========= Dépendances (Make) ========= */
+
+static int write_deps(const Options* o, const char* src, const char** deps,
+                      size_t ndeps) {
+  if (!o->gen_deps) return 0;
+  const char* out = o->dep_file ? o->dep_file : "deps.d";
+  const char* tgt =
+      o->dep_target ? o->dep_target : (o->output ? o->output : "a.out");
+  mkdirs_for_file(out);
+  FILE* f = fopen(out, "wb");
+  if (!f) {
+    perror("open depfile");
+    return -1;
+  }
+  fprintf(f, "%s:", tgt);
+  // source est aussi une dépendance
+  fprintf(f, " %s", src ? src : "-");
+  for (size_t i = 0; i < ndeps; i++) fprintf(f, " %s", deps[i]);
+  fputc('\n', f);
+  fclose(f);
+  return 0;
+}
+
+/* ========= Pipeline d’un fichier ========= */
+
+typedef struct {
+  VL_Tokens* toks;
+  VL_Ast* ast;
+  VL_Module* mod;
+  VL_Ir* ir;
+  VL_Bytecode* bc;
+} Units;
+
+static void units_clear(Units* u) {
+  if (u->bc) {
+    vl_bc_free(u->bc);
+    u->bc = NULL;
+  }
+  if (u->ir) {
+    vl_ir_free(u->ir);
+    u->ir = NULL;
+  }
+  if (u->mod) {
+    vl_module_free(u->mod);
+    u->mod = NULL;
+  }
+  if (u->ast) {
+    vl_ast_free(u->ast);
+    u->ast = NULL;
+  }
+  if (u->toks) {
+    vl_tokens_free(u->toks);
+    u->toks = NULL;
+  }
+}
+
+static int preprocess_to(FILE* out, const char* in_path, const Options* o,
+                         VL_DiagSink* d) {
+  if (vl_preprocess_file) {
+    const char** inc = (const char**)o->include_dirs.items;
+    return vl_preprocess_file(in_path, inc, o->include_dirs.count, out, d);
+  }
+  // fallback: passer la source telle quelle
+  FILE* in = in_path && strcmp(in_path, "-") ? fopen(in_path, "rb") : stdin;
+  if (!in) {
+    perror("open input");
+    return -1;
+  }
+  char buf[8192];
+  size_t n;
+  while ((n = fread(buf, 1, sizeof(buf), in)) > 0)
+    if (fwrite(buf, 1, n, out) != n) {
+      perror("write");
+      return -1;
+    }
+  if (in != stdin) fclose(in);
+  return 0;
+}
+
+static int compile_single(const Options* o, const char* input_path,
+                          const char* out_path_or_null, VL_DiagSink* d) {
+  Units u = {0};
+  double t0 = now_seconds();
+  int rc;
+
+  /* Préprocess */
+  if (o->emit == EMIT_PP || o->preprocess_only) {
+    FILE* out = stdout;
+    if (out_path_or_null && strcmp(out_path_or_null, "-") != 0) {
+      mkdirs_for_file(out_path_or_null);
+      out = fopen(out_path_or_null, "wb");
+      if (!out) {
+        perror("open out");
+        return -1;
       }
     }
-    fclose(fp);
+    rc = preprocess_to(out, input_path, o, d);
+    if (out != stdout) fclose(out);
+    if (o->time_passes)
+      fprintf(stderr, "[time] preprocess: %.3fs\n", now_seconds() - t0);
+    return rc;
   }
 
-  // 7) disasm optionnelle
-  if (disasm_out) {
-    FILE *fp = fopen(disasm_out, "wb");
-    if (!fp) dief("open disasm");  // utiliser désassembleur en mémoire
-    // Fake module pour réutiliser vl_module_disasm
-    VL_Module tmp;
-    memset(&tmp, 0, sizeof(tmp));
-    tmp.kstr = kstr;
-    tmp.kcount = kcount;
-    tmp.code = code;
-    tmp.code_len = (uint32_t)total_code;
-    vl_disasm_program(tmp.code, tmp.code_len, fp);
-    fclose(fp);
+  /* Lex */
+  double t_lex = now_seconds();
+  rc = vl_lex_source(input_path, NULL, &u.toks, d);
+  if (rc != 0) {
+    units_clear(&u);
+    return rc;
+  }
+  if (o->wall) { /* core fera déjà les warns contextuels */
+  }
+  if (o->emit == EMIT_TOKENS) {
+    vl_dump_tokens(u.toks, stdout);
+    units_clear(&u);
+    if (o->time_passes)
+      fprintf(stderr, "[time] lex: %.3fs\n", now_seconds() - t_lex);
+    return 0;
+  }
+  if (o->time_passes)
+    fprintf(stderr, "[time] lex: %.3fs\n", now_seconds() - t_lex);
+
+  /* Parse */
+  double t_parse = now_seconds();
+  rc = vl_parse(u.toks, &u.ast, d);
+  if (rc != 0) {
+    units_clear(&u);
+    return rc;
+  }
+  if (o->emit == EMIT_AST) {
+    vl_dump_ast(u.ast, stdout, o->pretty);
+    units_clear(&u);
+    if (o->time_passes)
+      fprintf(stderr, "[time] parse: %.3fs\n", now_seconds() - t_parse);
+    return 0;
+  }
+  if (o->time_passes)
+    fprintf(stderr, "[time] parse: %.3fs\n", now_seconds() - t_parse);
+
+  /* Sema */
+  double t_sema = now_seconds();
+  rc = vl_sema(u.ast, &u.mod, d);
+  if (rc != 0) {
+    units_clear(&u);
+    return rc;
+  }
+  if (o->time_passes)
+    fprintf(stderr, "[time] sema: %.3fs\n", now_seconds() - t_sema);
+
+  /* IR */
+  double t_ir = now_seconds();
+  rc = vl_ir_build(u.mod, &u.ir, d);
+  if (rc != 0) {
+    units_clear(&u);
+    return rc;
+  }
+  if (o->emit == EMIT_IR) {
+    vl_dump_ir(u.ir, stdout, o->pretty);
+    units_clear(&u);
+    if (o->time_passes)
+      fprintf(stderr, "[time] ir: %.3fs\n", now_seconds() - t_ir);
+    return 0;
+  }
+  if (o->time_passes)
+    fprintf(stderr, "[time] ir: %.3fs\n", now_seconds() - t_ir);
+
+  /* Bytecode */
+  double t_bc = now_seconds();
+  rc = vl_bc_emit(u.ir, &u.bc, d, o->opt_level, o->compress);
+  if (rc != 0) {
+    units_clear(&u);
+    return rc;
+  }
+  if (o->time_passes)
+    fprintf(stderr, "[time] bc: %.3fs\n", now_seconds() - t_bc);
+
+  /* Écriture BC ou poursuite toolchain */
+  int out_kind = (o->emit == EMIT_AUTO) ? EMIT_BC : o->emit;
+  if (out_kind == EMIT_BC || o->compile_only || o->assemble_only) {
+    const char* outp = out_path_or_null;
+    char buf[1024];
+    if (!outp) {
+      // déduire .vitbc
+      const char* in = input_path ? input_path : "stdin";
+      const char* dot = strrchr(in, '.');
+      size_t len = dot ? (size_t)(dot - in) : strlen(in);
+      if (len > sizeof(buf) - 8) len = sizeof(buf) - 8;
+      memcpy(buf, in, len);
+      buf[len] = 0;
+      strcat(buf, ".vitbc");
+      outp = buf;
+    }
+    mkdirs_for_file(outp);
+    rc = vl_bc_write_file(u.bc, outp, d);
+    units_clear(&u);
+    return rc;
   }
 
-  // 8) free
-  for (uint32_t i = 0; i < kcount; i++) free(kstr[i]);
-  free(kstr);
-  free(code);
-  vl_tab_release(&dict);
-  return 1;
+  // Si --emit=obj|asm ou link final, ici on supposerait des backends natifs.
+  // Par défaut non implémenté dans ce driver: on stoppe avec erreur claire.
+  vl_diag_error(d, input_path ? input_path : "-", 0, 0, "E_BACKEND",
+                "native backend (--emit=%s) not linked in this build",
+                (out_kind == EMIT_OBJ ? "obj" : "asm"));
+  units_clear(&u);
+  return -2;
 }
 
-// ───────────────────────── Commands ─────────────────────────
-static int cmd_compile(int argc, char **argv) {
-  if (argc < 2) {
-    fprintf(stderr, "compile: besoin d'un fichier .asm ou '-'\n");
-    return 2;
-  }
-  const char *in = argv[1];
-  const char *out = NULL;
-  for (int i = 2; i < argc; i++) {
-    if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
-      out = argv[++i];
-    }
-  }
-  uint8_t *bytes = NULL;
-  size_t n = 0;
-  int ok = 0;
-  if (strcmp(in, "-") == 0) {
-    char *src = slurp_stdin(&n);
-    if (!src) dief("lecture stdin");
-    ok = asm_from_string(src, &bytes, &n);
-    free(src);
-  } else {
-    ok = asm_from_path(in, &bytes, &n);
-  }
-  if (!ok) return 1;
-  if (!out) out = "a.vlbc";
-  if (!write_all(out, bytes, n)) dief("écriture: %s", out);
-  free(bytes);
-  return 0;
+/* ========= Link simple multi-BC (placeholder) ========= */
+
+static int link_simple_exe(const Options* o, VL_DiagSink* d) {
+  // Stratégie minimale:
+  // - Si on n’a que des .vitbc, et aucun backend natif, on peut empaqueter
+  //   un "bundle" ou produire un .vitpkg. Ici, on refuse si pas backend.
+  (void)o;
+  (void)d;
+  fprintf(stderr, "linker: no native backend available in this build\n");
+  return -2;
 }
 
-static int cmd_inspect(int argc, char **argv) {
-  if (argc < 2) dief("inspect: besoin d'un .vlbc");
-  int do_str = 0, do_hex = 0;
-  for (int i = 2; i < argc; i++) {
-    if (strcmp(argv[i], "--strings") == 0)
-      do_str = 1;
-    else if (strcmp(argv[i], "--hexdump") == 0)
-      do_hex = 1;
-  }
-  VL_Module m;
-  if (!module_from_path(argv[1], &m)) return 1;
-  printf("VLBC: kstr=%u code=%u bytes\n", m.kcount, m.code_len);
-  if (do_str) {
-    for (uint32_t i = 0; i < m.kcount; i++) {
-      printf("[%u] %s\n", i, m.kstr[i] ? m.kstr[i] : "");
-    }
-  }
-  if (do_hex) {
-    vl_hexdump(m.code, m.code_len, 0, stdout);
-  }
-  vl_module_free(&m);
-  return 0;
-}
+/* ========= main ========= */
 
-static int cmd_link(int argc, char **argv) {
-  if (argc < 2) {
-    fprintf(stderr, "link: besoin d'au moins un fichier .vlbc/.asm\n");
+int main(int argc, char** argv) {
+  Options opt;
+  options_init(&opt);
+  if (parse_args(&opt, argc, argv) != 0) {
+    usage(stderr);
+    options_free(&opt);
     return 2;
   }
-  const char *out = "a.vlbc";
-  const char *map = NULL;
-  const char *disasm_out = NULL;
-  int n_inputs = 0;
-  for (int i = 1; i < argc; i++) {
-    if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
-      out = argv[++i];
-    } else if (strcmp(argv[i], "--map") == 0 && i + 1 < argc) {
-      map = argv[++i];
-    } else if (strcmp(argv[i], "--disasm") == 0 && i + 1 < argc) {
-      disasm_out = argv[++i];
-    } else if (argv[i][0] == '-') {
-      fprintf(stderr, "link: option inconnue: %s\n", argv[i]);
-      return 2;
-    } else
-      n_inputs++;
-  }
-  if (n_inputs == 0) {
-    fprintf(stderr, "link: aucun input\n");
+
+  VL_DiagSink* diag = vl_diag_create(stderr, opt.color, opt.json_diag);
+  if (!diag) {
+    fprintf(stderr, "diag init failed\n");
+    options_free(&opt);
     return 2;
   }
-  InMod *arr = (InMod *)calloc((size_t)n_inputs, sizeof(InMod));
-  if (!arr) dief("OOM inputs");
-  int k = 0;
-  for (int i = 1; i < argc; i++) {
-    if (argv[i][0] == '-') {
-      if (strcmp(argv[i], "-o") == 0 || strcmp(argv[i], "--map") == 0 ||
-          strcmp(argv[i], "--disasm") == 0)
-        i++;
-      continue;
-    }
-    if (!load_input(argv[i], &arr[k])) {
-      while (k >= 0) {
-        free_inmod(&arr[k]);
-        k--;
+
+  double t_all = now_seconds();
+  int global_rc = 0;
+
+  // Cas multi-fichiers
+  if (opt.inputs.count > 1 && !opt.preprocess_only) {
+    // Si pas -c/-S et pas --emit explicite non-linkable, tenter link final
+    int needs_link =
+        !(opt.compile_only || opt.assemble_only || opt.emit == EMIT_PP ||
+          opt.emit == EMIT_TOKENS || opt.emit == EMIT_AST ||
+          opt.emit == EMIT_IR || opt.emit == EMIT_BC);
+    // On compile chaque fichier → .vitbc
+    for (size_t i = 0; i < opt.inputs.count; i++) {
+      const char* in = opt.inputs.items[i];
+      char outp[1024];
+      if (opt.output && opt.inputs.count == 1) {
+        snprintf(outp, sizeof(outp), "%s", opt.output);
+      } else {
+        const char* base = in;
+        const char* dot = strrchr(base, '.');
+        size_t len = dot ? (size_t)(dot - base) : strlen(base);
+        if (len > sizeof(outp) - 8) len = sizeof(outp) - 8;
+        memcpy(outp, base, len);
+        outp[len] = 0;
+        strcat(outp, ".vitbc");
       }
-      free(arr);
-      return 1;
+      int rc = compile_single(&opt, in, outp, diag);
+      if (rc != 0) {
+        global_rc = rc;
+        goto done;
+      }
     }
-    k++;
+    if (needs_link) {
+      global_rc = link_simple_exe(&opt, diag);
+      goto done;
+    }
+    goto done;
   }
-  int ok = link_modules(k, arr, out, map, disasm_out);
-  for (int i = 0; i < k; i++) free_inmod(&arr[i]);
-  free(arr);
-  return ok ? 0 : 1;
-}
 
-int main(int argc, char **argv) {
-  if (argc < 2) {
-    usage(stdout);
-    return 0;
+  // Cas standard: un seul fichier
+  {
+    const char* in = opt.inputs.items[0];
+    const char* outp = opt.output;
+    int rc = compile_single(&opt, in, outp, diag);
+    global_rc = rc;
   }
-  const char *cmd = argv[1];
-  if (strcmp(cmd, "help") == 0 || strcmp(cmd, "--help") == 0 ||
-      strcmp(cmd, "-h") == 0) {
-    usage(stdout);
-    return 0;
-  }
-  if (strcmp(cmd, "version") == 0 || strcmp(cmd, "--version") == 0) {
-    printf("vitlc %s\n", VITLC_VERSION);
-    return 0;
-  }
-  if (strcmp(cmd, "compile") == 0) return cmd_compile(argc - 1, argv + 1);
-  if (strcmp(cmd, "link") == 0 || strcmp(cmd, "build") == 0)
-    return cmd_link(argc - 1, argv + 1);
-  if (strcmp(cmd, "inspect") == 0) return cmd_inspect(argc - 1, argv + 1);
-  // compat: sans commande explicite, tenter link sur les restes
-  return cmd_link(argc - 1, argv + 1);
-}
+
+done:
+  if (opt.time_passes
