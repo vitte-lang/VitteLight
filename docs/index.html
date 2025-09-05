@@ -344,37 +344,138 @@ vitl test
     </section>
 
     <hr />
+<!-- 3) SYNTAXE -->
+<section id="syntaxe">
+  <h2>3) Syntaxe : découverte progressive</h2>
 
-    <!-- 3) SYNTAXE -->
-    <section id="syntaxe">
-      <h2>3) Syntaxe : découverte progressive</h2>
-      <div class="callout info"><h4>Idées clés</h4>
-        <ul>
-          <li>Variables <em>immuables</em> par défaut ; utilisez <code>mut</code> si nécessaire.</li>
-          <li>Les erreurs se gèrent avec <code>Result</code> et l’opérateur <code>?</code>.</li>
-          <li><code>match</code> force à traiter tous les cas → moins de surprises.</li>
-        </ul>
-      </div>
-<pre><code>// Variables
-const PI: f64 = 3.14159
-let mut compteur: i32 = 0
-let message = "Salut"
+  <div class="callout info">
+    <h4>Pour les débutants (d’abord l’intuition)</h4>
+    <p>Un programme VITL est une suite d’instructions lues de haut en bas. Vous donnez des
+    <em>noms</em> à des valeurs (variables), vous <em>définissez</em> des fonctions (recettes réutilisables),
+    vous <em>contrôlez</em> l’ordre d’exécution (si/alors, boucles), et vous <em>gérez</em> les erreurs
+    proprement (<code>Result</code> et <code>?</code>).</p>
+    <ul>
+      <li>Variables <strong>immuables</strong> par défaut ; ajoutez <code>mut</code> si la valeur doit changer.</li>
+      <li>Les erreurs se gèrent avec <code>Result</code> (succès/échec) et se <em>propage</em> avec <code>?</code>.</li>
+      <li><code>match</code> oblige à traiter tous les cas possibles (moins de “surprises”).</li>
+      <li>Un fichier = un module : <code>src/util/str.vitl</code> → <code>module util.str</code>.</li>
+      <li>Deux types de chaînes : <code>str</code> (vue immuable, légère) vs <code>String</code> (possédée, mutable).</li>
+    </ul>
+  </div>
 
-// Fonctions
-fn add(a: i32, b: i32) -&gt; i32 { return a + b }
+  <h3>3.0 Votre premier “mini-lab” (2 minutes)</h3>
+  <ol>
+    <li>Créez <code>src/play.vitl</code> avec le contenu ci-dessous.</li>
+    <li>Lancez <code>vitl run src/play.vitl</code> et observez la sortie.</li>
+  </ol>
+<pre><code>module app.play
+import std.io
 
-// Contrôle
-for i in 0..=3 { println(i.to_string()) }
+fn main() -&gt; i32 {
+  let msg = "Bonjour"        // immuable
+  let mut n = 1              // mutable
+  n = n + 1
+  io::println(msg + " n=" + n.to_string())
+  return 0
+}
+// Sortie attendue : Bonjour n=2
+</code></pre>
 
-// Pattern matching
-match valeur {
-  0 =&gt; println("zéro"),
-  _ =&gt; println("autre"),
+  <h3>3.1 Commentaires &amp; documentation</h3>
+  <p>Les commentaires expliquent <em>pourquoi</em> (pas juste “ce que ça fait”). Les “doc-comments”
+  (<code>///</code>) apparaissent dans <code>vitl doc</code>.</p>
+<pre><code>// Ligne unique
+/* Bloc multi-lignes */
+
+/// Additionne deux entiers (sans débordement contrôlé)
+fn add(a:i32, b:i32) -&gt; i32 { return a + b }
+</code></pre>
+
+  <h3>3.2 Nommage lisible (conseils débutant)</h3>
+  <ul>
+    <li>Variables/fonctions en <code>snake_case</code>, types en <code>CamelCase</code>.</li>
+    <li>Un bon nom évite les commentaires inutiles : préférez <code>max_retries</code> à <code>mr</code>.</li>
+  </ul>
+<pre><code>let user_name = "Alice"
+struct Point2D { x:f64, y:f64 }
+</code></pre>
+
+  <h3>3.3 Types de base &amp; littéraux</h3>
+  <p>Pas besoin de tout retenir : l’éditeur et les messages d’erreur guident.</p>
+  <ul>
+    <li>Entiers : <code>i32</code>, <code>i64</code> (ex. <code>42</code>, <code>0xFF</code>, <code>0b1010</code>)</li>
+    <li>Flottants : <code>f64</code> (ex. <code>3.14</code>, <code>2.0e-3</code>)</li>
+    <li>Booléens : <code>true</code>, <code>false</code></li>
+    <li>Caractères : <code>'a'</code>, <code>'\n'</code></li>
+    <li>Chaînes UTF-8 : <code>"..."</code> ou brutes <code>r"..."</code></li>
+  </ul>
+<pre><code>const PI:f64 = 3.14159
+let ok:bool = true
+let hex:i32 = 0xCAFE
+</code></pre>
+
+  <h3>3.4 Variables, constantes, mutabilité</h3>
+  <p>Immuable par défaut = code plus sûr. Ajoutez <code>mut</code> uniquement où nécessaire.</p>
+<pre><code>const MAX_RETRY:i32 = 3         // constante
+let count:i32 = 0               // variable immuable
+let mut total:f64 = 0.0         // variable mutable
+total = total + 1.5
+
+// Inférence de type quand c'est clair
+let message = "Salut"  // :str (vue immuable)
+</code></pre>
+
+  <h3>3.5 Opérateurs &amp; conversions</h3>
+  <p>VITL évite les conversions implicites “magiques”. Convertissez explicitement avec <code>as</code> (numérique) ou <code>to_string()</code> (texte).</p>
+<pre><code>let n:i32 = 3
+let x:f64 = 0.5
+let y = (n as f64) + x          // cast requis
+
+std.io::println("n=" + n.to_string())  // convertir avant concaténation
+</code></pre>
+
+  <h3>3.6 Chaînes : <code>str</code> vs <code>String</code> (images mentales)</h3>
+  <ul>
+    <li><code>str</code> : “post-it” vers un texte (on ne le modifie pas).</li>
+    <li><code>String</code> : “carnet” qui vous appartient (on peut écrire dedans).</li>
+  </ul>
+<pre><code>let s:str = "abc"
+let mut buf = String::from("abc")
+buf.push("d")            // "abcd"
+std.io::println(buf)
+</code></pre>
+
+  <h3>3.7 Collections, slices &amp; boucles</h3>
+  <p>Les indices sont vérifiés : une erreur claire vaut mieux qu’un crash silencieux.</p>
+<pre><code>let mut v:[i32] = [1,2,3]
+v.push(4)
+for x in &amp;v { std.io::println(x.to_string()) }
+let third = v[2]   // panique si hors bornes → message explicite
+</code></pre>
+
+  <h3>3.8 Contrôle de flux (recettes courantes)</h3>
+<pre><code>// if / else
+if y &gt; 0.0 { std.io::println("positif") } else { std.io::println("non positif") }
+
+// while
+let mut i = 0
+while i &lt; 3 { std.io::println(i.to_string()); i = i + 1 }
+
+// for + intervalles
+for k in 0..3  { std.io::println(k.to_string()) }   // 0,1,2
+for k in 0..=3 { std.io::println(k.to_string()) }   // 0..3 inclus
+
+// break / continue
+for n in 0..10 {
+  if n == 5 { break }
+  if n % 2 == 0 { continue }
+  std.io::println(n.to_string())
 }
 </code></pre>
-    </section>
 
-    <hr />
+  <h3>3.9 Fonctions (penser “boîte noire”)</h3>
+  <p>Une fonction déclare ses
+
 
     <!-- 4) EXEMPLES -->
     <section id="exemples">
@@ -724,4 +825,5 @@ unsafe { _ = puts(msg.unwrap().as_ptr()) }
   </script>
 </body>
 </html>
+
 
