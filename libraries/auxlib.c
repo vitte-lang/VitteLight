@@ -1,396 +1,839 @@
-// vitte-light/libraries/auxlib.c
-// Bibliothèque auxiliaire portable pour outils VitteLight.
-// Logging, chaînes, chemins, fichiers, mkdir -p, aléa, CRC32.
-// Indépendant du runtime VL; n'utilise que la libc. Optionnellement mem.h.
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
-// API (demandez `auxlib.h` si vous voulez un header dédié):
-//   // Logging
-//   enum { VL_LOG_ERROR=0, VL_LOG_WARN=1, VL_LOG_INFO=2, VL_LOG_DEBUG=3 };
-//   void vl_log_set_level(int lvl);      // défaut: INFO
-//   void vl_log_use_color(int on);       // auto si stderr TTY
-//   void vl_logf(int lvl, const char *fmt, ...);
+// auxlib.c — utilitaires portables C17 pour Vitte Light
+// - Journalisation thread-safe (TRACE..FATAL), couleurs ANSI optionnelles
+// - Fichiers: read_all, write_all, mkdirs, exists, is_file, is_dir
+// - Chemins: join, dirname, basename
+// - Chaînes: trim, starts_with, ends_with, replace_all
+// - Parsing: u64/i64, taille avec suffixes (K/M/G/T), booléens
+// - Temps: now_millis, now_nanos, horodatage ISO-8601 local/UTC
+// - CRC32 (IEEE), streaming
+// - RNG: rand_u64, rand_bytes (CSPRNG si possible)
+// - Hexdump
 //
-//   // Chaînes
-//   char *vl_trim_inplace(char *s);      // trim ASCII; retourne s
-//   int   vl_strcasecmp_ascii(const char *a, const char *b); //
-//   case-insensitive size_t vl_strlcpy(char *dst, const char *src, size_t n);
-//   size_t vl_strlcat(char *dst, const char *src, size_t n);
+// Implémentation C17, sans dépendances externes.
+// Plateformes: POSIX et Windows.
 //
-//   // Chemins
-//   int   vl_path_is_abs(const char *p);
-//   int   vl_path_join(char *out, size_t n, const char *a, const char *b);
-//   int   vl_path_dirname(const char *path, char *out, size_t n);
-//   int   vl_path_basename(const char *path, char *out, size_t n);
-//
-//   // Fichiers
-//   int   vl_file_read_all(const char *path, unsigned char **buf, size_t *n);
-//   int   vl_file_write_all(const char *path, const void *data, size_t n);
-//   int   vl_mkdir_p(const char *path);  // crée l'arborescence
-//
-//   // Aléa et CRC
-//   int   vl_rand_bytes(void *buf, size_t n);      // 1 si ok
-//   unsigned long vl_crc32(const void *data, size_t n); // IEEE 802.3
-//
-// Build: cc -std=c99 -O2 -Wall -Wextra -pedantic -c libraries/auxlib.c
+// Correspond à l’en-tête: includes/auxlib.h
 
-#include <ctype.h>
+#include "auxlib.h"
+
 #include <errno.h>
+#include <inttypes.h>
 #include <stdarg.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#ifdef _WIN32
+#include <time.h>
+
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
 #include <direct.h>
+#include <io.h>
+#include <sys/stat.h>
 #include <windows.h>
 #ifndef PATH_MAX
-#define PATH_MAX MAX_PATH
+#define PATH_MAX 260
 #endif
-#define VL_PATH_SEP1 '\\'
-#define VL_PATH_SEP2 '/'
 #else
+#include <dirent.h>
+#include <fcntl.h>
 #include <limits.h>
+#include <pthread.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
-#define VL_PATH_SEP1 '/'
-#define VL_PATH_SEP2 '/'
 #endif
 
-// ───────────────────────── Logging ─────────────────────────
-static int g_log_level = 2;   // INFO
-static int g_log_color = -1;  // -1 => auto
+// ============================================================
+// Configuration et état global minimal
+// ============================================================
 
-static int isatty_stderr(void) {
-#ifdef _WIN32
-  DWORD mode;
-  HANDLE h = GetStdHandle(STD_ERROR_HANDLE);
-  return h && GetConsoleMode(h, &mode);
+#ifndef AUX_ARRAY_LEN
+#define AUX_ARRAY_LEN(x) ((int)(sizeof(x) / sizeof((x)[0])))
+#endif
+
+typedef struct AuxLogState {
+  FILE *sink;
+  AuxLogLevel level;
+  bool use_color;
+#if defined(_WIN32)
+  CRITICAL_SECTION mtx;
+  bool init;
 #else
-  return isatty(2);
+  pthread_mutex_t mtx;
+  bool init;
+#endif
+} AuxLogState;
+
+static AuxLogState g_log = {0};
+
+static inline void aux_mtx_init_once(void) {
+  if (g_log.init) return;
+#if defined(_WIN32)
+  InitializeCriticalSection(&g_log.mtx);
+#else
+  pthread_mutex_init(&g_log.mtx, NULL);
+#endif
+  g_log.init = true;
+}
+
+static inline void aux_mtx_lock(void) {
+  aux_mtx_init_once();
+#if defined(_WIN32)
+  EnterCriticalSection(&g_log.mtx);
+#else
+  pthread_mutex_lock(&g_log.mtx);
 #endif
 }
 
-void vl_log_set_level(int lvl) {
-  if (lvl < 0) lvl = 0;
-  if (lvl > 3) lvl = 3;
-  g_log_level = lvl;
-}
-void vl_log_use_color(int on) { g_log_color = on ? 1 : 0; }
-
-static const char *lvl_name(int lvl) {
-  switch (lvl) {
-    case 0:
-      return "ERROR";
-    case 1:
-      return "WARN";
-    case 2:
-      return "INFO";
-    default:
-      return "DEBUG";
-  }
-}
-static const char *lvl_ansi(int lvl) {
-  switch (lvl) {
-    case 0:
-      return "\x1b[31m";
-    case 1:
-      return "\x1b[33m";
-    case 2:
-      return "\x1b[36m";
-    default:
-      return "\x1b[90m";
-  }
+static inline void aux_mtx_unlock(void) {
+#if defined(_WIN32)
+  LeaveCriticalSection(&g_log.mtx);
+#else
+  pthread_mutex_unlock(&g_log.mtx);
+#endif
 }
 
-void vl_logf(int lvl, const char *fmt, ...) {
-  if (lvl > g_log_level) return;
-  int color = (g_log_color == 1) || (g_log_color < 0 && isatty_stderr());
-  if (color) fputs(lvl_ansi(lvl), stderr);
-  fprintf(stderr, "[%s] ", lvl_name(lvl));
+// ============================================================
+// Journalisation
+// ============================================================
+
+static const char *s_level_str[AUX_LOG_COUNT] = {"TRACE", "DEBUG", "INFO",
+                                                 "WARN",  "ERROR", "FATAL"};
+
+static const char *s_level_color[AUX_LOG_COUNT] = {
+    "\x1b[90m",  // TRACE - bright black
+    "\x1b[36m",  // DEBUG - cyan
+    "\x1b[32m",  // INFO  - green
+    "\x1b[33m",  // WARN  - yellow
+    "\x1b[31m",  // ERROR - red
+    "\x1b[35m",  // FATAL - magenta
+};
+
+static inline bool aux_is_tty(FILE *f) {
+#if defined(_WIN32)
+  return _isatty(_fileno(f)) != 0;
+#else
+  return isatty(fileno(f)) != 0;
+#endif
+}
+
+void aux_log_init(FILE *sink, AuxLogLevel level, bool color) {
+  aux_mtx_init_once();
+  aux_mtx_lock();
+  g_log.sink = sink ? sink : stderr;
+  g_log.level = level;
+  g_log.use_color = color && aux_is_tty(g_log.sink);
+  aux_mtx_unlock();
+}
+
+void aux_log_set_level(AuxLogLevel level) {
+  aux_mtx_lock();
+  g_log.level = level;
+  aux_mtx_unlock();
+}
+
+void aux_log_enable_color(bool on) {
+  aux_mtx_lock();
+  g_log.use_color = on && aux_is_tty(g_log.sink);
+  aux_mtx_unlock();
+}
+
+void aux_log_set_sink(FILE *sink) {
+  aux_mtx_lock();
+  g_log.sink = sink ? sink : stderr;
+  aux_mtx_unlock();
+}
+
+static void aux_format_time_iso(char *buf, size_t n, bool utc) {
+  struct timespec ts;
+#if defined(_WIN32)
+  timespec_get(&ts, TIME_UTC);
+#else
+  clock_gettime(CLOCK_REALTIME, &ts);
+#endif
+  time_t t = (time_t)ts.tv_sec;
+  struct tm tmv;
+  if (utc) {
+#if defined(_WIN32)
+    gmtime_s(&tmv, &t);
+#else
+    gmtime_r(&t, &tmv);
+#endif
+  } else {
+#if defined(_WIN32)
+    localtime_s(&tmv, &t);
+#else
+    localtime_r(&t, &tmv);
+#endif
+  }
+  // YYYY-MM-DDThh:mm:ss.mmmZ
+  int ms = (int)(ts.tv_nsec / 1000000);
+  if (utc) {
+    snprintf(buf, n, "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ", tmv.tm_year + 1900,
+             tmv.tm_mon + 1, tmv.tm_mday, tmv.tm_hour, tmv.tm_min, tmv.tm_sec,
+             ms);
+  } else {
+    snprintf(buf, n, "%04d-%02d-%02dT%02d:%02d:%02d.%03d", tmv.tm_year + 1900,
+             tmv.tm_mon + 1, tmv.tm_mday, tmv.tm_hour, tmv.tm_min, tmv.tm_sec,
+             ms);
+  }
+}
+
+void aux_logf(AuxLogLevel lvl, const char *file, int line, const char *func,
+              const char *fmt, ...) {
+  aux_mtx_init_once();
+  if (lvl < 0 || lvl >= AUX_LOG_COUNT) lvl = AUX_LOG_ERROR;
+
+  aux_mtx_lock();
+  FILE *out = g_log.sink ? g_log.sink : stderr;
+  if (lvl < g_log.level) {
+    aux_mtx_unlock();
+    return;
+  }
+
+  char ts[40];
+  aux_format_time_iso(ts, sizeof ts, true);
+
+  if (g_log.use_color) {
+    fprintf(out, "%s[%s]%s %s %s:%d %s(): ", s_level_color[lvl],
+            s_level_str[lvl], "\x1b[0m", ts, file ? file : "?", line,
+            func ? func : "?");
+  } else {
+    fprintf(out, "[%s] %s %s:%d %s(): ", s_level_str[lvl], ts,
+            file ? file : "?", line, func ? func : "?");
+  }
+
   va_list ap;
   va_start(ap, fmt);
-  vfprintf(stderr, fmt, ap);
+  vfprintf(out, fmt, ap);
   va_end(ap);
-  if (color) fputs("\x1b[0m", stderr);
-  fputc('\n', stderr);
-}
+  fputc('\n', out);
 
-// ───────────────────────── Chaînes ─────────────────────────
-size_t vl_strlcpy(char *dst, const char *src, size_t n) {
-  size_t L = src ? strlen(src) : 0;
-  if (n) {
-    size_t m = (L >= n) ? n - 1 : L;
-    if (m) memcpy(dst, src, m);
-    dst[m] = '\0';
+  if (lvl == AUX_LOG_FATAL) {
+    fflush(out);
   }
-  return L;
-}
-size_t vl_strlcat(char *dst, const char *src, size_t n) {
-  size_t d = dst ? strlen(dst) : 0;
-  if (d >= n) return d + (src ? strlen(src) : 0);
-  return d + vl_strlcpy(dst + d, src, n - d);
+  aux_mtx_unlock();
 }
 
-static char *lstrip(char *s) {
-  while (*s && (unsigned char)*s <= 0x20) s++;
-  return s;
-}
-static char *rstrip(char *s) {
-  size_t L = strlen(s);
-  while (L && (unsigned char)s[L - 1] <= 0x20) L--;
-  s[L] = '\0';
-  return s;
-}
-char *vl_trim_inplace(char *s) {
-  if (!s) return s;
-  return rstrip(lstrip(s));
-}
+// ============================================================
+// Fichiers et chemins
+// ============================================================
 
-int vl_strcasecmp_ascii(const char *a, const char *b) {
-  if (a == b) return 0;
-  if (!a || !b) return a ? 1 : -1;
-  for (;;) {
-    unsigned char ca = (unsigned char)*a++, cb = (unsigned char)*b++;
-    if (ca >= 'A' && ca <= 'Z') ca += 'a' - 'A';
-    if (cb >= 'A' && cb <= 'Z') cb += 'a' - 'A';
-    if (ca != cb || ca == 0) return (int)ca - (int)cb;
+static bool aux_stat(const char *path, struct stat *st) {
+#if defined(_WIN32)
+  struct _stat64 s;
+  if (_stat64(path, &s) != 0) return false;
+  if (st) {
+    memset(st, 0, sizeof *st);
+    st->st_mode = (unsigned short)s.st_mode;
+    st->st_size = (off_t)s.st_size;
   }
-}
-
-// ───────────────────────── Chemins ─────────────────────────
-static int is_sep(char c) { return c == VL_PATH_SEP1 || c == VL_PATH_SEP2; }
-
-int vl_path_is_abs(const char *p) {
-  if (!p || !*p) return 0;
-
-#ifdef _WIN32
-      // ex: C:\ or \\server\share
-      if ((strlen(p) >= 2 && isalpha((unsigned char)p[0]) && p[1] == ':') ||
-          (strlen(p) >= 2 && is_sep(p[0]) && is_sep(p[1]))) return 1;
-  return is_sep(p[0]);
+  return true;
 #else
-  return p[0] == '/';
+  return stat(path, st) == 0;
 #endif
 }
 
-int vl_path_join(char *out, size_t n, const char *a, const char *b) {
-  if (!out || n == 0) return 0;
-  out[0] = '\0';
-  if (!a || !*a) return (int)(vl_strlcpy(out, b ? b : "", n) < n);
-  if (!b || !*b) return (int)(vl_strlcpy(out, a, n) < n);
-  char tmp[PATH_MAX];
-  size_t la = strlen(a);
-  int need_sep = !(la && is_sep(a[la - 1]));
-  size_t k = 0;
-  k += vl_strlcpy(tmp + k, a, sizeof(tmp) - k);
-  if (need_sep && k < sizeof(tmp) - 1) {
-    tmp[k++] = VL_PATH_SEP1;
-    tmp[k] = '\0';
-  }
-  k += vl_strlcpy(tmp + k, b, sizeof(tmp) - k);
-  return (int)(vl_strlcpy(out, tmp, n) < n);
+bool aux_path_exists(const char *path) {
+  if (!path || !*path) return false;
+  return aux_stat(path, NULL);
 }
 
-int vl_path_dirname(const char *path, char *out, size_t n) {
-  if (!path || !out || !n) return 0;
-  size_t L = strlen(path);
-  if (L == 0) {
+bool aux_is_file(const char *path) {
+  struct stat st;
+  if (!aux_stat(path, &st)) return false;
+#if defined(_WIN32)
+  return (st.st_mode & _S_IFREG) != 0;
+#else
+  return S_ISREG(st.st_mode);
+#endif
+}
+
+bool aux_is_dir(const char *path) {
+  struct stat st;
+  if (!aux_stat(path, &st)) return false;
+#if defined(_WIN32)
+  return (st.st_mode & _S_IFDIR) != 0;
+#else
+  return S_ISDIR(st.st_mode);
+#endif
+}
+
+static int aux_mkdir_one(const char *path) {
+#if defined(_WIN32)
+  int r = _mkdir(path);
+  if (r == 0 || errno == EEXIST) return 0;
+  return r;
+#else
+  int r = mkdir(path, 0777);
+  if (r == 0 || errno == EEXIST) return 0;
+  return r;
+#endif
+}
+
+AuxStatus aux_mkdirs(const char *path) {
+  if (!path || !*path) return AUX_EINVAL;
+
+  char buf[AUX_PATH_MAX];
+  size_t n = strnlen(path, AUX_PATH_MAX - 1);
+  if (n >= AUX_PATH_MAX) return AUX_ERANGE;
+  memcpy(buf, path, n);
+  buf[n] = '\0';
+
+  // Normaliser séparateurs sur Windows
+#if defined(_WIN32)
+  for (size_t i = 0; i < n; i++)
+    if (buf[i] == '/') buf[i] = '\\';
+  const char sep = '\\';
+#else
+  const char sep = '/';
+#endif
+
+  // Créer hiérarchie
+  for (size_t i = 1; i < n; i++) {
+    if (buf[i] == sep) {
+      char c = buf[i];
+      buf[i] = '\0';
+      if (*buf) {
+        if (aux_mkdir_one(buf) != 0 && errno != EEXIST) {
+          return AUX_EIO;
+        }
+      }
+      buf[i] = c;
+    }
+  }
+  if (aux_mkdir_one(buf) != 0 && errno != EEXIST) {
+    return AUX_EIO;
+  }
+  return AUX_OK;
+}
+
+AuxStatus aux_path_join(const char *a, const char *b, char *out,
+                        size_t out_sz) {
+  if (!a || !b || !out || out_sz == 0) return AUX_EINVAL;
+#if defined(_WIN32)
+  const char sep = '\\';
+  const char other = '/';
+#else
+  const char sep = '/';
+  const char other = '\\';
+#endif
+  size_t na = strnlen(a, out_sz);
+  size_t nb = strnlen(b, out_sz);
+  if (na >= out_sz) return AUX_ERANGE;
+  if (nb >= out_sz) return AUX_ERANGE;
+
+  bool needs_sep = na > 0 && a[na - 1] != sep && a[na - 1] != other;
+  int written =
+      snprintf(out, out_sz, "%s%s%s", a, needs_sep ? (char[2]){sep, 0} : "",
+               (b[0] == sep || b[0] == other) ? b + 1 : b);
+  return (written < 0 || (size_t)written >= out_sz) ? AUX_ERANGE : AUX_OK;
+}
+
+const char *aux_basename(const char *path) {
+  if (!path) return "";
+  const char *p = path;
+  const char *last = p;
+  for (; *p; ++p) {
+    if (*p == '/' || *p == '\\') last = p + 1;
+  }
+  return last;
+}
+
+size_t aux_dirname(const char *path, char *out, size_t out_sz) {
+  if (!path || !out || out_sz == 0) return 0;
+  size_t n = strnlen(path, out_sz);
+  if (n >= out_sz) n = out_sz - 1;
+  size_t end = n;
+  while (end > 0 && path[end - 1] != '/' && path[end - 1] != '\\') end--;
+  if (end == 0) {
     out[0] = '.';
     out[1] = '\0';
     return 1;
   }
-  size_t i = L;
-  while (i > 0 && !is_sep(path[i - 1])) i--;
-  if (i == 0) {
-    out[0] = '.';
-    out[1] = '\0';
-    return 1;
-  }                                                   // pas de dir => '.'
-  while (i > 0 && i > 1 && is_sep(path[i - 1])) i--;  // strip trailing seps
-  if (i > n - 1) i = n - 1;
-  memcpy(out, path, i);
-  out[i] = '\0';
-  return 1;
+  if (end >= out_sz) end = out_sz - 1;
+  memcpy(out, path, end);
+  out[end] = '\0';
+  return end;
 }
 
-int vl_path_basename(const char *path, char *out, size_t n) {
-  if (!path || !out || !n) return 0;
-  size_t L = strlen(path);
-  size_t i = L;
-  while (i > 0 && is_sep(path[i - 1])) i--;
-  size_t j = i;
-  while (j > 0 && !is_sep(path[j - 1])) j--;
-  size_t len = i - j;
-  if (len > n - 1) len = n - 1;
-  memcpy(out, path + j, len);
-  out[len] = '\0';
-  return 1;
-}
-
-// ───────────────────────── Fichiers ─────────────────────────
-int vl_file_read_all(const char *path, unsigned char **buf, size_t *n) {
-  if (!path || !buf || !n) return 0;
-  *buf = NULL;
-  *n = 0;
+AuxStatus aux_read_file(const char *path, AuxBuffer *out) {
+  if (!path || !out) return AUX_EINVAL;
   FILE *f = fopen(path, "rb");
-  if (!f) return 0;
+  if (!f) return AUX_EIO;
+
   if (fseek(f, 0, SEEK_END) != 0) {
     fclose(f);
-    return 0;
+    return AUX_EIO;
   }
   long sz = ftell(f);
   if (sz < 0) {
     fclose(f);
-    return 0;
+    return AUX_EIO;
   }
   rewind(f);
-  unsigned char *p = (unsigned char *)malloc((size_t)sz);
-  if (!p) {
+
+  uint8_t *buf = (uint8_t *)malloc((size_t)sz + 1);
+  if (!buf) {
     fclose(f);
-    return 0;
+    return AUX_ENOMEM;
   }
-  size_t rd = fread(p, 1, (size_t)sz, f);
+
+  size_t rd = fread(buf, 1, (size_t)sz, f);
   fclose(f);
   if (rd != (size_t)sz) {
-    free(p);
-    return 0;
+    free(buf);
+    return AUX_EIO;
   }
-  *buf = p;
-  *n = (size_t)sz;
-  return 1;
+  buf[sz] = 0;
+
+  out->data = buf;
+  out->len = (size_t)sz;
+  return AUX_OK;
 }
 
-int vl_file_write_all(const char *path, const void *data, size_t n) {
-  if (!path) return 0;
+AuxStatus aux_write_file(const char *path, const void *data, size_t len,
+                         bool mkdirs) {
+  if (!path || (!data && len)) return AUX_EINVAL;
+  if (mkdirs) {
+    char dir[AUX_PATH_MAX];
+    if (aux_dirname(path, dir, sizeof dir) > 0) {
+      AuxStatus s = aux_mkdirs(dir);
+      if (s != AUX_OK) return s;
+    }
+  }
   FILE *f = fopen(path, "wb");
-  if (!f) return 0;
-  size_t wr = data && n ? fwrite(data, 1, n, f) : 0;
-  int ok = (wr == n && fflush(f) == 0 && fclose(f) == 0);
-  if (!ok) {
-    fclose(f);
-  }
-#ifdef _WIN32
-  (void)ok;  // rien d'autre
-#else
-  // fsync n'est pas strictement nécessaire pour outils CLI, omis pour
-  // simplicité
-#endif
-  return ok;
+  if (!f) return AUX_EIO;
+  size_t wr = len ? fwrite(data, 1, len, f) : 0;
+  if (fclose(f) != 0) return AUX_EIO;
+  return (wr == len) ? AUX_OK : AUX_EIO;
 }
 
-static int mk_single_dir(const char *p) {
-  if (!p || !*p) return 1;
-
-#ifdef _WIN32 if (_mkdir(p) == 0) return 1;
-  if (errno == EEXIST) return 1;
-  return 0;
-#else
-  if (mkdir(p, 0777) == 0) return 1;
-  if (errno == EEXIST) return 1;
-  return 0;
-#endif
+void aux_buffer_free(AuxBuffer *buf) {
+  if (!buf || !buf->data) return;
+  free(buf->data);
+  buf->data = NULL;
+  buf->len = 0;
 }
 
-int vl_mkdir_p(const char *path) {
-  if (!path || !*path) return 0;
-  char tmp[PATH_MAX];
-  vl_strlcpy(tmp, path, sizeof(tmp));
-  size_t L = strlen(tmp);  // normaliser séparateurs Windows
-#ifdef _WIN32
-  for (size_t i = 0; i < L; i++) {
-    if (tmp[i] == '/') tmp[i] = '\\';
-  }
-#endif
-  // ignorer préfixe absolu (ex: C:\ ou //server)
-  size_t i = 0;
+// ============================================================
+// Chaînes
+// ============================================================
 
-#ifdef _WIN32 if (L >= 2 && isalpha((unsigned char)tmp[0]) && tmp[1] == ':')
-      i = 2;
-  if (L >= 2 && is_sep(tmp[0]) && is_sep(tmp[1])) {
-    i = 2;
-    while (i < L && !is_sep(tmp[i])) i++;
-    while (i < L && is_sep(tmp[i])) i++;
+static inline bool aux_isspace(char c) {
+  return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' ||
+         c == '\f';
+}
+
+char *aux_ltrim(char *s) {
+  if (!s) return NULL;
+  while (*s && aux_isspace(*s)) s++;
+  return s;
+}
+
+void aux_rtrim_inplace(char *s) {
+  if (!s) return;
+  size_t n = strlen(s);
+  while (n > 0 && aux_isspace(s[n - 1])) {
+    s[n - 1] = 0;
+    n--;
   }
-#else
-  if (L >= 1 && tmp[0] == '/') i = 1;
-  while (i < L && tmp[i] == '/') i++;
-#endif
-  for (; i <= L; i++) {
-    if (tmp[i] == 0 || is_sep(tmp[i])) {
-      char c = tmp[i];
-      tmp[i] = 0;
-      if (!mk_single_dir(tmp)) return 0;
-      tmp[i] = c;
-      while (i < L && is_sep(tmp[i])) i++;
+}
+
+char *aux_trim_inplace(char *s) {
+  if (!s) return NULL;
+  char *l = aux_ltrim(s);
+  if (l != s) memmove(s, l, strlen(l) + 1);
+  aux_rtrim_inplace(s);
+  return s;
+}
+
+bool aux_starts_with(const char *s, const char *prefix) {
+  if (!s || !prefix) return false;
+  size_t ns = strlen(s), np = strlen(prefix);
+  if (np > ns) return false;
+  return memcmp(s, prefix, np) == 0;
+}
+
+bool aux_ends_with(const char *s, const char *suffix) {
+  if (!s || !suffix) return false;
+  size_t ns = strlen(s), nx = strlen(suffix);
+  if (nx > ns) return false;
+  return memcmp(s + ns - nx, suffix, nx) == 0;
+}
+
+AuxStatus aux_replace_all_alloc(const char *s, const char *from, const char *to,
+                                char **out) {
+  if (!s || !from || !to || !out) return AUX_EINVAL;
+  if (!*from) return AUX_EINVAL;
+  size_t ns = strlen(s), nf = strlen(from), nt = strlen(to);
+
+  // Compter occurrences
+  size_t cnt = 0;
+  for (const char *p = s; (p = strstr(p, from)); p += nf) cnt++;
+
+  size_t out_sz = ns + cnt * ((nt >= nf) ? (nt - nf) : 0) + 1;
+  char *res = (char *)malloc(out_sz);
+  if (!res) return AUX_ENOMEM;
+
+  char *w = res;
+  const char *p = s;
+  const char *hit;
+  while ((hit = strstr(p, from))) {
+    size_t pre = (size_t)(hit - p);
+    memcpy(w, p, pre);
+    w += pre;
+    memcpy(w, to, nt);
+    w += nt;
+    p = hit + nf;
+  }
+  size_t tail = strlen(p);
+  memcpy(w, p, tail);
+  w += tail;
+  *w = 0;
+
+  *out = res;
+  return AUX_OK;
+}
+
+// ============================================================
+// Parsing basique
+// ============================================================
+
+AuxStatus aux_parse_u64(const char *s, uint64_t *out) {
+  if (!s || !out) return AUX_EINVAL;
+  errno = 0;
+  char *end = NULL;
+  unsigned long long v = strtoull(s, &end, 0);
+  if (errno || end == s || *end != '\0') return AUX_EINVAL;
+  *out = (uint64_t)v;
+  return AUX_OK;
+}
+
+AuxStatus aux_parse_i64(const char *s, int64_t *out) {
+  if (!s || !out) return AUX_EINVAL;
+  errno = 0;
+  char *end = NULL;
+  long long v = strtoll(s, &end, 0);
+  if (errno || end == s || *end != '\0') return AUX_EINVAL;
+  *out = (int64_t)v;
+  return AUX_OK;
+}
+
+AuxStatus aux_parse_bool(const char *s, bool *out) {
+  if (!s || !out) return AUX_EINVAL;
+  if (strcasecmp(s, "1") == 0 || strcasecmp(s, "true") == 0 ||
+      strcasecmp(s, "yes") == 0 || strcasecmp(s, "on") == 0) {
+    *out = true;
+    return AUX_OK;
+  }
+  if (strcasecmp(s, "0") == 0 || strcasecmp(s, "false") == 0 ||
+      strcasecmp(s, "no") == 0 || strcasecmp(s, "off") == 0) {
+    *out = false;
+    return AUX_OK;
+  }
+  return AUX_EINVAL;
+}
+
+AuxStatus aux_parse_size(const char *s, uint64_t *out) {
+  if (!s || !out) return AUX_EINVAL;
+  size_t n = strlen(s);
+  if (n == 0) return AUX_EINVAL;
+
+  char *end = NULL;
+  errno = 0;
+  double val = strtod(s, &end);
+  if (errno || end == s) return AUX_EINVAL;
+
+  uint64_t mul = 1;
+  if (*end) {
+    if (end[1] && end[2]) return AUX_EINVAL;  // max 2 chars
+    switch (*end) {
+      case 'k':
+      case 'K':
+        mul = 1024ULL;
+        break;
+      case 'm':
+      case 'M':
+        mul = 1024ULL * 1024ULL;
+        break;
+      case 'g':
+      case 'G':
+        mul = 1024ULL * 1024ULL * 1024ULL;
+        break;
+      case 't':
+      case 'T':
+        mul = 1024ULL * 1024ULL * 1024ULL * 1024ULL;
+        break;
+      default:
+        return AUX_EINVAL;
+    }
+    if (end[1]) {
+      if (end[1] != 'i' && end[1] != 'I')
+        return AUX_EINVAL;  // accept Ki, Mi, etc.
     }
   }
-  return 1;
+  if (val < 0) return AUX_EINVAL;
+  long double bytes = (long double)val * (long double)mul;
+  if (bytes > (long double)UINT64_MAX) return AUX_ERANGE;
+  *out = (uint64_t)(bytes + 0.5L);
+  return AUX_OK;
 }
 
-// ───────────────────────── Aléa ─────────────────────────
-int vl_rand_bytes(void *buf, size_t n) {
-  if (!buf) return 0;
-  unsigned char *p = (unsigned char *)buf;
-  size_t done = 0;
+// ============================================================
+// Temps
+// ============================================================
 
-#ifdef _WIN32 HCRYPTPROV h = 0;
-  if (CryptAcquireContextA(&h, NULL, NULL, PROV_RSA_FULL,
-                           CRYPT_VERIFYCONTEXT)) {
-    BOOL ok = CryptGenRandom(h, (DWORD)n, p);
-    CryptReleaseContext(h, 0);
-    return ok ? 1 : 0;
-  }
-  // fallback PRNG faible
-  for (size_t i = 0; i < n; i++) {
-    p[i] = (unsigned char)(rand() >> 3);
-  }
-  return 1;
+uint64_t aux_now_millis(void) {
+#if defined(_WIN32)
+  LARGE_INTEGER freq, ctr;
+  QueryPerformanceFrequency(&freq);
+  QueryPerformanceCounter(&ctr);
+  return (uint64_t)((ctr.QuadPart * 1000ULL) / (uint64_t)freq.QuadPart);
 #else
-  FILE *f = fopen("/dev/urandom", "rb");
-  if (f) {
-    size_t rd = fread(p, 1, n, f);
-    fclose(f);
-    if (rd == n) return 1;
-  }
-  // fallback PRNG faible
-  for (size_t i = 0; i < n; i++) {
-    p[i] = (unsigned char)(rand() >> 3);
-  }
-  return 1;
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)ts.tv_nsec / 1000000ULL;
 #endif
 }
 
-// ───────────────────────── CRC32 ─────────────────────────
-unsigned long vl_crc32(const void *data, size_t n) {
-  const unsigned char *p = (const unsigned char *)data;
-  unsigned long c = ~0ul;
-  for (size_t i = 0; i < n; i++) {
-    c ^= p[i];
+uint64_t aux_now_nanos(void) {
+#if defined(_WIN32)
+  LARGE_INTEGER freq, ctr;
+  QueryPerformanceFrequency(&freq);
+  QueryPerformanceCounter(&ctr);
+  // seconds = ctr/freq -> ns = seconds * 1e9
+  long double ns =
+      ((long double)ctr.QuadPart * 1000000000.0L) / (long double)freq.QuadPart;
+  if (ns < 0) ns = 0;
+  return (uint64_t)(ns + 0.5L);
+#else
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+#endif
+}
+
+size_t aux_time_iso8601(char *buf, size_t n, time_t t, bool utc) {
+  if (!buf || n == 0) return 0;
+  struct tm tmv;
+  if (utc) {
+#if defined(_WIN32)
+    gmtime_s(&tmv, &t);
+#else
+    gmtime_r(&t, &tmv);
+#endif
+  } else {
+#if defined(_WIN32)
+    localtime_s(&tmv, &t);
+#else
+    localtime_r(&t, &tmv);
+#endif
+  }
+  int w = snprintf(buf, n, "%04d-%02d-%02dT%02d:%02d:%02d%s",
+                   tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday, tmv.tm_hour,
+                   tmv.tm_min, tmv.tm_sec, utc ? "Z" : "");
+  if (w < 0) return 0;
+  if ((size_t)w >= n) {
+    buf[n - 1] = 0;
+    return n - 1;
+  }
+  return (size_t)w;
+}
+
+// ============================================================
+// CRC32 (IEEE 802.3), table-driven
+// ============================================================
+
+static uint32_t crc32_table[256];
+static bool crc32_init_done = false;
+
+static void crc32_init(void) {
+  if (crc32_init_done) return;
+  for (uint32_t i = 0; i < 256; i++) {
+    uint32_t c = i;
     for (int k = 0; k < 8; k++) {
-      unsigned long m = -(c & 1ul);
-      c = (c >> 1) ^ (0xEDB88320ul & m);
+      c = (c & 1) ? (0xEDB88320U ^ (c >> 1)) : (c >> 1);
     }
+    crc32_table[i] = c;
   }
-  return ~c;
+  crc32_init_done = true;
 }
 
-// ───────────────────────── Tests ─────────────────────────
-#ifdef VL_AUXLIB_TEST_MAIN
-int main(void) {
-  vl_logf(VL_LOG_INFO, "test auxlib");
-  char b[64];
-  vl_path_join(b, sizeof(b), "/usr", "bin");
-  printf("join=%s\n", b);
-  printf("basename:");
-  vl_path_basename("/a/b/c.txt", b, sizeof(b));
-  puts(b);
-  printf("dirname:");
-  vl_path_dirname("/a/b/c.txt", b, sizeof(b));
-  puts(b);
-  unsigned char r[16];
-  vl_rand_bytes(r, sizeof(r));
-  printf("crc32=%08lX\n", vl_crc32(r, sizeof(r)));
-  return 0;
+uint32_t aux_crc32(const void *data, size_t len) {
+  if (!data) return 0;
+  crc32_init();
+  const uint8_t *p = (const uint8_t *)data;
+  uint32_t c = 0xFFFFFFFFU;
+  for (size_t i = 0; i < len; i++) {
+    c = crc32_table[(c ^ p[i]) & 0xFFU] ^ (c >> 8);
+  }
+  return c ^ 0xFFFFFFFFU;
+}
+
+void aux_crc32_init(AuxCrc32 *ctx) {
+  if (!ctx) return;
+  crc32_init();
+  ctx->state = 0xFFFFFFFFU;
+}
+
+void aux_crc32_update(AuxCrc32 *ctx, const void *data, size_t len) {
+  if (!ctx || !data) return;
+  const uint8_t *p = (const uint8_t *)data;
+  uint32_t c = ctx->state;
+  for (size_t i = 0; i < len; i++) {
+    c = crc32_table[(c ^ p[i]) & 0xFFU] ^ (c >> 8);
+  }
+  ctx->state = c;
+}
+
+uint32_t aux_crc32_final(AuxCrc32 *ctx) {
+  if (!ctx) return 0;
+  return ctx->state ^ 0xFFFFFFFFU;
+}
+
+// ============================================================
+// RNG
+// ============================================================
+
+#if defined(_WIN32)
+static bool win32_rand_bytes(void *out, size_t len) {
+  HCRYPTPROV hProv = 0;
+  if (!CryptAcquireContextA(&hProv, NULL, NULL, PROV_RSA_FULL,
+                            CRYPT_VERIFYCONTEXT)) {
+    return false;
+  }
+  BOOL ok = CryptGenRandom(hProv, (DWORD)len, (BYTE *)out);
+  CryptReleaseContext(hProv, 0);
+  return ok != 0;
 }
 #endif
+
+AuxStatus aux_rand_bytes(void *out, size_t len) {
+  if (!out && len) return AUX_EINVAL;
+#if defined(_WIN32)
+  if (win32_rand_bytes(out, len)) return AUX_OK;
+#else
+  int fd = open("/dev/urandom", O_RDONLY);
+  if (fd >= 0) {
+    size_t off = 0;
+    while (off < len) {
+      ssize_t r = read(fd, (uint8_t *)out + off, len - off);
+      if (r <= 0) {
+        close(fd);
+        return AUX_EIO;
+      }
+      off += (size_t)r;
+    }
+    close(fd);
+    return AUX_OK;
+  }
+#endif
+  // Fallback non-CSPRNG
+  for (size_t i = 0; i < len; i++) {
+    ((uint8_t *)out)[i] = (uint8_t)(rand() & 0xFF);
+  }
+  return AUX_OK;
+}
+
+uint64_t aux_rand_u64(void) {
+  uint64_t v = 0;
+  if (aux_rand_bytes(&v, sizeof v) == AUX_OK) return v;
+  // Fallback
+  v ^= ((uint64_t)rand() << 32) ^ (uint64_t)rand();
+  return v;
+}
+
+// ============================================================
+// Hexdump
+// ============================================================
+
+void aux_hexdump(const void *data, size_t len, size_t cols, FILE *out) {
+  if (!out) out = stderr;
+  if (!data) {
+    fprintf(out, "(null)\n");
+    return;
+  }
+  if (cols == 0) cols = 16;
+
+  const uint8_t *p = (const uint8_t *)data;
+  for (size_t i = 0; i < len; i += cols) {
+    fprintf(out, "%08zx  ", i);
+    size_t j;
+    for (j = 0; j < cols && i + j < len; j++) {
+      fprintf(out, "%02x ", p[i + j]);
+    }
+    for (; j < cols; j++) fputs("   ", out);
+    fputs(" |", out);
+    for (j = 0; j < cols && i + j < len; j++) {
+      uint8_t c = p[i + j];
+      fputc((c >= 32 && c < 127) ? (char)c : '.', out);
+    }
+    fputs("|\n", out);
+  }
+}
+
+// ============================================================
+// Environnement
+// ============================================================
+
+const char *aux_getenv(const char *key) {
+  if (!key || !*key) return NULL;
+#if defined(_WIN32)
+  static char buf[32767];
+  DWORD n = GetEnvironmentVariableA(key, buf, AUX_ARRAY_LEN(buf));
+  if (n == 0 || n >= AUX_ARRAY_LEN(buf)) return NULL;
+  return buf;
+#else
+  return getenv(key);
+#endif
+}
+
+// ============================================================
+// Helpers d’erreurs
+// ============================================================
+
+const char *aux_status_str(AuxStatus s) {
+  switch (s) {
+    case AUX_OK:
+      return "OK";
+    case AUX_EINVAL:
+      return "EINVAL";
+    case AUX_ENOMEM:
+      return "ENOMEM";
+    case AUX_EIO:
+      return "EIO";
+    case AUX_ERANGE:
+      return "ERANGE";
+    default:
+      return "UNKNOWN";
+  }
+}
+
+void aux_perror(AuxStatus st, const char *ctx) {
+  if (ctx && *ctx) {
+    AUX_LOG_ERROR("%s: %s", ctx, aux_status_str(st));
+  } else {
+    AUX_LOG_ERROR("%s", aux_status_str(st));
+  }
+}
+
+// ============================================================
+// Initialisation globale optionnelle
+// ============================================================
+
+void aux_init_default_logging(void) {
+  aux_log_init(stderr, AUX_LOG_INFO, /*color*/ true);
+}
+
+void aux_shutdown_logging(void) {
+  // Pas de ressources à libérer dans cette implémentation
+}
+
+// ============================================================
+// Fin
+// ============================================================

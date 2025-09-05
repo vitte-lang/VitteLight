@@ -1,306 +1,277 @@
-// vitte-light/core/init.c
-// Runtime init/teardown pour VitteLight: contexte VM, options, plugins,
-// chargement VLBC, exécution, et intégration baselib.
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Fournit une façade simple de haut niveau:
-//   - VL_RuntimeOptions / VL_Runtime
-//   - vl_rt_init(), vl_rt_free()
-//   - vl_rt_set_trace(), vl_rt_register_stdlibs()
-//   - vl_rt_load_vlbc_file(), vl_rt_load_vlbc_buffer()
-//   - vl_rt_run(max_steps)
-//   - vl_rt_load_plugins_from_env("VITTE_PLUGINS")
+// init.c — Runtime bootstrap for Vitte Light (C17)
 //
-// Plugins (optionnel): définir WITH_DLIB et fournir dlib.h/dlib.c.
-// Un plugin doit exposer: int vl_plugin_init(struct VL_Context* ctx);
-// Retour non-zero => OK. 0 => échec.
+// Goals:
+// - Centralize logging setup, RNG seed, and global subsystems (HTTP, etc.)
+// - Open selected standard libraries on a VM state
+// - Provide a single shutdown path
 //
-// Build typique:
-//   cc -std=c99 -O2 -Wall -Wextra -pedantic -Icore -c core/init.c
-//   # Linkez avec: core/vm.c core/undump.c core/zio.c core/tm.c ...
-//   # Pour plugins: ajoutez -DWITH_DLIB et libraries/dlib.c + dlib.h
-//
-#include <inttypes.h>
+// Depends: includes/auxlib.h, state.h, vm.h, and the libraries you enable.
+// Optional subsystems: libcurl (HTTP). All others are opt-in via flags.
+
+#include <ctype.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "api.h"
-#include "state.h"  // traces
-#include "tm.h"     // horloge
-#include "undump.h"
+#include "auxlib.h"
+#include "state.h"
 #include "vm.h"
-#include "zio.h"  // I/O utilitaires
 
-// Baselib facultative (déclarée dans libraries/baselib.c)
-void vl_register_baselib(
-    struct VL_Context *ctx);  // fwd decl; pas d'en-tête requis
+// ———————————————————————————————————————————————————————————————————————
+// Forward decls for stdlibs actually present in the tree
+// Add externs here only for libraries you compiled in.
+// ———————————————————————————————————————————————————————————————————————
+extern void vl_open_baselib(VL_State *S);
+extern void vl_open_corolib(VL_State *S);
 
-#ifdef WITH_DLIB
-#include "dlib.h"
-#endif
+// If you have other libs, declare them here:
+// extern void vl_open_iolib(VL_State *S);
+// extern void vl_open_mathlib(VL_State *S);
+// extern void vl_open_strlib(VL_State *S);
+// extern void vl_open_oslib(VL_State *S);
+// extern void vl_open_cryptolib(VL_State *S);
+// extern void vl_open_curlib(VL_State *S);
+// extern void vl_open_dblib(VL_State *S);
+// extern void vl_open_dllib(VL_State *S);
+// extern void vl_open_ffilib(VL_State *S);
 
-#ifndef VL_ENV_TRACE
-#define VL_ENV_TRACE "VITTE_TRACE"
-#endif
-#ifndef VL_ENV_PLUGINS
-#define VL_ENV_PLUGINS "VITTE_PLUGINS"
-#endif
-#ifndef VL_ENV_MAXSTEPS
-#define VL_ENV_MAXSTEPS "VITTE_MAX_STEPS"
-#endif
+// Optional HTTP (libcurl) global init (provided by libraries/curl.c)
+AuxStatus vl_http_global_init(void);
+void vl_http_global_cleanup(void);
 
-// ───────────────────────── Structures ─────────────────────────
-typedef struct VL_RuntimeOptions {
-  uint32_t trace_mask;  // VL_TRACE_* bitmask
-  uint64_t max_steps;   // 0=illimité
-  int with_std;         // registre natives standard (print)
-  int with_baselib;     // registre baselib (strings, I/O, temps)
-  FILE *out;            // sortie de la VM (stdout si NULL)
-  const char *plugins;  // liste séparée par ':' (';' sous Windows accepté)
-} VL_RuntimeOptions;
+// ———————————————————————————————————————————————————————————————————————
+// Public configuration
+// ———————————————————————————————————————————————————————————————————————
 
-typedef struct VL_Runtime {
-  struct VL_Context *ctx;
-  VL_Module mod;
-  int has_mod;
-  uint64_t max_steps;
-} VL_Runtime;
+typedef struct VlStdLibs {
+  unsigned base : 1;       // base library (print, type, assert, …)
+  unsigned coroutine : 1;  // coroutine library
+  // Extend flags as you add libs:
+  unsigned io : 1;
+  unsigned math : 1;
+  unsigned str : 1;
+  unsigned os : 1;
+  unsigned crypto : 1;
+  unsigned curl : 1;
+  unsigned db : 1;
+  unsigned dl : 1;
+  unsigned ffi : 1;
+} VlStdLibs;
 
-// ───────────────────────── Utils ─────────────────────────
-static uint32_t parse_trace_mask(const char *flags) {
-  if (!flags) return 0;
-  uint32_t m = 0;
-  const char *p = flags;
-  char tok[32];
-  while (*p) {
-    size_t k = 0;
-    while (*p == ',' || *p == ' ' || *p == '\t') p++;
-    while (*p && *p != ',' && *p != ';' && k < sizeof(tok) - 1) {
-      tok[k++] = (char)tolower((unsigned char)*p++);
-    }
-    tok[k] = '\0';
-    if (k == 0) break;
-    if (strcmp(tok, "op") == 0)
-      m |= VL_TRACE_OP;
-    else if (strcmp(tok, "stack") == 0)
-      m |= VL_TRACE_STACK;
-    else if (strcmp(tok, "global") == 0)
-      m |= VL_TRACE_GLOBAL;
-    else if (strcmp(tok, "call") == 0)
-      m |= VL_TRACE_CALL;
-    else if (strcmp(tok, "all") == 0)
-      m |= 0xFFFFFFFFu;
-    if (*p == ',' || *p == ';') p++;
+typedef struct VlInitOptions {
+  // Logging
+  FILE *log_sink;         // default: stderr
+  AuxLogLevel log_level;  // default: AUX_LOG_INFO
+  int color_logs;         // default: auto TTY
+
+  // Subsystems
+  int init_http;      // default: 1 if libcurl linked, else 0
+  int shutdown_http;  // default: same as init_http
+
+  // Libraries to open
+  VlStdLibs stdlib;  // default: base=1, coroutine=1
+
+  // VM niceties
+  const char *global_version;  // default: "Vitte Light 0.1"
+} VlInitOptions;
+
+// ———————————————————————————————————————————————————————————————————————
+// Environment parsing helpers
+// ———————————————————————————————————————————————————————————————————————
+
+static AuxLogLevel parse_log_level_env(const char *s, AuxLogLevel defv) {
+  if (!s || !*s) return defv;
+  // Accept numeric or names
+  if (isdigit((unsigned char)s[0])) {
+    int v = atoi(s);
+    if (v < 0) v = 0;
+    if (v > AUX_LOG_FATAL) v = AUX_LOG_FATAL;
+    return (AuxLogLevel)v;
   }
-  return m;
+  // normalize lowercase
+  char buf[16] = {0};
+  size_t n = strlen(s);
+  if (n >= sizeof buf) n = sizeof buf - 1;
+  for (size_t i = 0; i < n; i++) buf[i] = (char)tolower((unsigned char)s[i]);
+  if (strcmp(buf, "trace") == 0) return AUX_LOG_TRACE;
+  if (strcmp(buf, "debug") == 0) return AUX_LOG_DEBUG;
+  if (strcmp(buf, "info") == 0) return AUX_LOG_INFO;
+  if (strcmp(buf, "warn") == 0) return AUX_LOG_WARN;
+  if (strcmp(buf, "error") == 0) return AUX_LOG_ERROR;
+  if (strcmp(buf, "fatal") == 0) return AUX_LOG_FATAL;
+  return defv;
 }
 
-static uint64_t parse_u64(const char *s) {
-  if (!s || !*s) return 0;
-  char *end = NULL;
-  unsigned long long v = strtoull(s, &end, 10);
-  (void)end;
-  return (uint64_t)v;
+static int parse_bool_env(const char *s, int defv) {
+  if (!s || !*s) return defv;
+  if (!strcasecmp(s, "1") || !strcasecmp(s, "true") || !strcasecmp(s, "yes") ||
+      !strcasecmp(s, "on"))
+    return 1;
+  if (!strcasecmp(s, "0") || !strcasecmp(s, "false") || !strcasecmp(s, "no") ||
+      !strcasecmp(s, "off"))
+    return 0;
+  return defv;
 }
 
-static void apply_env_overrides(VL_RuntimeOptions *opt) {
-  const char *t = getenv(VL_ENV_TRACE);
-  if (t && *t) opt->trace_mask |= parse_trace_mask(t);
-  const char *ms = getenv(VL_ENV_MAXSTEPS);
-  if (ms && *ms) opt->max_steps = parse_u64(ms);
-  const char *pl = getenv(VL_ENV_PLUGINS);
-  if (pl && *pl && !opt->plugins) opt->plugins = pl;
+// ———————————————————————————————————————————————————————————————————————
+// Defaults
+// ———————————————————————————————————————————————————————————————————————
+
+static void vl_init_options_fill_defaults(VlInitOptions *opt) {
+  memset(opt, 0, sizeof *opt);
+  opt->log_sink = stderr;
+  opt->log_level = AUX_LOG_INFO;
+  opt->color_logs = 1;
+
+  // Enable HTTP if available. We cannot detect link-time here, so leave 1.
+  opt->init_http = 1;
+  opt->shutdown_http = 1;
+
+  opt->stdlib.base = 1;
+  opt->stdlib.coroutine = 1;
+
+  opt->global_version = "Vitte Light 0.1";
 }
 
-static void ctx_set_output(struct VL_Context *ctx, FILE *out) {
-  (void)ctx;
-  (void)out; /* VM courante écrit sur stdout via ctx->out dans vm.c si exposé */
+// ———————————————————————————————————————————————————————————————————————
+// RNG seed (optional). VM may not need it; keep helper for future use.
+// ———————————————————————————————————————————————————————————————————————
+
+static uint64_t secure_seed_u64(void) {
+  uint64_t s = 0;
+  if (aux_rand_bytes(&s, sizeof s) == AUX_OK && s != 0) return s;
+  // Fallback
+  s ^= (uint64_t)aux_now_nanos();
+  s ^= (uint64_t)(uintptr_t)&s;
+  return s ? s : 0x9E3779B97F4A7C15ull;
 }
 
-// ───────────────────────── API ─────────────────────────
-void vl_rt_default_options(VL_RuntimeOptions *o) {
-  if (!o) return;
-  memset(o, 0, sizeof(*o));
-  o->with_std = 1;
-  o->with_baselib = 1;
+// ———————————————————————————————————————————————————————————————————————
+// Opening stdlibs
+// ———————————————————————————————————————————————————————————————————————
+
+static void vl_open_selected_stdlibs(VL_State *S, const VlStdLibs *f) {
+  if (f->base) vl_open_baselib(S);
+  if (f->coroutine) vl_open_corolib(S);
+
+  // Plug additional libs when available:
+  // if (f->io)     vl_open_iolib(S);
+  // if (f->math)   vl_open_mathlib(S);
+  // if (f->str)    vl_open_strlib(S);
+  // if (f->os)     vl_open_oslib(S);
+  // if (f->crypto) vl_open_cryptolib(S);
+  // if (f->curl)   vl_open_curlib(S);
+  // if (f->db)     vl_open_dblib(S);
+  // if (f->dl)     vl_open_dllib(S);
+  // if (f->ffi)    vl_open_ffilib(S);
 }
 
-int vl_rt_init(VL_Runtime *rt, const VL_RuntimeOptions *opt_in) {
-  if (!rt) return 0;
-  memset(rt, 0, sizeof(*rt));
-  VL_RuntimeOptions opt;
-  if (opt_in)
-    opt = *opt_in;
+// ———————————————————————————————————————————————————————————————————————
+// Public API
+// ———————————————————————————————————————————————————————————————————————
+
+typedef struct VlRuntime {
+  int http_inited;
+} VlRuntime;
+
+static VlRuntime g_rt = {0};
+
+void vl_runtime_fill_defaults(VlInitOptions *opt) {
+  if (!opt) return;
+  vl_init_options_fill_defaults(opt);
+}
+
+AuxStatus vl_runtime_init(VL_State *S, const VlInitOptions *user_opt) {
+  if (!S) return AUX_EINVAL;
+
+  VlInitOptions opt;
+  if (user_opt)
+    opt = *user_opt;
   else
-    vl_rt_default_options(&opt);
-  apply_env_overrides(&opt);
-  rt->ctx = vl_ctx_new();
-  if (!rt->ctx) return 0;
-  if (opt.with_std) vl_ctx_register_std(rt->ctx);
-  if (opt.with_baselib) vl_register_baselib(rt->ctx);
-  if (opt.trace_mask) vl_trace_enable(rt->ctx, opt.trace_mask);
-  if (opt.out) ctx_set_output(rt->ctx, opt.out);
-  rt->max_steps = opt.max_steps;
-  return 1;
+    vl_init_options_fill_defaults(&opt);
+
+  // Env overrides
+  const char *env_log = aux_getenv("VITTL_LOG");
+  const char *env_nocolor = aux_getenv("NO_COLOR");
+  const char *env_color = aux_getenv("VITTL_COLOR");
+  const char *env_http = aux_getenv("VITTL_HTTP");
+  if (env_log) opt.log_level = parse_log_level_env(env_log, opt.log_level);
+  if (env_color) opt.color_logs = parse_bool_env(env_color, opt.color_logs);
+  if (env_nocolor) opt.color_logs = 0;
+  if (env_http) {
+    int on = parse_bool_env(env_http, opt.init_http);
+    opt.init_http = on;
+    opt.shutdown_http = on;
+  }
+
+  // Logging
+  aux_log_init(opt.log_sink ? opt.log_sink : stderr, opt.log_level,
+               opt.color_logs);
+
+  AUX_LOG_DEBUG("vl_runtime_init: log_level=%d color=%d http=%d",
+                (int)opt.log_level, opt.color_logs, opt.init_http);
+
+  // Subsystems
+  if (opt.init_http) {
+    AuxStatus s = vl_http_global_init();
+    if (s == AUX_OK) {
+      g_rt.http_inited = 1;
+    } else {
+      AUX_LOG_WARN("HTTP global init failed (libcurl missing?): %s",
+                   aux_status_str(s));
+    }
+  }
+
+  // VM bootstrap niceties
+  if (opt.global_version && *opt.global_version) {
+    vl_push_string(S, opt.global_version);
+    vl_setglobal(S, "_VERSION");
+  }
+
+  // Optional: provide a random seed global
+  {
+    char seedbuf[32];
+    uint64_t seed = secure_seed_u64();
+    snprintf(seedbuf, sizeof seedbuf, "0x%016" PRIx64, seed);
+    vl_push_string(S, seedbuf);
+    vl_setglobal(S, "_RANDOM_SEED");
+  }
+
+  // Open stdlibs
+  vl_open_selected_stdlibs(S, &opt.stdlib);
+
+  return AUX_OK;
 }
 
-void vl_rt_free(VL_Runtime *rt) {
-  if (!rt) return;
-  if (rt->has_mod) {
-    vl_module_free(&rt->mod);
-    rt->has_mod = 0;
+void vl_runtime_shutdown(void) {
+  if (g_rt.http_inited) {
+    vl_http_global_cleanup();
+    g_rt.http_inited = 0;
   }
-  if (rt->ctx) {
-    vl_ctx_free(rt->ctx);
-    rt->ctx = NULL;
-  }
-  memset(rt, 0, sizeof(*rt));
+  aux_shutdown_logging();
 }
 
-void vl_rt_set_trace(VL_Runtime *rt, uint32_t mask) {
-  if (!rt || !rt->ctx) return;
-  vl_trace_disable(rt->ctx, 0xFFFFFFFFu);
-  if (mask) vl_trace_enable(rt->ctx, mask);
+// ———————————————————————————————————————————————————————————————————————
+// Convenience: open all default stdlibs on a state
+// ———————————————————————————————————————————————————————————————————————
+
+AuxStatus vl_open_all_stdlibs(VL_State *S) {
+  if (!S) return AUX_EINVAL;
+  VlStdLibs f = {0};
+  f.base = 1;
+  f.coroutine = 1;
+  vl_open_selected_stdlibs(S, &f);
+  return AUX_OK;
 }
 
-VL_Status vl_rt_attach(VL_Runtime *rt, const VL_Module *m) {
-  if (!rt || !rt->ctx || !m) return VL_ERR_INVAL;
-  return vl_ctx_attach_module(rt->ctx, m);
-}
+// ———————————————————————————————————————————————————————————————————————
+// Optional CLI integration helpers (no I/O aside from logging)
+// ———————————————————————————————————————————————————————————————————————
 
-VL_Status vl_rt_load_vlbc_buffer(VL_Runtime *rt, const uint8_t *data, size_t n,
-                                 char *err, size_t errn) {
-  if (!rt || !data) return VL_ERR_INVAL;
-  if (rt->has_mod) {
-    vl_module_free(&rt->mod);
-    rt->has_mod = 0;
-  }
-  VL_Status st = vl_module_from_buffer(data, n, &rt->mod, err, errn);
-  if (st == VL_OK) {
-    rt->has_mod = 1;
-    st = vl_ctx_attach_module(rt->ctx, &rt->mod);
-  }
-  return st;
+const char *vl_runtime_build_banner(void) {
+  // Static string is fine; extend with git hash if you generate it
+  return "Vitte Light Runtime — C17 — GPL-3.0-or-later";
 }
-
-VL_Status vl_rt_load_vlbc_file(VL_Runtime *rt, const char *path, char *err,
-                               size_t errn) {
-  if (!rt || !path) return VL_ERR_INVAL;
-  if (rt->has_mod) {
-    vl_module_free(&rt->mod);
-    rt->has_mod = 0;
-  }
-  VL_Status st = vl_module_from_file(path, &rt->mod, err, errn);
-  if (st == VL_OK) {
-    rt->has_mod = 1;
-    st = vl_ctx_attach_module(rt->ctx, &rt->mod);
-  }
-  return st;
-}
-
-VL_Status vl_rt_run(VL_Runtime *rt, uint64_t max_steps) {
-  if (!rt || !rt->ctx) return VL_ERR_INVAL;
-  uint64_t lim = max_steps ? max_steps : rt->max_steps;
-  return vl_run(rt->ctx, lim);
-}
-
-// ───────────────────────── Plugins (optionnel) ─────────────────────────
-#ifdef WITH_DLIB
-static int split_next(const char **ps, char *out, size_t n) {
-  const char *s = *ps;
-  if (!s || !*s) return 0;  // séparateurs: ':' ';'
-  size_t k = 0;
-  while (*s && *s != ':' && *s != ';') {
-    if (k + 1 < n) out[k++] = *s;
-    s++;
-  }
-  out[k] = '\0';
-  if (*s == ':' || *s == ';') s++;
-  *ps = s;
-  return k > 0;
-}
-
-int vl_rt_load_plugin(VL_Runtime *rt, const char *lib) {
-  if (!rt || !rt->ctx || !lib || !*lib) return 0;
-  VL_DLib dl;
-  vl_dlib_init(&dl);
-  if (!vl_dlib_open_best(&dl, lib, 1)) {
-    fprintf(stderr, "plugin open '%s': %s\n", lib, vl_dlib_error(&dl));
-    vl_dlib_close(&dl);
-    return 0;
-  }
-  typedef int (*initfn)(struct VL_Context *);
-  initfn init = (initfn)vl_dlib_sym(&dl, "vl_plugin_init");
-  if (!init) {
-    fprintf(stderr, "plugin sym '%s': %s\n", lib, vl_dlib_error(&dl));
-    vl_dlib_close(&dl);
-    return 0;
-  }
-  int ok = init(rt->ctx);
-  if (!ok) {
-    fprintf(stderr, "plugin init failed: %s\n", lib);
-  }
-  vl_dlib_close(&dl);
-  return ok != 0;
-}
-
-int vl_rt_load_plugins_from_env(VL_Runtime *rt, const char *env_name) {
-  if (!rt) return 0;
-  const char *v = getenv(env_name ? env_name : VL_ENV_PLUGINS);
-  if (!v || !*v) return 1;
-  char buf[512];
-  int all_ok = 1;
-  while (split_next(&v, buf, sizeof(buf))) {
-    if (!vl_rt_load_plugin(rt, buf)) all_ok = 0;
-  }
-  return all_ok;
-}
-#else
-int vl_rt_load_plugin(VL_Runtime *rt, const char *lib) {
-  (void)rt;
-  (void)lib;
-  fprintf(stderr, "plugins: build sans WITH_DLIB\n");
-  return 0;
-}
-int vl_rt_load_plugins_from_env(VL_Runtime *rt, const char *env_name) {
-  (void)rt;
-  (void)env_name;
-  return 1;
-}
-#endif
-
-// ───────────────────────── Démo main (optionnel) ─────────────────────────
-#ifdef VL_INIT_TEST_MAIN
-int main(int argc, char **argv) {
-  VL_Runtime rt;
-  VL_RuntimeOptions opt;
-  vl_rt_default_options(&opt);
-  opt.trace_mask = parse_trace_mask(getenv(VL_ENV_TRACE));
-  if (!vl_rt_init(&rt, &opt)) {
-    fprintf(stderr, "init failed\n");
-    return 1;
-  }
-#ifdef WITH_DLIB
-  vl_rt_load_plugins_from_env(&rt, NULL);
-#endif
-  if (argc < 2) {
-    fprintf(stderr, "usage: %s <file.vlbc>\n", argv[0]);
-    vl_rt_free(&rt);
-    return 2;
-  }
-  char err[256];
-  VL_Status st = vl_rt_load_vlbc_file(&rt, argv[1], err, sizeof(err));
-  if (st != VL_OK) {
-    fprintf(stderr, "load: %s\n", err);
-    vl_rt_free(&rt);
-    return 1;
-  }
-  st = vl_rt_run(&rt, 0);
-  if (st != VL_OK) {
-    fprintf(stderr, "run: %d\n", st);
-  }
-  vl_rt_free(&rt);
-  return st == VL_OK ? 0 : 1;
-}
-#endif

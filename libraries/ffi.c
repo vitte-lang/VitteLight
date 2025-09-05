@@ -1,483 +1,432 @@
-// vitte-light/libraries/dl.c
-// Gestionnaire de bibliothèques dynamiques et plugins pour VitteLight.
-// Surcouche haut niveau: chemins de recherche, nommage portable, cache,
-// init/fini des plugins, erreurs détaillées. C99, sans dépendances externes.
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
-// API (demande dl.h si besoin d'un en-tête public):
-//   typedef struct VL_DL VL_DL;                // handle opaque d'une DSO
-//   typedef struct VL_DL_Manager VL_DL_Manager;// gestionnaire
-//   void vl_dl_mgr_init(VL_DL_Manager *m);
-//   void vl_dl_mgr_free(VL_DL_Manager *m);
-//   void vl_dl_paths_reset(VL_DL_Manager *m);
-//   int  vl_dl_paths_add(VL_DL_Manager *m, const char *dir);
-//   int  vl_dl_set_env_paths(VL_DL_Manager *m, const char *envvar); // parse
-//   ':' ou ';' VL_DL* vl_dl_open_best(VL_DL_Manager *m, const char *name, int
-//   now); void   vl_dl_close(VL_DL *h); void*  vl_dl_sym(VL_DL *h, const char
-//   *name); const char* vl_dl_last_error(const VL_DL_Manager *m); // NULL si
-//   aucune
+// ffi.c — Portable FFI layer for Vitte Light (C17)
+// -------------------------------------------------
+// Features (with libffi):
+//   - Type model: void, integers (i/u8/16/32/64), floats (f32/f64), ptr
+//   - ABI selection: default, sysv, unix64, win64 (mapped to ffi_abi)
+//   - CIF builder: prepare call interface from arrays or signature string
+//   - Calls: vl_ffi_call(cif, fn_ptr, argv, retbuf)
+//   - Helpers: size/alignment for types, dl-symbol lookup helpers
+//   - Optional signature parser: e.g. "i32(i64, f64, ptr)"
+// Fallback without libffi (-DVL_HAVE_LIBFFI not set): stubs return AUX_ENOSYS.
 //
-//   // Plugins: convention symboles
-//   //   int  vl_plugin_init(struct VL_Context*);
-//   //   void vl_plugin_fini(struct VL_Context*); // optionnel
-//   int  vl_dl_plugin_load(VL_DL_Manager *m, struct VL_Context *ctx,
-//                          const char *name, int now);
-//   void vl_dl_plugin_unload_all(VL_DL_Manager *m, struct VL_Context *ctx);
+// Depends: includes/auxlib.h, dl.h (for symbol loading), optional
+// includes/ffi.h
 //
-// Build: cc -std=c99 -O2 -Wall -Wextra -pedantic -Icore -c libraries/dl.c
+// Build:
+//   cc -std=c17 -O2 -Wall -Wextra -pedantic -DVL_HAVE_LIBFFI -c ffi.c
+//   cc ... ffi.o -lffi
+//
 
 #include <ctype.h>
-#include <errno.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "api.h"  // VL_Context
+#include "auxlib.h"
+#include "dl.h"
 
-#if defined(_WIN32)
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#define VL_PATH_SEP '\\'
-#define VL_PATH_SEP_STR "\\"
+#ifdef VL_HAVE_LIBFFI
+#include <ffi.h>
+#endif
+
+// ======================================================================
+// Public header fallback (if includes/ffi.h is not present)
+// ======================================================================
+#ifndef VITTE_LIGHT_INCLUDES_FFI_H
+#define VITTE_LIGHT_INCLUDES_FFI_H 1
+
+typedef enum {
+  VL_FFI_VOID = 0,
+  VL_FFI_I8,
+  VL_FFI_U8,
+  VL_FFI_I16,
+  VL_FFI_U16,
+  VL_FFI_I32,
+  VL_FFI_U32,
+  VL_FFI_I64,
+  VL_FFI_U64,
+  VL_FFI_F32,
+  VL_FFI_F64,
+  VL_FFI_PTR
+} VlFfiType;
+
+typedef enum {
+  VL_FFI_ABI_DEFAULT = 0,
+  VL_FFI_ABI_SYSV,
+  VL_FFI_ABI_UNIX64,
+  VL_FFI_ABI_WIN64
+} VlFfiAbi;
+
+typedef struct VlFfiCif VlFfiCif;
+
+// CIF lifecycle
+AuxStatus vl_ffi_cif_new(VlFfiAbi abi, VlFfiType ret, const VlFfiType *args,
+                         int nargs, VlFfiCif **out);
+void vl_ffi_cif_free(VlFfiCif *cif);
+
+// Call
+AuxStatus vl_ffi_call(const VlFfiCif *cif, void *fn_ptr, void **argv,
+                      void *retbuf /* sized for ret type, NULL if void */);
+
+// Helpers
+size_t vl_ffi_type_size(VlFfiType t);
+size_t vl_ffi_type_align(VlFfiType t);
+
+// Signature parsing: "ret(arg1, arg2, ...)"
+// tokens: void,i8,u8,i16,u16,i32,u32,i64,u64,f32,f64,ptr
+AuxStatus vl_ffi_parse_sig(const char *sig, VlFfiType *out_ret,
+                           VlFfiType *out_args, int max_args, int *out_nargs);
+
+// Dynamic loading helpers
+AuxStatus vl_ffi_open_sym(const char *lib_stem_or_path, const char *symbol,
+                          int dl_flags, VlDl **out_lib, void **out_sym);
+
+#endif  // VITTE_LIGHT_INCLUDES_FFI_H
+
+// ======================================================================
+// Internal representation
+// ======================================================================
+
+struct VlFfiCif {
+#ifdef VL_HAVE_LIBFFI
+  ffi_cif cif;
+  ffi_type **arg_types;  // array[nargs]
+  ffi_type *ret_type;
+  int nargs;
+  VlFfiType v_ret;
+  VlFfiType *v_args;  // array[nargs] for convenience
 #else
-#include <dlfcn.h>
-#include <unistd.h>
-#define VL_PATH_SEP '/'
-#define VL_PATH_SEP_STR "/"
+  int nargs;
+  VlFfiType v_ret;
+  VlFfiType *v_args;
 #endif
+  VlFfiAbi abi;
+};
 
-#ifndef VL_DL_ERRLEN
-#define VL_DL_ERRLEN 256
-#endif
+// ----------------------------------------------------------------------
+// Utilities
+// ----------------------------------------------------------------------
 
-// ───────────────────────── Utils ─────────────────────────
-static size_t vl_strlcpy(char *dst, const char *src, size_t n) {
-  size_t L = src ? strlen(src) : 0;
-  if (n) {
-    size_t m = (L >= n) ? n - 1 : L;
-    if (m) memcpy(dst, src, m);
-    dst[m] = '\0';
+static inline int min_int(int a, int b) { return a < b ? a : b; }
+
+size_t vl_ffi_type_size(VlFfiType t) {
+  switch (t) {
+    case VL_FFI_VOID:
+      return 0;
+    case VL_FFI_I8:
+    case VL_FFI_U8:
+      return 1;
+    case VL_FFI_I16:
+    case VL_FFI_U16:
+      return 2;
+    case VL_FFI_I32:
+    case VL_FFI_U32:
+    case VL_FFI_F32:
+      return 4;
+    case VL_FFI_I64:
+    case VL_FFI_U64:
+    case VL_FFI_F64:
+      return 8;
+    case VL_FFI_PTR:
+    default:
+      return sizeof(void *);
   }
-  return L;
-}
-static size_t vl_strlcat(char *dst, const char *src, size_t n) {
-  size_t d = dst ? strlen(dst) : 0;
-  if (d >= n) return d + (src ? strlen(src) : 0);
-  return d + vl_strlcpy(dst + d, src, n - d);
-}
-static int is_pathsep(char c) { return c == '/' || c == '\\'; }
-static char *dup_cstr(const char *s) {
-  if (!s) return NULL;
-  size_t n = strlen(s);
-  char *p = (char *)malloc(n + 1);
-  if (!p) return NULL;
-  memcpy(p, s, n + 1);
-  return p;
 }
 
-// ───────────────────────── OS glue ─────────────────────────
-typedef struct VL_DL {
-#if defined(_WIN32)
-  HMODULE h;
-#else
-  void *h;
-#endif
-  char *path;  // canonicalisé si possible
-  unsigned refc;
-} VL_DL;
-
-static void *os_dlsym(VL_DL *h, const char *name) {
-  if (!h || !h->h || !name) return NULL;
-#if defined(_WIN32)
-  FARPROC p = GetProcAddress(h->h, name);
-  return (void *)p;
-#else
-  dlerror();
-  void *p = dlsym(h->h, name);
-  (void)dlerror();
-  return p;
-#endif
+size_t vl_ffi_type_align(VlFfiType t) {
+  // conservative equals size up to 8
+  size_t s = vl_ffi_type_size(t);
+  if (s == 0) return 1;
+  if (s > alignof(max_align_t)) return alignof(max_align_t);
+  return s;
 }
 
-static int os_dlopen_exact(VL_DL *h, const char *path, int now, char *err,
-                           size_t errn) {
-  if (!h || !path) return 0;
-  memset(h, 0, sizeof(*h));
-#if defined(_WIN32)
-  HMODULE mh = LoadLibraryA(path);
-  if (!mh) {
-    DWORD ec = GetLastError();
-    char *msg = NULL;
-    FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
-                       FORMAT_MESSAGE_IGNORE_INSERTS,
-                   NULL, ec, 0, (LPSTR)&msg, 0, NULL);
-    if (err && errn) {
-      snprintf(err, errn, "LoadLibrary('%s'): %s", path, msg ? msg : "error");
+static int tok_eq(const char *s, int n, const char *kw) {
+  return (int)strlen(kw) == n && strncasecmp(s, kw, n) == 0;
+}
+
+AuxStatus vl_ffi_parse_sig(const char *sig, VlFfiType *out_ret,
+                           VlFfiType *out_args, int max_args, int *out_nargs) {
+  if (!sig || !out_ret || !out_args || max_args < 0 || !out_nargs)
+    return AUX_EINVAL;
+  const char *p = sig;
+  while (isspace((unsigned char)*p)) p++;
+
+  // parse type token
+  const char *t0 = p;
+  while (*p && (isalnum((unsigned char)*p) || *p == '_')) p++;
+  int n = (int)(p - t0);
+  if (n <= 0) return AUX_EINVAL;
+
+  VlFfiType ret = VL_FFI_VOID;
+#define MAPTOK(name, TT)   \
+  if (tok_eq(t0, n, name)) \
+    ret = TT;              \
+  else
+  MAPTOK("void", VL_FFI_VOID)
+  MAPTOK("i8", VL_FFI_I8)
+  MAPTOK("u8", VL_FFI_U8) MAPTOK("i16", VL_FFI_I16) MAPTOK("u16", VL_FFI_U16)
+      MAPTOK("i32", VL_FFI_I32) MAPTOK("u32", VL_FFI_U32)
+          MAPTOK("i64", VL_FFI_I64) MAPTOK("u64", VL_FFI_U64)
+              MAPTOK("f32", VL_FFI_F32) MAPTOK("f64", VL_FFI_F64)
+                  MAPTOK("ptr", VL_FFI_PTR) {
+    return AUX_EINVAL;
+  }
+#undef MAPTOK
+
+  while (isspace((unsigned char)*p)) p++;
+  if (*p != '(') return AUX_EINVAL;
+  p++;  // skip '('
+
+  int argc = 0;
+  while (1) {
+    while (isspace((unsigned char)*p)) p++;
+    if (*p == ')') {
+      p++;
+      break;
     }
-    if (msg) LocalFree(msg);
-    return 0;
-  }
-  h->h = mh;
-#else
-  int flags = now ? RTLD_NOW : RTLD_LAZY;
-  flags |= RTLD_LOCAL;
-  void *mh = dlopen(path, flags);
-  if (!mh) {
-    const char *e = dlerror();
-    if (err && errn) vl_strlcpy(err, e ? e : "dlopen error", errn);
-    return 0;
-  }
-  h->h = mh;
-#endif
-  h->path = dup_cstr(path);
-  h->refc = 1;
-  return 1;
-}
+    if (argc >= max_args) return AUX_ERANGE;
 
-static void os_dlclose(VL_DL *h) {
-  if (!h || !h->h) return;
-#if defined(_WIN32)
-  FreeLibrary(h->h);
-#else
-  dlclose(h->h);
-#endif
-  h->h = NULL;
-  free(h->path);
-  h->path = NULL;
-  h->refc = 0;
-}
+    const char *a0 = p;
+    while (*p && (isalnum((unsigned char)*p) || *p == '_')) p++;
+    int m = (int)(p - a0);
+    if (m <= 0) return AUX_EINVAL;
 
-// ───────────────────────── Manager ─────────────────────────
-typedef struct VL_DL_Plugin {
-  VL_DL *dl;
-  char *name;
-  void (*fini)(struct VL_Context *);
-} VL_DL_Plugin;
-
-typedef struct VL_DL_Manager {
-  VL_DL **open;
-  size_t n_open, cap_open;
-  char **paths;
-  size_t n_paths, cap_paths;
-  VL_DL_Plugin *pl;
-  size_t n_pl, cap_pl;
-  char err[VL_DL_ERRLEN];
-} VL_DL_Manager;
-
-static int ensure_cap(void **ptr, size_t *cap, size_t need, size_t esz) {
-  if (need <= *cap) return 1;
-  size_t nc = (*cap) ? (*cap * 2) : 8;
-  while (nc < need) nc += nc / 2;
-  void *np = realloc(*ptr, nc * esz);
-  if (!np) return 0;
-  *ptr = np;
-  *cap = nc;
-  return 1;
-}
-
-static void set_err(VL_DL_Manager *m, const char *fmt, ...) {
-  if (!m) return;
-  va_list ap;
-  va_start(ap, fmt);
-  vsnprintf(m->err, sizeof(m->err), fmt, ap);
-  va_end(ap);
-}
-
-void vl_dl_mgr_init(VL_DL_Manager *m) {
-  if (!m) return;
-  memset(m, 0, sizeof(*m));
-  m->err[0] = '\0';
-}
-
-void vl_dl_mgr_free(VL_DL_Manager *m) {
-  if (!m) return;
-  for (size_t i = 0; i < m->n_open; i++) {
-    os_dlclose(m->open[i]);
-    free(m->open[i]);
-  }
-  free(m->open);
-  m->open = NULL;
-  m->n_open = m->cap_open = 0;
-  for (size_t i = 0; i < m->n_paths; i++) {
-    free(m->paths[i]);
-  }
-  free(m->paths);
-  m->paths = NULL;
-  m->n_paths = m->cap_paths = 0;
-  for (size_t i = 0; i < m->n_pl; i++) {
-    free(m->pl[i].name);
-  }
-  free(m->pl);
-  m->pl = NULL;
-  m->n_pl = m->cap_pl = 0;
-  m->err[0] = '\0';
-}
-
-const char *vl_dl_last_error(const VL_DL_Manager *m) {
-  if (!m) return "invalid";
-  return m->err[0] ? m->err : NULL;
-}
-
-void vl_dl_paths_reset(VL_DL_Manager *m) {
-  if (!m) return;
-  for (size_t i = 0; i < m->n_paths; i++) free(m->paths[i]);
-  m->n_paths = 0;
-}
-
-int vl_dl_paths_add(VL_DL_Manager *m, const char *dir) {
-  if (!m || !dir || !*dir) return 0;
-  if (!ensure_cap((void **)&m->paths, &m->cap_paths, m->n_paths + 1,
-                  sizeof(char *)))
-    return 0;
-  m->paths[m->n_paths++] = dup_cstr(dir);
-  return 1;
-}
-
-static int split_next(const char **ps, char *out, size_t n) {
-  const char *s = *ps;
-  if (!s || !*s) return 0;
-  size_t k = 0;
-  while (*s && *s != ':' && *s != ';') {
-    if (k + 1 < n) out[k++] = *s;
-    s++;
-  }
-  out[k] = '\0';
-  if (*s == ':' || *s == ';') s++;
-  *ps = s;
-  return k > 0;
-}
-
-int vl_dl_set_env_paths(VL_DL_Manager *m, const char *envvar) {
-  if (!m) return 0;
-  if (!envvar || !*envvar) envvar = "VITTE_PLUGINS";
-  const char *v = getenv(envvar);
-  if (!v || !*v) return 1;
-  char buf[512];
-  while (split_next(&v, buf, sizeof(buf))) {
-    vl_dl_paths_add(m, buf);
-  }
-  return 1;
-}
-
-// ───────────────────────── Nomination portable ─────────────────────────
-static int has_ext(const char *name) {
-  const char *d = strrchr(name, '.');
-  const char *s1 = strrchr(name, '/');
-  const char *s2 = strrchr(name, '\\');
-  const char *s = (s1 && s2) ? (s1 > s2 ? s1 : s2) : (s1 ? s1 : s2);
-  return d && (!s || d > s);
-}
-static int has_sep(const char *name) {
-  for (const char *p = name; *p; ++p)
-    if (is_pathsep(*p)) return 1;
-  return 0;
-}
-
-static void make_candidates(const char *base, char cand[][256], size_t *out_n) {
-  size_t n = 0;
-#if defined(__APPLE__)
-  snprintf(cand[n++], 256, "lib%s.dylib", base);
-  snprintf(cand[n++], 256, "%s.dylib", base);
-  snprintf(cand[n++], 256, "lib%s.so", base);
-  snprintf(cand[n++], 256, "%s.so", base);
-#elif defined(_WIN32)
-  snprintf(cand[n++], 256, "%s.dll", base);
-  snprintf(cand[n++], 256, "%s", base);
-#else
-  snprintf(cand[n++], 256, "lib%s.so", base);
-  snprintf(cand[n++], 256, "%s.so", base);
-#endif
-  *out_n = n;
-}
-
-static int join_path(char *out, size_t n, const char *dir, const char *file) {
-  if (!out || n == 0) return 0;
-  out[0] = '\0';
-  if (!dir || !*dir) {
-    return (int)(vl_strlcpy(out, file ? file : "", n) < n);
-  }
-  vl_strlcpy(out, dir, n);
-  size_t L = strlen(out);
-  if (L && out[L - 1] != VL_PATH_SEP && out[L - 1] != '/')
-    vl_strlcat(out, VL_PATH_SEP_STR, n);
-  vl_strlcat(out, file ? file : "", n);
-  return (int)(strlen(out) < n);
-}
-
-// ───────────────────────── Open/search ─────────────────────────
-static VL_DL *mgr_cache_get(VL_DL_Manager *m, const char *path) {
-  for (size_t i = 0; i < m->n_open; i++) {
-    if (m->open[i]->path && strcmp(m->open[i]->path, path) == 0) {
-      m->open[i]->refc++;
-      return m->open[i];
+    VlFfiType at = VL_FFI_VOID;
+#define MAPA(name, TT)     \
+  if (tok_eq(a0, m, name)) \
+    at = TT;               \
+  else
+    MAPA("void", VL_FFI_VOID)  // only valid if first and only arg
+    MAPA("i8", VL_FFI_I8)
+    MAPA("u8", VL_FFI_U8) MAPA("i16", VL_FFI_I16) MAPA("u16", VL_FFI_U16)
+        MAPA("i32", VL_FFI_I32) MAPA("u32", VL_FFI_U32) MAPA("i64", VL_FFI_I64)
+            MAPA("u64", VL_FFI_U64) MAPA("f32", VL_FFI_F32)
+                MAPA("f64", VL_FFI_F64) MAPA("ptr", VL_FFI_PTR) {
+      return AUX_EINVAL;
     }
+#undef MAPA
+
+    if (at == VL_FFI_VOID) {
+      // only allowed as the sole argument
+      while (isspace((unsigned char)*p)) p++;
+      if (*p != ')') return AUX_EINVAL;
+      p++;
+      argc = 0;
+      break;
+    }
+
+    out_args[argc++] = at;
+
+    while (isspace((unsigned char)*p)) p++;
+    if (*p == ',') {
+      p++;
+      continue;
+    }
+    if (*p == ')') {
+      p++;
+      break;
+    }
+    return AUX_EINVAL;
   }
-  return NULL;
-}
-static int mgr_cache_put(VL_DL_Manager *m, VL_DL *h) {
-  if (!ensure_cap((void **)&m->open, &m->cap_open, m->n_open + 1,
-                  sizeof(VL_DL *)))
-    return 0;
-  m->open[m->n_open++] = h;
-  return 1;
+
+  *out_ret = ret;
+  *out_nargs = argc;
+  return AUX_OK;
 }
 
-VL_DL *vl_dl_open_best(VL_DL_Manager *m, const char *name, int now) {
-  if (!m || !name || !*name) return NULL;
-  m->err[0] = '\0';
-  // Chemin explicite ou nom avec extension => essai direct
-  if (has_sep(name) || has_ext(name)) {
-    VL_DL *h = (VL_DL *)calloc(1, sizeof(VL_DL));
-    if (!h) {
-      set_err(m, "OOM");
+// ======================================================================
+// libffi-backed implementation
+// ======================================================================
+#ifdef VL_HAVE_LIBFFI
+
+static ffi_abi map_abi(VlFfiAbi abi) {
+#if defined(_WIN32) && defined(_M_X64)
+  (void)abi;
+  return FFI_WIN64;
+#else
+  switch (abi) {
+    case VL_FFI_ABI_SYSV:
+      return FFI_SYSV;
+#ifdef FFI_UNIX64
+    case VL_FFI_ABI_UNIX64:
+      return FFI_UNIX64;
+#endif
+#ifdef FFI_WIN64
+    case VL_FFI_ABI_WIN64:
+      return FFI_WIN64;
+#endif
+    case VL_FFI_ABI_DEFAULT:
+    default:
+      return FFI_DEFAULT_ABI;
+  }
+#endif
+}
+
+static ffi_type *map_type(VlFfiType t) {
+  switch (t) {
+    case VL_FFI_VOID:
+      return &ffi_type_void;
+    case VL_FFI_I8:
+      return &ffi_type_sint8;
+    case VL_FFI_U8:
+      return &ffi_type_uint8;
+    case VL_FFI_I16:
+      return &ffi_type_sint16;
+    case VL_FFI_U16:
+      return &ffi_type_uint16;
+    case VL_FFI_I32:
+      return &ffi_type_sint32;
+    case VL_FFI_U32:
+      return &ffi_type_uint32;
+    case VL_FFI_I64:
+      return &ffi_type_sint64;
+    case VL_FFI_U64:
+      return &ffi_type_uint64;
+    case VL_FFI_F32:
+      return &ffi_type_float;
+    case VL_FFI_F64:
+      return &ffi_type_double;
+    case VL_FFI_PTR:
+      return &ffi_type_pointer;
+    default:
       return NULL;
-    }
-    if (!os_dlopen_exact(h, name, now, m->err, sizeof(m->err))) {
-      free(h);
-      return NULL;
-    }
-    if (!mgr_cache_put(m, h)) {
-      os_dlclose(h);
-      free(h);
-      set_err(m, "OOM");
-      return NULL;
-    }
-    return h;
   }
-  // Construire candidats + chemins
-  char cand[6][256];
-  size_t cn = 0;
-  make_candidates(name, cand, &cn);
-  // 1) chemins configurés
-  for (size_t d = 0; d < m->n_paths; d++) {
-    for (size_t i = 0; i < cn; i++) {
-      char full[512];
-      join_path(full, sizeof(full), m->paths[d], cand[i]);
-      VL_DL *cached = mgr_cache_get(m, full);
-      if (cached) return cached;
-      VL_DL *h = (VL_DL *)calloc(1, sizeof(VL_DL));
-      if (!h) {
-        set_err(m, "OOM");
-        return NULL;
+}
+
+AuxStatus vl_ffi_cif_new(VlFfiAbi abi, VlFfiType ret, const VlFfiType *args,
+                         int nargs, VlFfiCif **out) {
+  if (!out || nargs < 0) return AUX_EINVAL;
+  *out = NULL;
+
+  VlFfiCif *c = (VlFfiCif *)calloc(1, sizeof *c);
+  if (!c) return AUX_ENOMEM;
+
+  c->abi = abi;
+  c->v_ret = ret;
+  c->nargs = nargs;
+
+  if (nargs > 0) {
+    c->v_args = (VlFfiType *)malloc(sizeof(VlFfiType) * (size_t)nargs);
+    c->arg_types = (ffi_type **)malloc(sizeof(ffi_type *) * (size_t)nargs);
+    if (!c->v_args || !c->arg_types) {
+      free(c->v_args);
+      free(c->arg_types);
+      free(c);
+      return AUX_ENOMEM;
+    }
+    for (int i = 0; i < nargs; i++) {
+      c->v_args[i] = args[i];
+      c->arg_types[i] = map_type(args[i]);
+      if (!c->arg_types[i]) {
+        vl_ffi_cif_free(c);
+        return AUX_EINVAL;
       }
-      if (os_dlopen_exact(h, full, now, m->err, sizeof(m->err))) {
-        if (!mgr_cache_put(m, h)) {
-          os_dlclose(h);
-          free(h);
-          set_err(m, "OOM");
-          return NULL;
-        }
-        return h;
-      }
-      free(h);
     }
   }
-  // 2) répertoire courant
-  for (size_t i = 0; i < cn; i++) {
-    VL_DL *h = (VL_DL *)calloc(1, sizeof(VL_DL));
-    if (!h) {
-      set_err(m, "OOM");
-      return NULL;
-    }
-    if (os_dlopen_exact(h, cand[i], now, m->err, sizeof(m->err))) {
-      if (!mgr_cache_put(m, h)) {
-        os_dlclose(h);
-        free(h);
-        set_err(m, "OOM");
-        return NULL;
-      }
-      return h;
-    }
-    free(h);
+
+  c->ret_type = map_type(ret);
+  if (!c->ret_type) {
+    vl_ffi_cif_free(c);
+    return AUX_EINVAL;
   }
-  if (m->err[0] == '\0') set_err(m, "not found: %s", name);
-  return NULL;
+
+  ffi_status fs = ffi_prep_cif(&c->cif, map_abi(abi), (unsigned)nargs,
+                               c->ret_type, c->arg_types);
+  if (fs != FFI_OK) {
+    vl_ffi_cif_free(c);
+    return AUX_EIO;
+  }
+
+  *out = c;
+  return AUX_OK;
 }
 
-void vl_dl_close(VL_DL *h) {
-  if (!h) return;
-  if (h->refc > 1) {
-    h->refc--;
-    return;
-  }
-  os_dlclose(h);
-  free(h);
+void vl_ffi_cif_free(VlFfiCif *c) {
+  if (!c) return;
+  free(c->v_args);
+  free(c->arg_types);
+  free(c);
 }
 
-void *vl_dl_sym(VL_DL *h, const char *name) { return os_dlsym(h, name); }
+AuxStatus vl_ffi_call(const VlFfiCif *cif, void *fn_ptr, void **argv,
+                      void *retbuf) {
+  if (!cif || !fn_ptr) return AUX_EINVAL;
+  if (cif->v_ret != VL_FFI_VOID && !retbuf) return AUX_EINVAL;
+  ffi_call((ffi_cif *)&cif->cif, FFI_FN(fn_ptr), retbuf, argv);
+  return AUX_OK;
+}
 
-// ───────────────────────── Plugins ─────────────────────────
-int vl_dl_plugin_load(VL_DL_Manager *m, struct VL_Context *ctx,
-                      const char *name, int now) {
-  if (!m || !ctx || !name) return 0;
-  VL_DL *h = vl_dl_open_best(m, name, now);
-  if (!h) return 0;
-  typedef int (*initfn)(struct VL_Context *);
-  typedef void (*finifn)(struct VL_Context *);
-  initfn init = (initfn)vl_dl_sym(h, "vl_plugin_init");
-  if (!init) {
-    set_err(m, "symbol vl_plugin_init not found in %s",
-            h->path ? h->path : name);
+#else  // !VL_HAVE_LIBFFI
+
+AuxStatus vl_ffi_cif_new(VlFfiAbi abi, VlFfiType ret, const VlFfiType *args,
+                         int nargs, VlFfiCif **out) {
+  if (!out || nargs < 0) return AUX_EINVAL;
+  VlFfiCif *c = (VlFfiCif *)calloc(1, sizeof *c);
+  if (!c) return AUX_ENOMEM;
+  c->abi = abi;
+  c->v_ret = ret;
+  c->nargs = nargs;
+  if (nargs > 0) {
+    c->v_args = (VlFfiType *)malloc(sizeof(VlFfiType) * (size_t)nargs);
+    if (!c->v_args) {
+      free(c);
+      return AUX_ENOMEM;
+    }
+    memcpy(c->v_args, args, sizeof(VlFfiType) * (size_t)nargs);
+  }
+  *out = c;
+  return AUX_OK;
+}
+
+void vl_ffi_cif_free(VlFfiCif *c) {
+  if (!c) return;
+  free(c->v_args);
+  free(c);
+}
+
+AuxStatus vl_ffi_call(const VlFfiCif *cif, void *fn_ptr, void **argv,
+                      void *retbuf) {
+  (void)cif;
+  (void)fn_ptr;
+  (void)argv;
+  (void)retbuf;
+  return AUX_ENOSYS;
+}
+
+#endif  // VL_HAVE_LIBFFI
+
+// ======================================================================
+// Dynamic loading helpers
+// ======================================================================
+
+AuxStatus vl_ffi_open_sym(const char *lib_stem_or_path, const char *symbol,
+                          int dl_flags, VlDl **out_lib, void **out_sym) {
+  if (!lib_stem_or_path || !symbol || !out_lib || !out_sym) return AUX_EINVAL;
+  *out_lib = NULL;
+  *out_sym = NULL;
+
+  VlDl *h = NULL;
+  AuxStatus s;
+  // Try exact path first, then platform-specific candidates
+  s = vl_dl_open(lib_stem_or_path, dl_flags, &h);
+  if (s != AUX_OK) {
+    s = vl_dl_open_ext(lib_stem_or_path, dl_flags, &h);
+    if (s != AUX_OK) return s;
+  }
+  void *sym = vl_dl_sym_ptr(h, symbol);
+  if (!sym) {
     vl_dl_close(h);
-    return 0;
+    return AUX_EIO;
   }
-  finifn fini = (finifn)vl_dl_sym(h, "vl_plugin_fini");
-  int ok = init(ctx);
-  if (!ok) {
-    set_err(m, "vl_plugin_init failed in %s", h->path ? h->path : name);
-    vl_dl_close(h);
-    return 0;
-  }
-  // Enregistrer pour déchargement ultérieur
-  if (!ensure_cap((void **)&m->pl, &m->cap_pl, m->n_pl + 1,
-                  sizeof(VL_DL_Plugin))) {
-    set_err(m, "OOM");
-    return 0;
-  }
-  m->pl[m->n_pl].dl = h;
-  m->pl[m->n_pl].name = dup_cstr(name);
-  m->pl[m->n_pl].fini = fini;
-  m->n_pl++;
-  return 1;
+
+  *out_lib = h;
+  *out_sym = sym;
+  return AUX_OK;
 }
 
-void vl_dl_plugin_unload_all(VL_DL_Manager *m, struct VL_Context *ctx) {
-  if (!m) return;
-  for (size_t i = m->n_pl; i > 0; i--) {
-    VL_DL_Plugin *p = &m->pl[i - 1];
-    if (p->fini) p->fini(ctx);
-    if (p->dl) {
-      vl_dl_close(p->dl);
-      p->dl = NULL;
-    }
-    free(p->name);
-    p->name = NULL;
-  }
-  m->n_pl = 0;
-}
-
-// ───────────────────────── Autotest (optionnel) ─────────────────────────
-#ifdef VL_DL_TEST_MAIN
-#include <inttypes.h>
-int main(int argc, char **argv) {
-  VL_DL_Manager M;
-  vl_dl_mgr_init(&M);
-  vl_dl_set_env_paths(&M, NULL);
-  if (argc > 2) vl_dl_paths_add(&M, argv[2]);
-  VL_DL *h = vl_dl_open_best(&M, argc > 1 ? argv[1] : "c", 1);
-  if (!h) {
-    fprintf(stderr, "open: %s\n", vl_dl_last_error(&M));
-    vl_dl_mgr_free(&M);
-    return 1;
-  }
-#if defined(_WIN32)
-  void *sym = vl_dl_sym(h, "GetCurrentProcessId");
-#else
-  void *sym = vl_dl_sym(h, "puts");
-#endif
-  printf("lib='%s' sym=%p refc=%u\n", h->path ? h->path : "?", sym, h->refc);
-  vl_dl_close(h);
-  vl_dl_mgr_free(&M);
-  return 0;
-}
-#endif
+// ======================================================================
+// End
+// ======================================================================

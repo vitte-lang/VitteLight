@@ -1,754 +1,810 @@
-// vitte-light/libraries/strlib.c
-// String library for VitteLight: UTF‑8 helpers + rich string natives.
-// Self-contained C99. No external deps except VL runtime headers.
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Public entry:
-//   void vl_register_strlib(struct VL_Context *ctx);
+// strlib.c — String library for Vitte Light VM (C17, complet)
+// Namespace: "str"
 //
-// Natives exported:
-//   s_ascii_lower(s)        -> str        // ASCII only
-//   s_ascii_upper(s)        -> str
-//   s_trim(s)               -> str        // ASCII <= 0x20
-//   s_ltrim(s)              -> str
-//   s_rtrim(s)              -> str
-//   s_startswith(s,prefix)  -> bool
-//   s_endswith(s,suffix)    -> bool
-//   s_repeat(s,n)           -> str
-//   s_pad_left(s,width[,ch])-> str        // ch: first byte used, default ' '
-//   s_pad_right(s,width[,ch])-> str
-//   s_replace(s,from,to)    -> str        // replace all (byte-wise)
-//   s_replace_n(s,from,to,n)-> str        // replace at most n
-//   s_reverse(s)            -> str        // UTF‑8 aware
-//   s_len_cp(s)             -> int        // codepoint count
-//   s_slice_cp(s,st,len)    -> str        // slice by codepoints
-//   s_hex(s)                -> str        // hex encode bytes
-//   s_unhex(hex)            -> str|error  // decode hex -> bytes
-//   s_b64enc(s)             -> str        // base64 encode
-//   s_b64dec(s)             -> str|error  // base64 decode
-//   s_urlenc(s)             -> str        // percent-encoding
-//   s_urldec(s)             -> str|error  // percent-decoding
-//   s_json_escape(s)        -> str        // escape JSON string content (no
-//   quotes) s_hash64(s)             -> int        // FNV-1a 64-bit
+// Conventions:
+//   - Byte indexing is 1-based. Negative indexes are from end (-1 == last).
+//   - All operations are byte-based unless prefixed with utf8_*.
+//   - Functions return (nil,"EINVAL") or (nil,"ERANGE") on invalid args/ranges.
+//   - split() returns N results as multiple return values.
 //
-// Build:
-//   cc -std=c99 -O2 -Wall -Wextra -pedantic -Icore -c libraries/strlib.c
+// API:
+//   Basics:
+//     str.len(s)                       -> int
+//     str.byte_at(s, i)                -> int (0..255) | (nil,"ERANGE")
+//     str.sub(s, i[, j])               -> string
+//     str.find(s, needle[, start=1[, nocase=false]]) -> pos:int (0 if not
+//     found) str.replace(s, from, to[, max=-1[, nocase=false]]) -> out:string,
+//     count:int str.split(s, sep[, max=-1])      -> v1, v2, ... (N returns)
+//     str.lower(s)                     -> string
+//     str.upper(s)                     -> string
+//     str.trim(s)                      -> string
+//     str.ltrim(s)                     -> string
+//     str.rtrim(s)                     -> string
+//     str.starts_with(s, pfx[, nocase=false]) -> bool
+//     str.ends_with(s, sfx[, nocase=false])   -> bool
+//     str.repeat(s, n)                 -> string | (nil,"ERANGE")
+//     str.reverse(s)                   -> string
+//     str.pad_left(s, width[, ch=" "]) -> string
+//     str.pad_right(s, width[, ch=" "])-> string
+//     str.cmp(a,b[, nocase=false])     -> -1|0|1
+//     str.hash32(s)                    -> uint32 (FNV-1a)
+//
+//   Encoding:
+//     str.hex(s)                       -> hex:string
+//     str.unhex(hex)                   -> bytes:string | (nil,"EINVAL")
+//     str.base64_encode(s)             -> b64:string
+//     str.base64_decode(b64)           -> bytes:string | (nil,"EINVAL")
+//
+//   UTF-8 helpers (best-effort, validation-light):
+//     str.utf8_len(s)                  -> codepoints:int
+//     str.utf8_sub(s, i[, j])          -> substring by codepoints
+//
+// Depends: auxlib.h, state.h, object.h, vm.h
 
 #include <ctype.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "api.h"
-#include "ctype.h"
-#include "mem.h"     // VL_Buffer
-#include "string.h"  // VL_String, vl_make_strn
+#include "auxlib.h"
+#include "object.h"
+#include "state.h"
+#include "vm.h"
 
-// ───────────────────────── VM helpers ─────────────────────────
-#define RET_NIL()                \
-  do {                           \
-    if (ret) *(ret) = vlv_nil(); \
-    return VL_OK;                \
-  } while (0)
-#define RET_INT(v)                           \
-  do {                                       \
-    if (ret) *(ret) = vlv_int((int64_t)(v)); \
-    return VL_OK;                            \
-  } while (0)
-#define RET_BOOL(v)                       \
-  do {                                    \
-    if (ret) *(ret) = vlv_bool((v) != 0); \
-    return VL_OK;                         \
-  } while (0)
-#define RET_STR_BYTES(p, n)                                             \
-  do {                                                                  \
-    VL_Value __s = vl_make_strn(ctx, (const char *)(p), (uint32_t)(n)); \
-    if (__s.type != VT_STR) return VL_ERR_OOM;                          \
-    if (ret) *ret = __s;                                                \
-    return VL_OK;                                                       \
-  } while (0)
-
-static int need_str(const VL_Value *v) {
-  return v && v->type == VT_STR && v->as.s;
+// ---------------------------------------------------------------------
+// VM arg helpers
+// ---------------------------------------------------------------------
+static const char *st_check_str(VL_State *S, int idx) {
+  if (vl_get(S, idx) && vl_isstring(S, idx))
+    return vl_tocstring(S, vl_get(S, idx));
+  vl_errorf(S, "argument #%d: string expected", idx);
+  vl_error(S);
+  return NULL;
 }
-
-// ───────────────────────── ASCII transforms ─────────────────────────
-static VL_Status s_ascii_lower(struct VL_Context *ctx, const VL_Value *a,
-                               uint8_t c, VL_Value *ret, void *u) {
-  (void)u;
-  if (c < 1 || !need_str(&a[0])) return VL_ERR_TYPE;
-  size_t L = a[0].as.s->len;
-  const unsigned char *s = (const unsigned char *)a[0].as.s->data;
-  char *tmp = (char *)malloc(L);
-  if (!tmp) return VL_ERR_OOM;
-  for (size_t i = 0; i < L; i++) {
-    unsigned char ch = s[i];
-    if (ch >= 'A' && ch <= 'Z') ch += 'a' - 'A';
-    tmp[i] = (char)ch;
-  }
-  RET_STR_BYTES(tmp, L);
-}
-static VL_Status s_ascii_upper(struct VL_Context *ctx, const VL_Value *a,
-                               uint8_t c, VL_Value *ret, void *u) {
-  (void)u;
-  if (c < 1 || !need_str(&a[0])) return VL_ERR_TYPE;
-  size_t L = a[0].as.s->len;
-  const unsigned char *s = (const unsigned char *)a[0].as.s->data;
-  char *tmp = (char *)malloc(L);
-  if (!tmp) return VL_ERR_OOM;
-  for (size_t i = 0; i < L; i++) {
-    unsigned char ch = s[i];
-    if (ch >= 'a' && ch <= 'z') ch -= 'a' - 'A';
-    tmp[i] = (char)ch;
-  }
-  RET_STR_BYTES(tmp, L);
-}
-
-// ───────────────────────── Trim ─────────────────────────
-static inline int is_space_ascii(unsigned char c) { return c <= 0x20; }
-static VL_Status s_trim(struct VL_Context *ctx, const VL_Value *a, uint8_t c,
-                        VL_Value *ret, void *u) {
-  (void)u;
-  if (c < 1 || !need_str(&a[0])) return VL_ERR_TYPE;
-  const char *s = a[0].as.s->data;
-  size_t L = a[0].as.s->len;
-  size_t i = 0, j = L;
-  while (i < j && is_space_ascii((unsigned char)s[i])) i++;
-  while (j > i && is_space_ascii((unsigned char)s[j - 1])) j--;
-  RET_STR_BYTES(s + i, j - i);
-}
-static VL_Status s_ltrim(struct VL_Context *ctx, const VL_Value *a, uint8_t c,
-                         VL_Value *ret, void *u) {
-  (void)u;
-  if (c < 1 || !need_str(&a[0])) return VL_ERR_TYPE;
-  const char *s = a[0].as.s->data;
-  size_t L = a[0].as.s->len;
-  size_t i = 0;
-  while (i < L && is_space_ascii((unsigned char)s[i])) i++;
-  RET_STR_BYTES(s + i, L - i);
-}
-static VL_Status s_rtrim(struct VL_Context *ctx, const VL_Value *a, uint8_t c,
-                         VL_Value *ret, void *u) {
-  (void)u;
-  if (c < 1 || !need_str(&a[0])) return VL_ERR_TYPE;
-  const char *s = a[0].as.s->data;
-  size_t L = a[0].as.s->len;
-  size_t j = L;
-  while (j > 0 && is_space_ascii((unsigned char)s[j - 1])) j--;
-  RET_STR_BYTES(s, j);
-}
-
-// ───────────────────────── Prefix/Suffix ─────────────────────────
-static VL_Status s_startswith(struct VL_Context *ctx, const VL_Value *a,
-                              uint8_t c, VL_Value *ret, void *u) {
-  (void)ctx;
-  (void)u;
-  if (c < 2 || !need_str(&a[0]) || !need_str(&a[1])) return VL_ERR_TYPE;
-  const VL_String *S = a[0].as.s, *P = a[1].as.s;
-  RET_BOOL(S->len >= P->len && memcmp(S->data, P->data, P->len) == 0);
-}
-static VL_Status s_endswith(struct VL_Context *ctx, const VL_Value *a,
-                            uint8_t c, VL_Value *ret, void *u) {
-  (void)ctx;
-  (void)u;
-  if (c < 2 || !need_str(&a[0]) || !need_str(&a[1])) return VL_ERR_TYPE;
-  const VL_String *S = a[0].as.s, *P = a[1].as.s;
-  RET_BOOL(S->len >= P->len &&
-           memcmp(S->data + S->len - P->len, P->data, P->len) == 0);
-}
-
-// ───────────────────────── Repeat / Pad ─────────────────────────
-static VL_Status s_repeat(struct VL_Context *ctx, const VL_Value *a, uint8_t c,
-                          VL_Value *ret, void *u) {
-  (void)u;
-  if (c < 2 || !need_str(&a[0])) return VL_ERR_TYPE;
-  int64_t n = 0;
-  if (!vl_value_as_int(&a[1], &n) || n < 0) return VL_ERR_INVAL;
-  const VL_String *S = a[0].as.s;
-  if ((uint64_t)S->len * (uint64_t)n > (uint64_t)UINT32_MAX) return VL_ERR_OOM;
-  VL_Buffer b;
-  vl_buf_init(&b);
-  for (int64_t i = 0; i < n; i++) {
-    vl_buf_append(&b, S->data, S->len);
-  }
-  VL_Value out = vl_make_strn(ctx, (const char *)b.d, (uint32_t)b.n);
-  vl_buf_free(&b);
-  if (out.type != VT_STR) return VL_ERR_OOM;
-  if (ret) *ret = out;
-  return VL_OK;
-}
-
-static unsigned char get_pad_ch(const VL_Value *v) {
-  if (!v || v->type != VT_STR || !v->as.s || v->as.s->len == 0) return ' ';
-  return (unsigned char)v->as.s->data[0];
-}
-static VL_Status pad_common(struct VL_Context *ctx, const VL_String *S,
-                            int left, int64_t width, unsigned char ch,
-                            VL_Value *ret) {
-  if (width <= 0) RET_STR_BYTES(S->data, S->len);
-  if ((uint64_t)width > UINT32_MAX) return VL_ERR_OOM;
-  size_t w = (size_t)width;
-  size_t cur = S->len;
-  if (cur >= w) RET_STR_BYTES(S->data, S->len);
-  size_t pad = w - cur;
-  char *tmp = (char *)malloc(w);
-  if (!tmp) return VL_ERR_OOM;
-  if (left) {
-    memset(tmp, ch, pad);
-    memcpy(tmp + pad, S->data, S->len);
-  } else {
-    memcpy(tmp, S->data, S->len);
-    memset(tmp + S->len, ch, pad);
-  }
-  RET_STR_BYTES(tmp, w);
-}
-static VL_Status s_pad_left(struct VL_Context *ctx, const VL_Value *a,
-                            uint8_t c, VL_Value *ret, void *u) {
-  (void)u;
-  if (c < 2 || !need_str(&a[0])) return VL_ERR_TYPE;
-  int64_t w = 0;
-  if (!vl_value_as_int(&a[1], &w) || w < 0) return VL_ERR_INVAL;
-  unsigned char ch = (c >= 3) ? get_pad_ch(&a[2]) : ' ';
-  return pad_common(ctx, a[0].as.s, 1, w, ch, ret);
-}
-static VL_Status s_pad_right(struct VL_Context *ctx, const VL_Value *a,
-                             uint8_t c, VL_Value *ret, void *u) {
-  (void)u;
-  if (c < 2 || !need_str(&a[0])) return VL_ERR_TYPE;
-  int64_t w = 0;
-  if (!vl_value_as_int(&a[1], &w) || w < 0) return VL_ERR_INVAL;
-  unsigned char ch = (c >= 3) ? get_pad_ch(&a[2]) : ' ';
-  return pad_common(ctx, a[0].as.s, 0, w, ch, ret);
-}
-
-// ───────────────────────── Replace (byte-wise) ─────────────────────────
-static VL_Status s_replace_n(struct VL_Context *ctx, const VL_Value *a,
-                             uint8_t c, VL_Value *ret, void *u) {
-  (void)u;
-  if (c < 3 || !need_str(&a[0]) || !need_str(&a[1]) || !need_str(&a[2]))
-    return VL_ERR_TYPE;
-  int64_t nmax = (c >= 4 && a[3].type != VT_NIL) ? 0 : 0;
-  if (c >= 4 && a[3].type != VT_NIL) {
-    if (!vl_value_as_int(&a[3], &nmax) || nmax < 0) return VL_ERR_INVAL;
-  }
-  const VL_String *S = a[0].as.s, *F = a[1].as.s, *T = a[2].as.s;
-  if (F->len == 0) {  // degenerate: insert T between bytes, max nmax
-    VL_Buffer b;
-    vl_buf_init(&b);
-    size_t reps = (nmax == 0)
-                      ? (S->len ? S->len - 1 : 0)
-                      : (size_t)((S->len ? S->len - 1 : 0) < (size_t)nmax
-                                     ? (S->len ? S->len - 1 : 0)
-                                     : (size_t)nmax);
-    for (size_t i = 0; i < S->len; i++) {
-      vl_buf_append(&b, S->data + i, 1);
-      if (i + 1 < S->len && reps) {
-        vl_buf_append(&b, T->data, T->len);
-        if (nmax > 0) nmax--;
-      }
-    }
-    VL_Value out = vl_make_strn(ctx, (const char *)b.d, (uint32_t)b.n);
-    vl_buf_free(&b);
-    if (out.type != VT_STR) return VL_ERR_OOM;
-    if (ret) *ret = out;
-    return VL_OK;
-  }
-  VL_Buffer b;
-  vl_buf_init(&b);
-  const char *p = S->data;
-  size_t i = 0;
-  int64_t done = 0;
-  while (i + F->len <= S->len) {
-    if (memcmp(p + i, F->data, F->len) == 0 && (nmax == 0 || done < nmax)) {
-      vl_buf_append(&b, T->data, T->len);
-      i += F->len;
-      done++;
-    } else {
-      vl_buf_append(&b, p + i, 1);
-      i++;
-    }
-  }
-  if (i < S->len) vl_buf_append(&b, p + i, S->len - i);
-  VL_Value out = vl_make_strn(ctx, (const char *)b.d, (uint32_t)b.n);
-  vl_buf_free(&b);
-  if (out.type != VT_STR) return VL_ERR_OOM;
-  if (ret) *ret = out;
-  return VL_OK;
-}
-static VL_Status s_replace(struct VL_Context *ctx, const VL_Value *a, uint8_t c,
-                           VL_Value *ret, void *u) {
-  return s_replace_n(ctx, a, c, ret, u);
-}
-
-// ───────────────────────── UTF‑8 core ─────────────────────────
-static int utf8_decode(const unsigned char *s, size_t n, uint32_t *cp,
-                       size_t *adv) {
-  if (n == 0) return 0;
-  unsigned c0 = s[0];
-  if (c0 < 0x80) {
-    if (cp) *cp = c0;
-    if (adv) *adv = 1;
-    return 1;
-  }
-  if ((c0 & 0xE0) == 0xC0) {
-    if (n < 2) return 0;
-    unsigned c1 = s[1];
-    if ((c1 & 0xC0) != 0x80) return 0;
-    uint32_t u = ((c0 & 0x1F) << 6) | (c1 & 0x3F);
-    if (u < 0x80) return 0;
-    if (cp) *cp = u;
-    if (adv) *adv = 2;
-    return 1;
-  }
-  if ((c0 & 0xF0) == 0xE0) {
-    if (n < 3) return 0;
-    unsigned c1 = s[1], c2 = s[2];
-    if ((c1 & 0xC0) != 0x80 || (c2 & 0xC0) != 0x80) return 0;
-    uint32_t u = ((c0 & 0x0F) << 12) | ((c1 & 0x3F) << 6) | (c2 & 0x3F);
-    if (u < 0x800 || (u >= 0xD800 && u <= 0xDFFF)) return 0;
-    if (cp) *cp = u;
-    if (adv) *adv = 3;
-    return 1;
-  }
-  if ((c0 & 0xF8) == 0xF0) {
-    if (n < 4) return 0;
-    unsigned c1 = s[1], c2 = s[2], c3 = s[3];
-    if ((c1 & 0xC0) != 0x80 || (c2 & 0xC0) != 0x80 || (c3 & 0xC0) != 0x80)
-      return 0;
-    uint32_t u = ((c0 & 0x07) << 18) | ((c1 & 0x3F) << 12) |
-                 ((c2 & 0x3F) << 6) | (c3 & 0x3F);
-    if (u < 0x10000 || u > 0x10FFFF) return 0;
-    if (cp) *cp = u;
-    if (adv) *adv = 4;
-    return 1;
-  }
+static int64_t st_check_int(VL_State *S, int idx) {
+  if (vl_get(S, idx) && (vl_isint(S, idx) || vl_isfloat(S, idx)))
+    return vl_isint(S, idx) ? vl_toint(S, vl_get(S, idx))
+                            : (int64_t)vl_tonumber(S, vl_get(S, idx));
+  vl_errorf(S, "argument #%d: int expected", idx);
+  vl_error(S);
   return 0;
 }
-
-static size_t utf8_count(const char *s, size_t n, int *ok) {
-  *ok = 1;
-  size_t i = 0, cnt = 0;
-  while (i < n) {
-    size_t adv = 0;
-    if (!utf8_decode((const unsigned char *)s + i, n - i, NULL, &adv)) {
-      *ok = 0;
-      break;
-    }
-    i += adv;
-    cnt++;
-  }
-  return cnt;
+static int st_opt_bool(VL_State *S, int idx, int defv) {
+  if (!vl_get(S, idx)) return defv;
+  return vl_tobool(vl_get(S, idx)) ? 1 : 0;
+}
+static int st_opt_int(VL_State *S, int idx, int defv) {
+  if (!vl_get(S, idx)) return defv;
+  if (vl_isint(S, idx) || vl_isfloat(S, idx)) return (int)st_check_int(S, idx);
+  return defv;
 }
 
-static int utf8_slice_bounds(const char *s, size_t n, int64_t st_cp,
-                             int64_t len_cp, size_t *boff, size_t *blen) {
-  if (st_cp < 0) st_cp = 0;
-  size_t off = 0;
-  for (int64_t k = 0; k < st_cp && off < n; k++) {
-    size_t adv = 0;
-    if (!utf8_decode((const unsigned char *)s + off, n - off, NULL, &adv))
-      return 0;
-    off += adv;
+// ---------------------------------------------------------------------
+// Utilities
+// ---------------------------------------------------------------------
+static size_t clamp_pos_1b(int64_t i, size_t n) {
+  // 1-based, negatives from end
+  if (i < 0) {
+    int64_t p = (int64_t)n + i + 1;  // -1 -> n
+    if (p < 1) p = 1;
+    if ((uint64_t)p > n) p = (int64_t)n;
+    return (size_t)p;
   }
-  if (off > n) off = n;
-  size_t end = off;
-  if (len_cp < 0) {
-    end = n;
+  if (i < 1) return 1;
+  if ((uint64_t)i > n) return n;
+  return (size_t)i;
+}
+static int eq_char_ci(unsigned char a, unsigned char b) {
+  return (int)tolower(a) == (int)tolower(b);
+}
+
+static const char *memmem_case(const char *hay, size_t hlen, const char *needle,
+                               size_t nlen, int nocase) {
+  if (nlen == 0) return hay;
+  if (hlen < nlen) return NULL;
+  if (!nocase) {
+    // naive search
+    const char *end = hay + (hlen - nlen) + 1;
+    for (const char *p = hay; p < end; ++p) {
+      if (*p == *needle && memcmp(p, needle, nlen) == 0) return p;
+    }
+    return NULL;
   } else {
-    for (int64_t k = 0; k < len_cp && end < n; k++) {
-      size_t adv = 0;
-      if (!utf8_decode((const unsigned char *)s + end, n - end, NULL, &adv))
-        return 0;
-      end += adv;
+    const unsigned char *H = (const unsigned char *)hay;
+    const unsigned char *N = (const unsigned char *)needle;
+    for (size_t i = 0; i + nlen <= hlen; ++i) {
+      if (!eq_char_ci(H[i], N[0])) continue;
+      size_t j = 1;
+      for (; j < nlen; ++j)
+        if (!eq_char_ci(H[i + j], N[j])) break;
+      if (j == nlen) return (const char *)(H + i);
     }
+    return NULL;
   }
-  *boff = off;
-  *blen = (end > n ? n : end) - off;
-  return 1;
 }
 
-// ───────────────────────── UTF‑8 ops ─────────────────────────
-static VL_Status s_len_cp(struct VL_Context *ctx, const VL_Value *a, uint8_t c,
-                          VL_Value *ret, void *u) {
-  (void)ctx;
-  (void)u;
-  if (c < 1 || !need_str(&a[0])) return VL_ERR_TYPE;
-  int ok = 0;
-  size_t cnt = utf8_count(a[0].as.s->data, a[0].as.s->len, &ok);
-  if (!ok) return VL_ERR_INVAL;
-  RET_INT((int64_t)cnt);
-}
-
-static VL_Status s_slice_cp(struct VL_Context *ctx, const VL_Value *a,
-                            uint8_t c, VL_Value *ret, void *u) {
-  (void)u;
-  if (c < 3 || !need_str(&a[0])) return VL_ERR_TYPE;
-  int64_t st = 0, len = -1;
-  if (!vl_value_as_int(&a[1], &st)) return VL_ERR_TYPE;
-  if (!vl_value_as_int(&a[2], &len)) return VL_ERR_TYPE;
-  size_t off = 0, bl = 0;
-  if (!utf8_slice_bounds(a[0].as.s->data, a[0].as.s->len, st, len, &off, &bl))
-    return VL_ERR_INVAL;
-  RET_STR_BYTES(a[0].as.s->data + off, bl);
-}
-
-static VL_Status s_reverse(struct VL_Context *ctx, const VL_Value *a, uint8_t c,
-                           VL_Value *ret, void *u) {
-  (void)u;
-  if (c < 1 || !need_str(&a[0])) return VL_ERR_TYPE;
-  const char *s = a[0].as.s->data;
-  size_t n = a[0].as.s->len;  // collect byte offsets of each rune
-  size_t cap = 128, m = 0;
-  size_t *ofs = (size_t *)malloc(cap * sizeof(size_t));
-  if (!ofs) return VL_ERR_OOM;
-  size_t i = 0;
-  while (i < n) {
-    size_t adv = 0;
-    if (!utf8_decode((const unsigned char *)s + i, n - i, NULL, &adv)) {
-      free(ofs);
-      return VL_ERR_INVAL;
-    }
-    if (m == cap) {
-      size_t nc = cap * 2;
-      size_t *no = (size_t *)realloc(ofs, nc * sizeof(size_t));
-      if (!no) {
-        free(ofs);
-        return VL_ERR_OOM;
-      }
-      ofs = no;
-      cap = nc;
-    }
-    ofs[m++] = i;
-    i += adv;
-  }
-  VL_Buffer b;
-  vl_buf_init(&b);
-  for (size_t k = 0; k < m; k++) {
-    size_t rb = ofs[m - 1 - k];
-    size_t adv = 0;
-    uint32_t cp = 0;
-    utf8_decode((const unsigned char *)s + rb, n - rb, &cp, &adv);
-    vl_buf_append(&b, s + rb, adv);
-  }
-  VL_Value out = vl_make_strn(ctx, (const char *)b.d, (uint32_t)b.n);
-  vl_buf_free(&b);
-  free(ofs);
-  if (out.type != VT_STR) return VL_ERR_OOM;
-  if (ret) *ret = out;
-  return VL_OK;
-}
-
-// ───────────────────────── Hex ─────────────────────────
-static inline int hexval(int c) {
-  if (c >= '0' && c <= '9') return c - '0';
-  if (c >= 'a' && c <= 'f') return 10 + c - 'a';
-  if (c >= 'A' && c <= 'F') return 10 + c - 'A';
-  return -1;
-}
-static VL_Status s_hex(struct VL_Context *ctx, const VL_Value *a, uint8_t c,
-                       VL_Value *ret, void *u) {
-  (void)u;
-  if (c < 1 || !need_str(&a[0])) return VL_ERR_TYPE;
-  const unsigned char *p = (const unsigned char *)a[0].as.s->data;
-  size_t n = a[0].as.s->len;
-  static const char *tab = "0123456789abcdef";
-  VL_Buffer b;
-  vl_buf_init(&b);
-  vl_buf_reserve(&b, n * 2);
+// FNV-1a 32-bit
+static uint32_t fnv1a32(const uint8_t *p, size_t n) {
+  uint32_t h = 2166136261u;
   for (size_t i = 0; i < n; i++) {
-    char q[2] = {tab[p[i] >> 4], tab[p[i] & 15]};
-    vl_buf_append(&b, q, 2);
+    h ^= p[i];
+    h *= 16777619u;
   }
-  VL_Value out = vl_make_strn(ctx, (const char *)b.d, (uint32_t)b.n);
-  vl_buf_free(&b);
-  if (out.type != VT_STR) return VL_ERR_OOM;
-  if (ret) *ret = out;
-  return VL_OK;
-}
-static VL_Status s_unhex(struct VL_Context *ctx, const VL_Value *a, uint8_t c,
-                         VL_Value *ret, void *u) {
-  (void)u;
-  if (c < 1 || !need_str(&a[0])) return VL_ERR_TYPE;
-  const char *s = a[0].as.s->data;
-  size_t n = a[0].as.s->len;
-  if (n % 2) return VL_ERR_INVAL;
-  VL_Buffer b;
-  vl_buf_init(&b);
-  vl_buf_reserve(&b, n / 2);
-  for (size_t i = 0; i < n; i += 2) {
-    int h = hexval((unsigned char)s[i]), l = hexval((unsigned char)s[i + 1]);
-    if (h < 0 || l < 0) {
-      vl_buf_free(&b);
-      return VL_ERR_INVAL;
-    }
-    unsigned char v = (unsigned char)((h << 4) | l);
-    vl_buf_append(&b, &v, 1);
-  }
-  VL_Value out = vl_make_strn(ctx, (const char *)b.d, (uint32_t)b.n);
-  vl_buf_free(&b);
-  if (out.type != VT_STR) return VL_ERR_OOM;
-  if (ret) *ret = out;
-  return VL_OK;
+  return h;
 }
 
-// ───────────────────────── Base64 ─────────────────────────
-static const char b64tab[] =
+// Base64
+static const char B64TAB[] =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-static VL_Status s_b64enc(struct VL_Context *ctx, const VL_Value *a, uint8_t c,
-                          VL_Value *ret, void *u) {
-  (void)u;
-  if (c < 1 || !need_str(&a[0])) return VL_ERR_TYPE;
-  const unsigned char *p = (const unsigned char *)a[0].as.s->data;
-  size_t n = a[0].as.s->len;
-  size_t outn = ((n + 2) / 3) * 4;
-  VL_Buffer b;
-  vl_buf_init(&b);
-  vl_buf_reserve(&b, outn);
-  for (size_t i = 0; i < n; i += 3) {
-    uint32_t v = p[i] << 16;
-    if (i + 1 < n) v |= p[i + 1] << 8;
-    if (i + 2 < n) v |= p[i + 2];
-    char o[4];
-    o[0] = b64tab[(v >> 18) & 63];
-    o[1] = b64tab[(v >> 12) & 63];
-    o[2] = (i + 1 < n) ? b64tab[(v >> 6) & 63] : '=';
-    o[3] = (i + 2 < n) ? b64tab[v & 63] : '=';
-    vl_buf_append(&b, o, 4);
-  }
-  VL_Value out = vl_make_strn(ctx, (const char *)b.d, (uint32_t)b.n);
-  vl_buf_free(&b);
-  if (out.type != VT_STR) return VL_ERR_OOM;
-  if (ret) *ret = out;
-  return VL_OK;
-}
-
-static int b64val(int c) {
+static int b64_val(int c) {
   if (c >= 'A' && c <= 'Z') return c - 'A';
   if (c >= 'a' && c <= 'z') return c - 'a' + 26;
   if (c >= '0' && c <= '9') return c - '0' + 52;
   if (c == '+') return 62;
   if (c == '/') return 63;
-  if (c == '=') return -2;
-  if (c == '\n' || c == '\r' || c == '\t' || c == ' ') return -3;
   return -1;
 }
-static VL_Status s_b64dec(struct VL_Context *ctx, const VL_Value *a, uint8_t c,
-                          VL_Value *ret, void *u) {
-  (void)u;
-  if (c < 1 || !need_str(&a[0])) return VL_ERR_TYPE;
-  const unsigned char *s = (const unsigned char *)a[0].as.s->data;
-  size_t n = a[0].as.s->len;
-  VL_Buffer b;
-  vl_buf_init(&b);
-  int quad[4];
-  int qi = 0;
-  for (size_t i = 0; i < n; i++) {
-    int v = b64val(s[i]);
-    if (v == -3) continue;
-    if (v < 0 && v != -2) {
-      vl_buf_free(&b);
-      return VL_ERR_INVAL;
-    }
-    quad[qi++] = v;
-    if (qi == 4) {
-      uint32_t x = 0;
-      int pad = 0;
-      for (int k = 0; k < 4; k++) {
-        if (quad[k] == -2) {
-          quad[k] = 0;
-          pad++;
-        }
-        x = (x << 6) | (uint32_t)quad[k];
-      }
-      unsigned char o[3];
-      o[0] = (x >> 16) & 0xFF;
-      o[1] = (x >> 8) & 0xFF;
-      o[2] = x & 0xFF;
-      size_t outc = (pad >= 2) ? 1 : (pad == 1 ? 2 : 3);
-      vl_buf_append(&b, o, outc);
-      qi = 0;
-    }
-  }
-  if (qi != 0) {
-    vl_buf_free(&b);
-    return VL_ERR_INVAL;
-  }
-  VL_Value out = vl_make_strn(ctx, (const char *)b.d, (uint32_t)b.n);
-  vl_buf_free(&b);
-  if (out.type != VT_STR) return VL_ERR_OOM;
-  if (ret) *ret = out;
-  return VL_OK;
-}
 
-// ───────────────────────── URL encode/decode ─────────────────────────
-static int is_unreserved(int c) {
-  return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-         (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~';
-}
-static VL_Status s_urlenc(struct VL_Context *ctx, const VL_Value *a, uint8_t c,
-                          VL_Value *ret, void *u) {
-  (void)u;
-  if (c < 1 || !need_str(&a[0])) return VL_ERR_TYPE;
-  const unsigned char *p = (const unsigned char *)a[0].as.s->data;
-  size_t n = a[0].as.s->len;
-  VL_Buffer b;
-  vl_buf_init(&b);
-  for (size_t i = 0; i < n; i++) {
-    unsigned char ch = p[i];
-    if (is_unreserved(ch)) {
-      vl_buf_append(&b, &ch, 1);
-    } else if (ch == ' ') {
-      const char *pct = "%20";
-      vl_buf_append(&b, pct, 3);
-    } else {
-      char q[3] = {'%', "0123456789ABCDEF"[ch >> 4],
-                   "0123456789ABCDEF"[ch & 15]};
-      vl_buf_append(&b, q, 3);
-    }
+// UTF-8 decode next; returns bytes consumed (1..4) or 0 on invalid
+static size_t utf8_next(const unsigned char *s, size_t n, uint32_t *out_cp) {
+  if (n == 0) return 0;
+  unsigned char c = s[0];
+  if (c < 0x80) {
+    if (out_cp) *out_cp = c;
+    return 1;
   }
-  VL_Value out = vl_make_strn(ctx, (const char *)b.d, (uint32_t)b.n);
-  vl_buf_free(&b);
-  if (out.type != VT_STR) return VL_ERR_OOM;
-  if (ret) *ret = out;
-  return VL_OK;
-}
-static VL_Status s_urldec(struct VL_Context *ctx, const VL_Value *a, uint8_t c,
-                          VL_Value *ret, void *u) {
-  (void)u;
-  if (c < 1 || !need_str(&a[0])) return VL_ERR_TYPE;
-  const char *s = a[0].as.s->data;
-  size_t n = a[0].as.s->len;
-  VL_Buffer b;
-  vl_buf_init(&b);
-  for (size_t i = 0; i < n;) {
-    unsigned char ch = s[i];
-    if (ch == '%') {
-      if (i + 2 >= n) {
-        vl_buf_free(&b);
-        return VL_ERR_INVAL;
-      }
-      int h = hexval((unsigned char)s[i + 1]),
-          l = hexval((unsigned char)s[i + 2]);
-      if (h < 0 || l < 0) {
-        vl_buf_free(&b);
-        return VL_ERR_INVAL;
-      }
-      unsigned char v = (unsigned char)((h << 4) | l);
-      vl_buf_append(&b, &v, 1);
-      i += 3;
-    } else {
-      vl_buf_append(&b, &ch, 1);
-      i++;
-    }
+  if ((c & 0xE0) == 0xC0 && n >= 2) {
+    uint32_t cp = ((uint32_t)(c & 0x1F) << 6) | (uint32_t)(s[1] & 0x3F);
+    if (cp < 0x80) return 0;  // overlong
+    if (out_cp) *out_cp = cp;
+    return 2;
   }
-  VL_Value out = vl_make_strn(ctx, (const char *)b.d, (uint32_t)b.n);
-  vl_buf_free(&b);
-  if (out.type != VT_STR) return VL_ERR_OOM;
-  if (ret) *ret = out;
-  return VL_OK;
-}
-
-// ───────────────────────── JSON escape ─────────────────────────
-static VL_Status s_json_escape(struct VL_Context *ctx, const VL_Value *a,
-                               uint8_t c, VL_Value *ret, void *u) {
-  (void)u;
-  if (c < 1 || !need_str(&a[0])) return VL_ERR_TYPE;
-  const unsigned char *p = (const unsigned char *)a[0].as.s->data;
-  size_t n = a[0].as.s->len;
-  VL_Buffer b;
-  vl_buf_init(&b);
-  for (size_t i = 0; i < n; i++) {
-    unsigned char ch = p[i];
-    switch (ch) {
-      case '"':
-        vl_buf_append(&b, "\\\"", 2);
-        break;
-      case '\\':
-        vl_buf_append(&b, "\\\\", 2);
-        break;
-      case '\n':
-        vl_buf_append(&b, "\\n", 2);
-        break;
-      case '\r':
-        vl_buf_append(&b, "\\r", 2);
-        break;
-      case '\t':
-        vl_buf_append(&b, "\\t", 2);
-        break;
-      default:
-        if (ch < 0x20) {
-          char uesc[6];
-          snprintf(uesc, sizeof(uesc), "\\u%04X", ch);
-          vl_buf_append(&b, uesc, 6);
-        } else {
-          vl_buf_append(&b, &ch, 1);
-        }
-    }
+  if ((c & 0xF0) == 0xE0 && n >= 3) {
+    uint32_t cp = ((uint32_t)(c & 0x0F) << 12) |
+                  ((uint32_t)(s[1] & 0x3F) << 6) | (uint32_t)(s[2] & 0x3F);
+    if (cp < 0x800) return 0;  // overlong
+    if (out_cp) *out_cp = cp;
+    return 3;
   }
-  VL_Value out = vl_make_strn(ctx, (const char *)b.d, (uint32_t)b.n);
-  vl_buf_free(&b);
-  if (out.type != VT_STR) return VL_ERR_OOM;
-  if (ret) *ret = out;
-  return VL_OK;
-}
-
-// ───────────────────────── Hash ─────────────────────────
-static VL_Status s_hash64(struct VL_Context *ctx, const VL_Value *a, uint8_t c,
-                          VL_Value *ret, void *u) {
-  (void)ctx;
-  (void)u;
-  if (c < 1 || !need_str(&a[0])) return VL_ERR_TYPE;
-  const unsigned char *p = (const unsigned char *)a[0].as.s->data;
-  size_t n = a[0].as.s->len;
-  uint64_t h = 1469598103934665603ull;
-  for (size_t i = 0; i < n; i++) {
-    h ^= p[i];
-    h *= 1099511628211ull;
+  if ((c & 0xF8) == 0xF0 && n >= 4) {
+    uint32_t cp = ((uint32_t)(c & 0x07) << 18) |
+                  ((uint32_t)(s[1] & 0x3F) << 12) |
+                  ((uint32_t)(s[2] & 0x3F) << 6) | (uint32_t)(s[3] & 0x3F);
+    if (cp < 0x10000 || cp > 0x10FFFF) return 0;  // overlong or out of range
+    if (out_cp) *out_cp = cp;
+    return 4;
   }
-  RET_INT((int64_t)h);
-}
-
-// ───────────────────────── Registration ─────────────────────────
-void vl_register_strlib(struct VL_Context *ctx) {
-  if (!ctx) return;
-  vl_register_native(ctx, "s_ascii_lower", s_ascii_lower, NULL);
-  vl_register_native(ctx, "s_ascii_upper", s_ascii_upper, NULL);
-  vl_register_native(ctx, "s_trim", s_trim, NULL);
-  vl_register_native(ctx, "s_ltrim", s_ltrim, NULL);
-  vl_register_native(ctx, "s_rtrim", s_rtrim, NULL);
-  vl_register_native(ctx, "s_startswith", s_startswith, NULL);
-  vl_register_native(ctx, "s_endswith", s_endswith, NULL);
-  vl_register_native(ctx, "s_repeat", s_repeat, NULL);
-  vl_register_native(ctx, "s_pad_left", s_pad_left, NULL);
-  vl_register_native(ctx, "s_pad_right", s_pad_right, NULL);
-  vl_register_native(ctx, "s_replace", s_replace, NULL);
-  vl_register_native(ctx, "s_replace_n", s_replace_n, NULL);
-  vl_register_native(ctx, "s_reverse", s_reverse, NULL);
-  vl_register_native(ctx, "s_len_cp", s_len_cp, NULL);
-  vl_register_native(ctx, "s_slice_cp", s_slice_cp, NULL);
-  vl_register_native(ctx, "s_hex", s_hex, NULL);
-  vl_register_native(ctx, "s_unhex", s_unhex, NULL);
-  vl_register_native(ctx, "s_b64enc", s_b64enc, NULL);
-  vl_register_native(ctx, "s_b64dec", s_b64dec, NULL);
-  vl_register_native(ctx, "s_urlenc", s_urlenc, NULL);
-  vl_register_native(ctx, "s_urldec", s_urldec, NULL);
-  vl_register_native(ctx, "s_json_escape", s_json_escape, NULL);
-  vl_register_native(ctx, "s_hash64", s_hash64, NULL);
-}
-
-// ───────────────────────── Test (optional) ─────────────────────────
-#ifdef VL_STRLIB_TEST_MAIN
-#include <inttypes.h>
-int main(void) {
-  const char *u = "hé🐱";  // UTF‑8
-  // Local smoke tests
-  int ok = 0;
-  size_t cnt = utf8_count(u, strlen(u), &ok);
-  printf("cnt=%zu ok=%d\n", cnt, ok);
-  size_t off = 0, bl = 0;
-  utf8_slice_bounds(u, strlen(u), 1, 1, &off, &bl);
-  fwrite(u + off, 1, bl, stdout);
-  putchar('\n');
   return 0;
 }
+
+// ---------------------------------------------------------------------
+// VM functions
+// ---------------------------------------------------------------------
+
+static int vm_str_len(VL_State *S) {
+  const char *s = st_check_str(S, 1);
+  vl_push_int(S, (int64_t)strlen(s));
+  return 1;
+}
+
+static int vm_str_byte_at(VL_State *S) {
+  const char *s = st_check_str(S, 1);
+  int64_t i = st_check_int(S, 2);
+  size_t n = strlen(s);
+  if (n == 0) {
+    vl_push_nil(S);
+    vl_push_string(S, "ERANGE");
+    return 2;
+  }
+  size_t p = clamp_pos_1b(i, n);
+  if (p < 1 || p > n) {
+    vl_push_nil(S);
+    vl_push_string(S, "ERANGE");
+    return 2;
+  }
+  vl_push_int(S, (int64_t)(unsigned char)s[p - 1]);
+  return 1;
+}
+
+static int vm_str_sub(VL_State *S) {
+  const char *s = st_check_str(S, 1);
+  size_t n = strlen(s);
+  int have_j = (vl_get(S, 3) != NULL);
+  int64_t i = st_check_int(S, 2);
+  int64_t j = have_j ? st_check_int(S, 3) : (int64_t)n;
+  size_t si = clamp_pos_1b(i, n);
+  size_t sj = clamp_pos_1b(j, n);
+  if (sj < si) {
+    vl_push_string(S, "");
+    return 1;
+  }
+  size_t len = sj - si + 1;
+  vl_push_lstring(S, s + (si - 1), (int)len);
+  return 1;
+}
+
+static int vm_str_find(VL_State *S) {
+  const char *s = st_check_str(S, 1);
+  const char *needle = st_check_str(S, 2);
+  size_t n = strlen(s), m = strlen(needle);
+  size_t start = (size_t)clamp_pos_1b(st_opt_int(S, 3, 1), n == 0 ? 1 : (int)n);
+  int nocase = st_opt_bool(S, 4, 0);
+  if (m == 0) {
+    vl_push_int(S, (int64_t)start);
+    return 1;
+  }
+  if (start < 1) start = 1;
+  if (start > n) {
+    vl_push_int(S, 0);
+    return 1;
+  }
+  const char *p =
+      memmem_case(s + (start - 1), n - (start - 1), needle, m, nocase);
+  if (!p) {
+    vl_push_int(S, 0);
+    return 1;
+  }
+  size_t pos = (size_t)(p - s) + 1;
+  vl_push_int(S, (int64_t)pos);
+  return 1;
+}
+
+static int vm_str_replace(VL_State *S) {
+  const char *s = st_check_str(S, 1);
+  const char *from = st_check_str(S, 2);
+  const char *to = st_check_str(S, 3);
+  int maxrep = st_opt_int(S, 4, -1);
+  int nocase = st_opt_bool(S, 5, 0);
+  size_t sn = strlen(s), fn = strlen(from), tn = strlen(to);
+  if (fn == 0) {
+    vl_push_string(S, s);
+    vl_push_int(S, 0);
+    return 2;
+  }
+
+  AuxBuffer out = {0};
+  size_t i = 0, count = 0;
+  while (i < sn) {
+    const char *p = memmem_case(s + i, sn - i, from, fn, nocase);
+    if (!p) {
+      aux_buffer_append(&out, (const uint8_t *)s + i, sn - i);
+      break;
+    }
+    size_t off = (size_t)(p - s);
+    aux_buffer_append(&out, (const uint8_t *)s + i, off - i);
+    aux_buffer_append(&out, (const uint8_t *)to, tn);
+    i = off + fn;
+    count++;
+    if (maxrep >= 0 && (int)count >= maxrep) {
+      aux_buffer_append(&out, (const uint8_t *)s + i, sn - i);
+      break;
+    }
+  }
+  vl_push_lstring(S, (const char *)out.data, (int)out.len);
+  vl_push_int(S, (int64_t)count);
+  aux_buffer_free(&out);
+  return 2;
+}
+
+static int vm_str_split(VL_State *S) {
+  const char *s = st_check_str(S, 1);
+  const char *sep = st_check_str(S, 2);
+  int maxparts = st_opt_int(S, 3, -1);
+  size_t n = strlen(s), sp = strlen(sep);
+  if (sp == 0) {
+    vl_push_nil(S);
+    vl_push_string(S, "EINVAL");
+    return 2;
+  }
+
+  int pushed = 0;
+  size_t i = 0;
+  while (i <= n) {
+    if (maxparts == 1) {
+      vl_push_lstring(S, s + i, (int)(n - i));
+      pushed++;
+      break;
+    }
+    const char *p = memmem_case(s + i, n - i, sep, sp, 0);
+    if (!p) {
+      vl_push_lstring(S, s + i, (int)(n - i));
+      pushed++;
+      break;
+    }
+    size_t off = (size_t)(p - s);
+    vl_push_lstring(S, s + i, (int)(off - i));
+    pushed++;
+    i = off + sp;
+    if (maxparts > 0) maxparts--;
+  }
+  return pushed;
+}
+
+static int vm_str_lower(VL_State *S) {
+  const char *s = st_check_str(S, 1);
+  size_t n = strlen(s);
+  char *buf = (char *)malloc(n + 1);
+  if (!buf) {
+    vl_push_nil(S);
+    vl_push_string(S, "ENOMEM");
+    return 2;
+  }
+  for (size_t i = 0; i < n; i++) buf[i] = (char)tolower((unsigned char)s[i]);
+  buf[n] = 0;
+  vl_push_string(S, buf);
+  free(buf);
+  return 1;
+}
+static int vm_str_upper(VL_State *S) {
+  const char *s = st_check_str(S, 1);
+  size_t n = strlen(s);
+  char *buf = (char *)malloc(n + 1);
+  if (!buf) {
+    vl_push_nil(S);
+    vl_push_string(S, "ENOMEM");
+    return 2;
+  }
+  for (size_t i = 0; i < n; i++) buf[i] = (char)toupper((unsigned char)s[i]);
+  buf[n] = 0;
+  vl_push_string(S, buf);
+  free(buf);
+  return 1;
+}
+
+static int vm_str_trim(VL_State *S) {
+  const char *s = st_check_str(S, 1);
+  size_t n = strlen(s);
+  size_t a = 0, b = n;
+  while (a < b && isspace((unsigned char)s[a])) a++;
+  while (b > a && isspace((unsigned char)s[b - 1])) b--;
+  vl_push_lstring(S, s + a, (int)(b - a));
+  return 1;
+}
+static int vm_str_ltrim(VL_State *S) {
+  const char *s = st_check_str(S, 1);
+  size_t n = strlen(s), a = 0;
+  while (a < n && isspace((unsigned char)s[a])) a++;
+  vl_push_lstring(S, s + a, (int)(n - a));
+  return 1;
+}
+static int vm_str_rtrim(VL_State *S) {
+  const char *s = st_check_str(S, 1);
+  size_t n = strlen(s), b = n;
+  while (b > 0 && isspace((unsigned char)s[b - 1])) b--;
+  vl_push_lstring(S, s, (int)b);
+  return 1;
+}
+
+static int vm_str_starts_with(VL_State *S) {
+  const char *s = st_check_str(S, 1);
+  const char *pfx = st_check_str(S, 2);
+  int nocase = st_opt_bool(S, 3, 0);
+  size_t n = strlen(s), m = strlen(pfx);
+  if (m > n) {
+    vl_push_bool(S, 0);
+    return 1;
+  }
+  int ok = nocase ? (strncasecmp(s, pfx, m) == 0) : (memcmp(s, pfx, m) == 0);
+#ifndef _WIN32
+  // strncasecmp available on POSIX; on Windows emulate
+#else
+  if (nocase) {
+    ok = 1;
+    for (size_t i = 0; i < m; i++)
+      if (tolower((unsigned char)s[i]) != tolower((unsigned char)pfx[i])) {
+        ok = 0;
+        break;
+      }
+  }
 #endif
+  vl_push_bool(S, ok ? 1 : 0);
+  return 1;
+}
+
+static int vm_str_ends_with(VL_State *S) {
+  const char *s = st_check_str(S, 1);
+  const char *sfx = st_check_str(S, 2);
+  int nocase = st_opt_bool(S, 3, 0);
+  size_t n = strlen(s), m = strlen(sfx);
+  if (m > n) {
+    vl_push_bool(S, 0);
+    return 1;
+  }
+  const char *a = s + (n - m);
+  int ok;
+  if (!nocase)
+    ok = (memcmp(a, sfx, m) == 0);
+  else {
+    ok = 1;
+    for (size_t i = 0; i < m; i++)
+      if (tolower((unsigned char)a[i]) != tolower((unsigned char)sfx[i])) {
+        ok = 0;
+        break;
+      }
+  }
+  vl_push_bool(S, ok ? 1 : 0);
+  return 1;
+}
+
+static int vm_str_repeat(VL_State *S) {
+  const char *s = st_check_str(S, 1);
+  int64_t times = st_check_int(S, 2);
+  if (times < 0 || times > (1 << 20)) {
+    vl_push_nil(S);
+    vl_push_string(S, "ERANGE");
+    return 2;
+  }
+  size_t n = strlen(s);
+  uint64_t need = (uint64_t)n * (uint64_t)times;
+  if (need > (uint64_t)(32 * 1024 * 1024)) {
+    vl_push_nil(S);
+    vl_push_string(S, "ERANGE");
+    return 2;
+  }
+  char *buf = (char *)malloc((size_t)need + 1);
+  if (!buf) {
+    vl_push_nil(S);
+    vl_push_string(S, "ENOMEM");
+    return 2;
+  }
+  char *p = buf;
+  for (int64_t i = 0; i < times; i++) {
+    memcpy(p, s, n);
+    p += n;
+  }
+  buf[need] = 0;
+  vl_push_string(S, buf);
+  free(buf);
+  return 1;
+}
+
+static int vm_str_reverse(VL_State *S) {
+  const char *s = st_check_str(S, 1);
+  size_t n = strlen(s);
+  char *b = (char *)malloc(n + 1);
+  if (!b) {
+    vl_push_nil(S);
+    vl_push_string(S, "ENOMEM");
+    return 2;
+  }
+  for (size_t i = 0; i < n; i++) b[i] = s[n - 1 - i];
+  b[n] = 0;
+  vl_push_string(S, b);
+  free(b);
+  return 1;
+}
+
+static int vm_str_pad_left(VL_State *S) {
+  const char *s = st_check_str(S, 1);
+  int width = (int)st_check_int(S, 2);
+  const char *pch =
+      (vl_get(S, 3) && vl_isstring(S, 3)) ? st_check_str(S, 3) : " ";
+  unsigned char ch = (unsigned char)(pch[0] ? pch[0] : ' ');
+  size_t n = strlen(s);
+  if (width <= 0 || (size_t)width <= n) {
+    vl_push_string(S, s);
+    return 1;
+  }
+  size_t pad = (size_t)width - n;
+  char *b = (char *)malloc((size_t)width + 1);
+  if (!b) {
+    vl_push_nil(S);
+    vl_push_string(S, "ENOMEM");
+    return 2;
+  }
+  memset(b, ch, pad);
+  memcpy(b + pad, s, n);
+  b[width] = 0;
+  vl_push_string(S, b);
+  free(b);
+  return 1;
+}
+static int vm_str_pad_right(VL_State *S) {
+  const char *s = st_check_str(S, 1);
+  int width = (int)st_check_int(S, 2);
+  const char *pch =
+      (vl_get(S, 3) && vl_isstring(S, 3)) ? st_check_str(S, 3) : " ";
+  unsigned char ch = (unsigned char)(pch[0] ? pch[0] : ' ');
+  size_t n = strlen(s);
+  if (width <= 0 || (size_t)width <= n) {
+    vl_push_string(S, s);
+    return 1;
+  }
+  size_t pad = (size_t)width - n;
+  char *b = (char *)malloc((size_t)width + 1);
+  if (!b) {
+    vl_push_nil(S);
+    vl_push_string(S, "ENOMEM");
+    return 2;
+  }
+  memcpy(b, s, n);
+  memset(b + n, ch, pad);
+  b[width] = 0;
+  vl_push_string(S, b);
+  free(b);
+  return 1;
+}
+
+static int vm_str_cmp(VL_State *S) {
+  const char *a = st_check_str(S, 1);
+  const char *b = st_check_str(S, 2);
+  int nocase = st_opt_bool(S, 3, 0);
+  int r;
+  if (!nocase)
+    r = strcmp(a, b);
+  else {
+    size_t i = 0;
+    for (;; i++) {
+      unsigned char ca = (unsigned char)a[i], cb = (unsigned char)b[i];
+      int da = tolower(ca), db = tolower(cb);
+      if (da != db) {
+        r = da < db ? -1 : 1;
+        break;
+      }
+      if (!ca || !cb) {
+        r = 0;
+        break;
+      }
+    }
+  }
+  vl_push_int(S, (int64_t)(r < 0 ? -1 : (r > 0 ? 1 : 0)));
+  return 1;
+}
+
+static int vm_str_hash32(VL_State *S) {
+  const char *s = st_check_str(S, 1);
+  vl_push_int(S, (int64_t)(uint32_t)fnv1a32((const uint8_t *)s, strlen(s)));
+  return 1;
+}
+
+// hex / unhex
+static int vm_str_hex(VL_State *S) {
+  const char *s = st_check_str(S, 1);
+  size_t n = strlen(s);
+  if (n > 32 * 1024 * 1024) {
+    vl_push_nil(S);
+    vl_push_string(S, "ERANGE");
+    return 2;
+  }
+  size_t outn = n * 2;
+  char *out = (char *)malloc(outn + 1);
+  if (!out) {
+    vl_push_nil(S);
+    vl_push_string(S, "ENOMEM");
+    return 2;
+  }
+  static const char *H = "0123456789abcdef";
+  for (size_t i = 0; i < n; i++) {
+    unsigned char c = (unsigned char)s[i];
+    out[2 * i] = H[c >> 4];
+    out[2 * i + 1] = H[c & 15];
+  }
+  out[outn] = 0;
+  vl_push_string(S, out);
+  free(out);
+  return 1;
+}
+static int vm_str_unhex(VL_State *S) {
+  const char *h = st_check_str(S, 1);
+  size_t n = strlen(h);
+  if (n % 2) {
+    vl_push_nil(S);
+    vl_push_string(S, "EINVAL");
+    return 2;
+  }
+  size_t outn = n / 2;
+  char *out = (char *)malloc(outn + 1);
+  if (!out) {
+    vl_push_nil(S);
+    vl_push_string(S, "ENOMEM");
+    return 2;
+  }
+  for (size_t i = 0; i < outn; i++) {
+    int c1 = h[2 * i], c2 = h[2 * i + 1];
+    int v1 = (c1 >= '0' && c1 <= '9')   ? c1 - '0'
+             : (c1 >= 'a' && c1 <= 'f') ? c1 - 'a' + 10
+             : (c1 >= 'A' && c1 <= 'F') ? c1 - 'A' + 10
+                                        : -1;
+    int v2 = (c2 >= '0' && c2 <= '9')   ? c2 - '0'
+             : (c2 >= 'a' && c2 <= 'f') ? c2 - 'a' + 10
+             : (c2 >= 'A' && c2 <= 'F') ? c2 - 'A' + 10
+                                        : -1;
+    if (v1 < 0 || v2 < 0) {
+      free(out);
+      vl_push_nil(S);
+      vl_push_string(S, "EINVAL");
+      return 2;
+    }
+    out[i] = (char)((v1 << 4) | v2);
+  }
+  vl_push_lstring(S, out, (int)outn);
+  free(out);
+  return 1;
+}
+
+// base64
+static int vm_str_b64_enc(VL_State *S) {
+  const char *s = st_check_str(S, 1);
+  size_t n = strlen(s);
+  size_t outn = ((n + 2) / 3) * 4;
+  char *o = (char *)malloc(outn + 1);
+  if (!o) {
+    vl_push_nil(S);
+    vl_push_string(S, "ENOMEM");
+    return 2;
+  }
+  size_t i = 0, w = 0;
+  while (i < n) {
+    uint32_t v = 0;
+    int bytes = 0;
+    for (int k = 0; k < 3; k++) {
+      v <<= 8;
+      if (i < n) {
+        v |= (unsigned char)s[i++];
+        bytes++;
+      }
+    }
+    int pad = 3 - bytes;
+    o[w++] = B64TAB[(v >> 18) & 63];
+    o[w++] = B64TAB[(v >> 12) & 63];
+    o[w++] = pad >= 2 ? '=' : B64TAB[(v >> 6) & 63];
+    o[w++] = pad >= 1 ? '=' : B64TAB[v & 63];
+  }
+  o[w] = 0;
+  vl_push_string(S, o);
+  free(o);
+  return 1;
+}
+static int vm_str_b64_dec(VL_State *S) {
+  const char *b = st_check_str(S, 1);
+  size_t n = strlen(b);
+  if (n % 4) {
+    vl_push_nil(S);
+    vl_push_string(S, "EINVAL");
+    return 2;
+  }
+  char *o = (char *)malloc((n / 4) * 3 + 1);
+  if (!o) {
+    vl_push_nil(S);
+    vl_push_string(S, "ENOMEM");
+    return 2;
+  }
+  size_t w = 0;
+  for (size_t i = 0; i < n; i += 4) {
+    int v0 = b64_val(b[i]), v1 = b64_val(b[i + 1]);
+    int v2 = b[i + 2] == '=' ? -2 : b64_val(b[i + 2]);
+    int v3 = b[i + 3] == '=' ? -2 : b64_val(b[i + 3]);
+    if (v0 < 0 || v1 < 0 || v2 < -2 || v3 < -2) {
+      free(o);
+      vl_push_nil(S);
+      vl_push_string(S, "EINVAL");
+      return 2;
+    }
+    uint32_t v = ((uint32_t)v0 << 18) | ((uint32_t)v1 << 12) |
+                 ((uint32_t)((v2 < 0) ? 0 : v2) << 6) |
+                 (uint32_t)((v3 < 0) ? 0 : v3);
+    o[w++] = (char)((v >> 16) & 0xFF);
+    if (v2 >= 0) o[w++] = (char)((v >> 8) & 0xFF);
+    if (v3 >= 0) o[w++] = (char)(v & 0xFF);
+  }
+  vl_push_lstring(S, o, (int)w);
+  free(o);
+  return 1;
+}
+
+// UTF-8
+static int vm_utf8_len(VL_State *S) {
+  const unsigned char *s = (const unsigned char *)st_check_str(S, 1);
+  size_t n = strlen((const char *)s);
+  size_t i = 0, cnt = 0;
+  while (i < n) {
+    size_t c = utf8_next(s + i, n - i, NULL);
+    if (c == 0) {  // invalid, treat as single byte
+      i++;
+      cnt++;
+      continue;
+    }
+    i += c;
+    cnt++;
+  }
+  vl_push_int(S, (int64_t)cnt);
+  return 1;
+}
+
+static int vm_utf8_sub(VL_State *S) {
+  const unsigned char *s = (const unsigned char *)st_check_str(S, 1);
+  size_t n = strlen((const char *)s);
+  int have_j = (vl_get(S, 3) != NULL);
+  int64_t I = st_check_int(S, 2);
+  int64_t J = have_j ? st_check_int(S, 3) : (int64_t)1e9;
+
+  // map codepoint indexes to byte offsets
+  // 1-based; negatives from end
+  // First, collect cp starts
+  size_t cps = 0;
+  // Count total cps and maybe record positions lazily
+  // For efficiency, do two passes:
+  size_t i = 0;
+  while (i < n) {
+    size_t c = utf8_next(s + i, n - i, NULL);
+    if (!c) c = 1;
+    i += c;
+    cps++;
+  }
+  if (cps == 0) {
+    vl_push_string(S, "");
+    return 1;
+  }
+
+  auto size_t cp_to_abs = [&](int64_t k) -> size_t {
+    if (k < 0) k = (int64_t)cps + k + 1;
+    if (k < 1) k = 1;
+    if ((uint64_t)k > cps) k = (int64_t)cps;
+    return (size_t)k;
+  };
+  size_t a_cp = cp_to_abs(I);
+  size_t b_cp = cp_to_abs(have_j ? J : (int64_t)cps);
+  if (b_cp < a_cp) {
+    vl_push_string(S, "");
+    return 1;
+  }
+
+  // Walk again to find byte offsets
+  size_t a_byte = 0, b_byte = 0;
+  size_t cp = 1;
+  i = 0;
+  while (i < n && cp < a_cp) {
+    size_t c = utf8_next(s + i, n - i, NULL);
+    if (!c) c = 1;
+    i += c;
+    cp++;
+  }
+  a_byte = i;
+  while (i < n && cp <= b_cp) {
+    size_t c = utf8_next(s + i, n - i, NULL);
+    if (!c) c = 1;
+    i += c;
+    cp++;
+  }
+  b_byte = i;
+  vl_push_lstring(S, (const char *)s + a_byte, (int)(b_byte - a_byte));
+  return 1;
+}
+
+// ---------------------------------------------------------------------
+// Registration
+// ---------------------------------------------------------------------
+static const VL_Reg strlib[] = {{"len", vm_str_len},
+                                {"byte_at", vm_str_byte_at},
+                                {"sub", vm_str_sub},
+                                {"find", vm_str_find},
+                                {"replace", vm_str_replace},
+                                {"split", vm_str_split},
+
+                                {"lower", vm_str_lower},
+                                {"upper", vm_str_upper},
+                                {"trim", vm_str_trim},
+                                {"ltrim", vm_str_ltrim},
+                                {"rtrim", vm_str_rtrim},
+                                {"starts_with", vm_str_starts_with},
+                                {"ends_with", vm_str_ends_with},
+                                {"repeat", vm_str_repeat},
+                                {"reverse", vm_str_reverse},
+                                {"pad_left", vm_str_pad_left},
+                                {"pad_right", vm_str_pad_right},
+                                {"cmp", vm_str_cmp},
+                                {"hash32", vm_str_hash32},
+
+                                {"hex", vm_str_hex},
+                                {"unhex", vm_str_unhex},
+                                {"base64_encode", vm_str_b64_enc},
+                                {"base64_decode", vm_str_b64_dec},
+
+                                {"utf8_len", vm_utf8_len},
+                                {"utf8_sub", vm_utf8_sub},
+
+                                {NULL, NULL}};
+
+void vl_open_strlib(VL_State *S) { vl_register_lib(S, "str", strlib); }

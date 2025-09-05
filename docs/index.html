@@ -1,0 +1,727 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>VITTE LIGHT — Guide utilisateur complet (Révision 2025-09-05)</title>
+<meta name="color-scheme" content="light dark" />
+<style>
+  :root{
+    --bg:#ffffff; --fg:#0f172a; --muted:#64748b; --card:#f8fafc;
+    --border:#e2e8f0; --accent:#2563eb; --code:#111827;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#0b1020; --fg:#e8eef6; --muted:#9aa7bd; --card:#0f152a;
+      --border:#1f2a44; --accent:#60a5fa; --code:#e6edf3;
+    }
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--fg);
+    font:16px/1.7 system-ui,-apple-system,Segoe UI,Roboto,Inter,Arial,"Noto Sans";
+  }
+  a{ color:var(--accent); text-decoration:none }
+  a:hover{ text-decoration:underline }
+  header{
+    padding:24px; border-bottom:1px solid var(--border);
+    background:linear-gradient(180deg, rgba(99,102,241,.08), transparent);
+  }
+  .container{ max-width:1000px; margin:0 auto; padding:24px }
+  .intro{ display:flex; gap:18px; align-items:flex-end; flex-wrap:wrap }
+  h1{ margin:0; font-size:clamp(24px,3vw,36px); letter-spacing:.2px }
+  .rev{ color:var(--muted) }
+  nav.toc{
+    background:var(--card); border:1px solid var(--border); border-radius:12px;
+    padding:14px 16px; margin:20px 0 8px 0;
+  }
+  nav.toc strong{ font-size:13px; color:var(--muted); text-transform:uppercase; letter-spacing:.08em }
+  nav.toc ul{ margin:8px 0 0 0; padding:0 0 0 16px }
+  section{ margin:28px 0 }
+  h2{ margin:0 0 10px 0; padding-top:10px; border-top:1px solid var(--border) }
+  h3{ margin:18px 0 8px 0 }
+  p{ margin:.6rem 0 }
+  ul,ol{ margin:.4rem 0 .8rem 1.25rem }
+  .card{
+    background:var(--card); border:1px solid var(--border); border-radius:12px; padding:16px;
+  }
+  code{
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,Monaco,monospace;
+    background:color-mix(in srgb, var(--card) 85%, transparent);
+    color:var(--code); padding:.15em .35em; border-radius:6px; border:1px solid var(--border)
+  }
+  pre{
+    margin:.75rem 0; padding:14px 16px; border-radius:12px;
+    background:var(--card); border:1px solid var(--border); overflow:auto
+  }
+  pre code{ background:transparent; border:0; padding:0; color:var(--code) }
+  hr{ border:0; border-top:1px dashed var(--border); margin:16px 0 }
+  .note{ color:var(--muted); font-size:.95rem }
+
+  /* Bouton flottant "Sommaire" */
+  .toc-fab{
+    position:fixed; right:clamp(16px,2vw,24px); bottom:calc(max(16px, env(safe-area-inset-bottom)) + 8px);
+    z-index:9999;
+    display:inline-flex; align-items:center; gap:.5rem;
+    padding:.65rem .9rem; border-radius:9999px; border:1px solid var(--border);
+    background:var(--accent); color:#fff; box-shadow:0 6px 18px rgba(0,0,0,.22);
+    font-weight:600; font-size:.95rem; cursor:pointer;
+    opacity:.95; transform:translateY(8px); transition:opacity .15s, transform .15s;
+  }
+  .toc-fab:hover{ opacity:1; transform:translateY(0) }
+  .toc-fab:focus-visible{ outline:3px solid color-mix(in srgb, var(--accent) 35%, transparent); outline-offset:2px }
+  .toc-fab[hidden]{ display:none !important }
+  @media (prefers-reduced-motion: reduce){
+    .toc-fab{ transition:none; transform:none }
+  }
+  @media print{ .toc-fab{ display:none } }
+</style>
+</head>
+<body>
+  <!-- ===== Toolbar ===== -->
+  <div class="toolbar" role="navigation" aria-label="Barre d’outils">
+    <div class="wrap">
+      <span class="brand">Vitte Light • Guide</span>
+      <div class="srch" role="search">
+        <input id="q" type="search" placeholder="Rechercher (Ctrl+K)" aria-label="Rechercher dans le guide" />
+        <span class="mini" id="hits" aria-live="polite"></span>
+      </div>
+      <button class="btn btn-ghost" id="modeBtn" title="Basculer clair/sombre" aria-pressed="false">Thème</button>
+      <div class="split" aria-hidden="true"></div>
+      <button class="btn btn-ghost" id="zoomOut" title="Réduire le texte">A−</button>
+      <button class="btn btn-ghost" id="zoomIn"  title="Agrandir le texte">A+</button>
+      <div class="split" aria-hidden="true"></div>
+      <button class="btn" id="printBtn" title="Imprimer / PDF">Imprimer</button>
+    </div>
+  </div>
+
+  <!-- ===== Header ===== -->
+  <header>
+    <div class="container intro">
+      <h1>VITTE LIGHT — Guide utilisateur complet</h1>
+      <span class="rev">Révision&nbsp;: 2025-09-05</span>
+    </div>
+  </header>
+
+  <!-- ===== Main ===== -->
+  <main class="container" id="main">
+    <!-- Sommaire -->
+    <nav id="sommaire" class="toc" aria-label="Table des matières">
+      <strong>Sommaire</strong>
+      <ul>
+        <li><a href="#intro">0) Introduction</a>
+          <ul>
+            <li><a href="#philosophie">0.1 Philosophie</a></li>
+            <li><a href="#pour-qui">0.2 Pour qui&nbsp;?</a></li>
+            <li><a href="#domaines">0.3 Domaines d'utilisation</a></li>
+            <li><a href="#points-forts">0.4 Points forts</a></li>
+            <li><a href="#hello">0.5 Exemple rapide</a></li>
+          </ul>
+        </li>
+        <li><a href="#structure">1) Structure de projet</a></li>
+        <li><a href="#cli">2) Outils en ligne de commande</a></li>
+        <li><a href="#syntaxe">3) Syntaxe : découverte progressive</a></li>
+        <li><a href="#exemples">4) Premiers exemples</a></li>
+        <li><a href="#memoire">5) Mémoire et sécurité</a></li>
+        <li><a href="#erreurs">6) Gestion des erreurs</a></li>
+        <li><a href="#ffi">7) Interopérabilité C (FFI)</a></li>
+        <li><a href="#stdlib">8) Stdlib — aperçu</a></li>
+        <li><a href="#style">9) Style et bonnes pratiques</a></li>
+        <li><a href="#niveaux">10) Conseils par niveau</a></li>
+        <li><a href="#limites">11) Limites (version Light)</a></li>
+        <li><a href="#codes-sortie">12) Codes de sortie</a></li>
+        <li><a href="#diagnostics">13) Diagnostics courants</a></li>
+        <li><a href="#checklist">14) Checklist avant de livrer</a></li>
+      </ul>
+    </nav>
+
+    <!-- 0) INTRO -->
+    <section id="intro">
+      <h2>0) Introduction — VITTE LIGHT</h2>
+      <div class="callout info">
+        <h4>En clair</h4>
+        <ul>
+          <li><strong>Vitte Light</strong> est un langage simple et moderne pour écrire des petits programmes rapides et sûrs.</li>
+          <li>Vous pouvez <strong>exécuter</strong> un fichier immédiatement ou <strong>compiler</strong> un binaire ultra-léger.</li>
+          <li>Pas besoin de gérer la mémoire à la main : les références comptées (<code>Rc</code>) s’en chargent.</li>
+          <li>Tout tourne sur Linux, macOS et Windows, sans installation compliquée.</li>
+        </ul>
+      </div>
+      <p><strong>Vitte Light</strong> (abrégé <strong>VITL</strong>) est un langage minimaliste, dérivé du langage Vitte, conçu pour allier <strong>syntaxe moderne</strong>, <strong>simplicité d’usage</strong> et <strong>outillage complet</strong>. Il vise trois profils de développeurs&nbsp;: débutants, intermédiaires, professionnels.</p>
+
+      <section id="philosophie">
+        <h3>0.1 Philosophie du langage</h3>
+        <div class="grid-2">
+          <ul>
+            <li><strong>Minimalisme</strong>&nbsp;: garder un cœur réduit de fonctionnalités, faciles à apprendre.</li>
+            <li><strong>Cohérence</strong>&nbsp;: syntaxe claire, pas de règles cachées, erreurs explicites.</li>
+            <li><strong>Polyvalence</strong>&nbsp;: exécution immédiate via VM, compilation native, intégration en C.</li>
+            <li><strong>Sécurité</strong>&nbsp;: gestion mémoire déterministe (références comptées), erreurs explicites (<code>Result</code>, <code>panic</code>).</li>
+            <li><strong>Portabilité</strong>&nbsp;: fonctionne sur Linux, BSD, macOS, Windows.</li>
+          </ul>
+          <div class="callout ok">
+            <h4>Pourquoi ce choix&nbsp;?</h4>
+            <p>La plupart des tâches quotidiennes (scripts, petits outils, glue) ne nécessitent ni threads complexes ni GC lourd. VITL couvre 80&nbsp;% des besoins courants sans la complexité des très gros langages.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="pour-qui">
+        <h3>0.2 Pour qui est fait VITL&nbsp;?</h3>
+        <div class="grid-2">
+          <div>
+            <p><strong>Débutant</strong></p>
+            <ul>
+              <li>Découvrir la programmation avec une syntaxe simple et lisible.</li>
+              <li>Éviter la complexité (pointeurs, mémoire manuelle, GC lourd).</li>
+              <li>Apprendre progressivement&nbsp;: immutabilité, <code>Result</code>, <code>match</code>.</li>
+            </ul>
+            <p><strong>Développeur intermédiaire</strong></p>
+            <ul>
+              <li>Scripts rapides et compacts pour automatiser des tâches.</li>
+              <li>Petites applications CLI portables.</li>
+              <li>Formateur, linter et tests intégrés.</li>
+            </ul>
+            <p><strong>Professionnel</strong></p>
+            <ul>
+              <li>Compilation native optimisée (<code>-O3</code>).</li>
+              <li>FFI C stable pour réutiliser des bibliothèques existantes.</li>
+              <li>Intégration CI/CD, packaging, inspection IR/bytecode (<code>--emit-ir</code>, <code>--emit-bytecode</code>).</li>
+            </ul>
+          </div>
+          <div class="callout info">
+            <h4>Ce que vous ferez en 10 minutes</h4>
+            <ul>
+              <li>Créer un fichier <code>main.vitl</code>.</li>
+              <li>L’exécuter avec <code>vitl run</code>.</li>
+              <li>Le compiler en binaire avec <code>vitl build</code>.</li>
+            </ul>
+            <p class="note">Pas de projet à initialiser, pas de config mystérieuse.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="domaines">
+        <h3>0.3 Domaines d'utilisation</h3>
+        <ol>
+          <li><strong>Écriture rapide de scripts CLI</strong> : remplacement ciblé de Bash/Python, automatisation, parsing, texte.</li>
+          <li><strong>Compilation en exécutables natifs</strong> : binaires autonomes, distribution, embarqué, multi-plateformes.</li>
+          <li><strong>Langage embarqué (FFI C)</strong> : intégration dans des projets C, chargement de <code>.vitbc</code>, scripts extensibles.</li>
+        </ol>
+        <div class="callout ok"><h4>À retenir</h4>
+          <p>Si vous avez besoin d’un petit outil <em>rapide à écrire, rapide à lancer</em>, VITL est un bon candidat.</p>
+        </div>
+      </section>
+
+      <section id="points-forts">
+        <h3>0.4 Points forts</h3>
+        <ul>
+          <li>Syntaxe lisible et unifiée (identique à Vitte).</li>
+          <li>Gestion mémoire <code>Rc</code>/<code>Weak</code> simple et prévisible.</li>
+          <li>Erreurs explicites <code>Result</code> et propagation <code>?</code>.</li>
+          <li>Stdlib couvrant I/O, fichiers, chaînes, maths, temps, vecteurs.</li>
+          <li>Outils intégrés : <code>fmt</code>, <code>check</code>, <code>test</code>, <code>doc</code>.</li>
+          <li>Exécution directe ou compilation native optimisée.</li>
+          <li>FFI C stable et facile.</li>
+        </ul>
+      </section>
+
+      <section id="hello">
+        <h3>0.5 Exemple rapide (Hello World)</h3>
+<pre><code>module app.main
+import std.io
+
+fn main() -&gt; i32 {
+  std.io::println("Bonjour Vitte Light")
+  return 0
+}
+</code></pre>
+        <div class="steps">
+          <strong>Pas à pas</strong>
+          <ol>
+            <li>Créez <code>src/main.vitl</code> puis collez le code ci-dessus.</li>
+            <li>Exécutez&nbsp;: <code>vitl run src/main.vitl</code>.</li>
+            <li>Compilez&nbsp;: <code>vitl build -O2 -o build/app src/main.vitl</code> puis lancez <code>./build/app</code>.</li>
+          </ol>
+        </div>
+        <p class="note"><strong>Résumé</strong> — Débutant : apprendre sans complexité inutile · Intermédiaire : scripts compacts et portables · Pro : compilateur performant, FFI C stable, toolchain complète.</p>
+      </section>
+    </section>
+
+    <hr />
+
+    <!-- 1) STRUCTURE -->
+    <section id="structure">
+      <h2>1) Structure de projet — Guide complet</h2>
+      <div class="callout info">
+        <h4>En clair</h4>
+        <p>Trois dossiers suffisent&nbsp;: <code>/src</code> (code VITL), <code>/libs</code> (C/FFI), <code>/build</code> (artefacts). Cette séparation évite de “polluer” les sources.</p>
+      </div>
+      <p>Un projet VITL repose sur une organisation stricte des dossiers et fichiers pour faciliter navigation, compilation et intégration (CMake, Meson, CI/CD, IDE).</p>
+
+      <h3>1.1 Arborescence type minimale</h3>
+<pre><code>/src   → code source principal (.vitl)
+ /libs → bibliothèques natives C/FFI (.c, .so, .dll, .a)
+ /build→ binaires, artefacts intermédiaires, bytecode (.vitbc)
+
+mon_projet/
+  src/
+    main.vitl
+    util/str.vitl
+  libs/
+    mylib.c
+    mylib.a
+  build/
+    app        (binaire natif)
+    app.vitbc  (bytecode)
+</code></pre>
+
+      <h3>1.2 Convention des modules</h3>
+      <ul>
+        <li>Un fichier = un module.</li>
+        <li>Chemin disque = nom de module.</li>
+        <li>Nom en <code>snake.case</code>.</li>
+      </ul>
+<pre><code>Fichier : src/std/io.vitl
+Contenu : module std.io
+</code></pre>
+      <p>Imports clairs : <code>import std.io</code>, <code>import util.str</code>. Évite les conflits, favorise la réutilisation.</p>
+
+      <div class="callout ok"><h4>Raison pratique</h4>
+        <p>Quand le chemin et le module correspondent, on sait toujours <em>où</em> vit une fonction. C’est plus simple pour les revues de code et la CI.</p>
+      </div>
+
+      <h3>1.3 Organisation recommandée</h3>
+<pre><code>/src
+  app/  → logique applicative
+  std/  → std locale/complémentaire
+  util/ → utilitaires internes
+/libs
+  externe/ → wrappers C tiers
+  interne/ → code C maison via FFI
+/build
+  debug/   → -O0 -g
+  release/ → -O3
+  docs/    → `vitl doc`
+</code></pre>
+
+      <h3>1.6 Conseils pratiques</h3>
+      <ul>
+        <li><code>module chemin.nom</code> en tête de fichier, puis les <code>import</code>.</li>
+        <li><code>/src</code> pour VITL, <code>/libs</code> pour C, <code>/build</code> pour binaires.</li>
+        <li><code>/tests</code> dédié si le projet grandit.</li>
+        <li>Ne pas mélanger artefacts et sources.</li>
+      </ul>
+
+      <p class="card"><strong>Résumé</strong> — <code>/src</code> : VITL · <code>/libs</code> : FFI · <code>/build</code> : binaires/docs · Nom module = chemin · Rigueur = lisibilité/CI.</p>
+    </section>
+
+    <hr />
+
+    <!-- 2) CLI -->
+    <section id="cli">
+      <h2>2) Outils en ligne de commande — Guide complet</h2>
+      <div class="callout info">
+        <h4>Les 4 commandes à connaître</h4>
+        <ul>
+          <li><code>vitl run &lt;fichier.vitl&gt;</code> — lance rapidement (VM).</li>
+          <li><code>vitl build ...</code> — produit un binaire natif.</li>
+          <li><code>vitl fmt</code> — formate le code.</li>
+          <li><code>vitl test</code> — exécute les tests.</li>
+        </ul>
+      </div>
+<pre><code>vitl run src/main.vitl
+vitl build -O2 -o build/app src/main.vitl
+vitl fmt src/
+vitl test
+</code></pre>
+      <div class="callout warn"><h4>Problèmes fréquents</h4>
+        <ul>
+          <li><em>“Permission denied”</em> sur le binaire → <code>chmod +x build/app</code>.</li>
+          <li>Options dans le mauvais ordre : placez <code>-o</code> après <code>build</code>.</li>
+        </ul>
+      </div>
+    </section>
+
+    <hr />
+
+    <!-- 3) SYNTAXE -->
+    <section id="syntaxe">
+      <h2>3) Syntaxe : découverte progressive</h2>
+      <div class="callout info"><h4>Idées clés</h4>
+        <ul>
+          <li>Variables <em>immuables</em> par défaut ; utilisez <code>mut</code> si nécessaire.</li>
+          <li>Les erreurs se gèrent avec <code>Result</code> et l’opérateur <code>?</code>.</li>
+          <li><code>match</code> force à traiter tous les cas → moins de surprises.</li>
+        </ul>
+      </div>
+<pre><code>// Variables
+const PI: f64 = 3.14159
+let mut compteur: i32 = 0
+let message = "Salut"
+
+// Fonctions
+fn add(a: i32, b: i32) -&gt; i32 { return a + b }
+
+// Contrôle
+for i in 0..=3 { println(i.to_string()) }
+
+// Pattern matching
+match valeur {
+  0 =&gt; println("zéro"),
+  _ =&gt; println("autre"),
+}
+</code></pre>
+    </section>
+
+    <hr />
+
+    <!-- 4) EXEMPLES -->
+    <section id="exemples">
+      <h2>4) Premiers exemples — détaillés</h2>
+      <div class="callout info"><h4>Objectif</h4>
+        <p>Savoir lire, écrire, exécuter et tester un programme VITL typique en autonomie.</p>
+      </div>
+
+      <h3>4.1 Débutant → programme minimal</h3>
+<pre><code>// src/main.vitl
+module app.main
+import std.io
+
+fn main() -&gt; i32 {
+  std.io::println("Bonjour Vitte Light")
+  return 0
+}
+</code></pre>
+
+      <h3>4.2 Intermédiaire → lire un fichier</h3>
+<pre><code>// src/cat.vitl
+module app.cat
+import std.{fs, io, cli, str}
+
+fn main() -&gt; i32 {
+  let argv = cli::args()
+  if str::len(argv) &lt; 2 {
+    io::eprintln("usage: cat &lt;fichier&gt;")
+    return 2
+  }
+  let path = argv[1]
+  if !fs::exists(path) {
+    io::eprintln("introuvable:" + path)
+    return 3
+  }
+  let contenu = fs::read_to_string(path)?  // propage l'erreur I/O
+  io::print(contenu)
+  return 0
+}
+</code></pre>
+
+      <h3>4.3 Pro → struct, impl, méthodes</h3>
+<pre><code>// src/geom.vitl
+module app.geom
+import std.{io, math}
+
+struct Vec2 { x: f64, y: f64 }
+
+impl Vec2 {
+  fn norm(&amp;self) -&gt; f64 { return (self.x*self.x + self.y*self.y).sqrt() }
+  fn dot(&amp;self, o: Vec2) -&gt; f64 { return self.x*o.x + self.y*o.y }
+}
+
+fn main() -&gt; i32 {
+  let v = Vec2 { x: 3.0, y: 4.0 }
+  io::println(v.norm().to_string()) // 5
+  return 0
+}
+</code></pre>
+
+      <div class="callout ok"><h4>Checklist mini-projet</h4>
+        <ul>
+          <li>Un <code>main.vitl</code> qui se lance en une commande.</li>
+          <li>Un test simple qui passe en CI.</li>
+          <li>Un message d’erreur clair en cas d’argument manquant.</li>
+        </ul>
+      </div>
+    </section>
+
+    <hr />
+
+    <!-- 5) MEMOIRE -->
+    <section id="memoire">
+      <h2>5) Mémoire et sécurité — guide détaillé</h2>
+      <div class="callout info"><h4>En clair</h4>
+        <p>VITL libère automatiquement quand il n’y a plus de références (<code>Rc</code>). Évitez les <em>cycles forts</em> (A → B → A) : utilisez <code>Weak</code> pour les liens retour.</p>
+      </div>
+<pre><code>let a = Rc&lt;int&gt;::new(42)
+let b = a.clone()  // forts = 2
+a.drop()           // forts = 1
+b.drop()           // forts = 0 → libération
+</code></pre>
+      <div class="callout warn"><h4>Erreurs typiques</h4>
+        <ul>
+          <li>Garder un pointeur C vers une <code>String</code> temporaire.</li>
+          <li>Oublier <code>mut</code> → erreur de compilation.</li>
+        </ul>
+      </div>
+    </section>
+
+    <hr />
+
+    <!-- 6) ERREURS -->
+    <section id="erreurs">
+      <h2>6) Gestion des erreurs</h2>
+      <div class="callout info"><h4>Pendant l’écriture</h4>
+        <ul>
+          <li>Utilisez <code>Result&lt;T,E&gt;</code> dès qu’un appel peut échouer.</li>
+          <li>Propagez avec <code>?</code> pour rester concis.</li>
+          <li><code>panic()</code> seulement si irrécupérable.</li>
+        </ul>
+      </div>
+<pre><code>let contenu = fs::read_to_string("config.txt")?
+
+match fs::read_to_string("config.txt") {
+  Result::Ok(txt) =&gt; println(txt),
+  Result::Err(e)  =&gt; eprintln(e),
+}
+</code></pre>
+    </section>
+
+    <hr />
+
+    <!-- 7) FFI -->
+    <section id="ffi">
+      <h2>7) Interopérabilité C (FFI) — guide avancé</h2>
+      <div class="callout warn"><h4>Checklist sécurité FFI</h4>
+        <ul>
+          <li>Toutes les fonctions C sont appelées dans des blocs <code>unsafe</code>.</li>
+          <li>Les chaînes passées au C sont des <code>CString</code> valides (pas de <code>\0</code> interne).</li>
+          <li>Précisez qui alloue et qui libère (et avec quoi).</li>
+        </ul>
+      </div>
+<pre><code>extern "C" { fn puts(msg: *const char) -&gt; i32 }
+let cstr = std.c::CString::from_str("Hello C!\n")?
+unsafe { _ = puts(cstr.as_ptr()) }
+</code></pre>
+    </section>
+
+    <hr />
+
+    <!-- 8) STDLIB -->
+    <section id="stdlib">
+      <h2>8) Stdlib — aperçu détaillé</h2>
+      <div class="callout info"><h4>Carte mentale</h4>
+        <ul>
+          <li><strong>I/O</strong> → <code>std.io</code></li>
+          <li><strong>Fichiers</strong> → <code>std.fs</code></li>
+          <li><strong>Chaînes</strong> → <code>std.str</code></li>
+          <li><strong>Temps</strong> → <code>std.time</code></li>
+          <li><strong>Vecteurs</strong> → <code>std.vec</code></li>
+          <li><strong>FFI</strong> → <code>std.c</code></li>
+        </ul>
+      </div>
+<pre><code>io::println("Hello")
+_ = fs::write_string("out.txt", "ok\n")?
+let n = str::len("abc") // 3
+let t0 = time::now(); heavy(); println((time::now()-t0).to_string()+" ms")
+</code></pre>
+    </section>
+
+    <hr />
+
+    <!-- 9) STYLE -->
+    <section id="style">
+      <h2>9) Style et bonnes pratiques — guide détaillé</h2>
+      <div class="callout ok"><h4>Raccourcis utiles</h4>
+        <ul>
+          <li>Un fichier = un module (nom = chemin).</li>
+          <li>Imports groupés et triés par hiérarchie.</li>
+          <li>Tests en bas du fichier qui définissent l’exemple minimal.</li>
+        </ul>
+      </div>
+<pre><code>let user_name = "Alice"
+fn compute_area(w:i32, h:i32) -&gt; i32 { return w*h }
+struct Rectangle { width:i32, height:i32 }
+</code></pre>
+    </section>
+
+    <hr />
+
+    <!-- 10) NIVEAUX -->
+    <section id="niveaux">
+      <h2>10) Conseils par niveau</h2>
+      <div class="grid-2">
+        <div class="card">
+          <strong>Débutant</strong>
+          <ul>
+            <li>Reproduire le Hello World.</li>
+            <li>Lire un fichier texte et l’afficher.</li>
+            <li>Un test unitaire simple.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <strong>Intermédiaire / Pro</strong>
+          <ul>
+            <li>Erreurs structurées et codes de sortie.</li>
+            <li>Mesures de temps et micro-bench.</li>
+            <li>FFI C minimal et encapsulé.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <hr />
+
+    <!-- 11) LIMITES -->
+    <section id="limites">
+      <h2>11) Limites (version Light) — version détaillée</h2>
+      <div class="callout warn"><h4>Pourquoi ces limites&nbsp;?</h4>
+        <p>Elles gardent le langage simple et prévisible. Pour des besoins hors périmètre (threads lourds, GC complet…), utilisez une lib externe via FFI.</p>
+      </div>
+      <ul>
+        <li>Pas de threads natifs.</li>
+        <li>Pas de GC complet (usage de <code>Rc/Weak</code>).</li>
+        <li>Génériques partiels.</li>
+        <li>FFI limité à l’ABI C.</li>
+      </ul>
+    </section>
+
+    <hr />
+
+    <!-- 12) CODES -->
+    <section id="codes-sortie">
+      <h2>12) Codes de sortie</h2>
+      <ul>
+        <li><strong>0</strong> → succès</li>
+        <li><strong>1</strong> → erreur générique/panic</li>
+        <li><strong>2</strong> → erreur d’usage CLI</li>
+        <li><strong>3</strong> → erreur I/O</li>
+        <li><strong>4</strong> → erreur FFI</li>
+      </ul>
+    </section>
+
+    <hr />
+
+    <!-- 13) DIAGNOSTICS -->
+    <section id="diagnostics">
+      <h2>13) Diagnostics courants — version détaillée</h2>
+      <div class="callout info"><h4>Méthode de triage (rapide)</h4>
+        <ol>
+          <li>Lire le message complet.</li>
+          <li>Lancer <code>vitl check</code> puis <code>vitl build -g -O0</code>.</li>
+          <li>Vérifier <code>module</code> / <code>import</code>.</li>
+          <li>Ajouter/clarifier les types aux frontières d’API.</li>
+        </ol>
+      </div>
+
+      <h3>E0001 : symbole inconnu</h3>
+<pre><code>// Mauvais
+module app.main
+fn main()-&gt;i32 {
+  std.io::pritnln("hi")
+  return 0
+}
+
+// Correct
+module app.main
+import std.io
+fn main()-&gt;i32 {
+  std.io::println("hi")
+  return 0
+}
+</code></pre>
+
+      <h3>E0002 : types incompatibles</h3>
+<pre><code>// Mauvais
+let n:i32 = 3
+let x:f64 = 0.5
+let y = n + x
+
+// Correct (cast local)
+let n:i32 = 3
+let x:f64 = 0.5
+let y = (n as f64) + x
+
+// Chaînes
+std.io::println("n=" + n)             // E0002
+std.io::println("n=" + n.to_string()) // OK
+</code></pre>
+
+      <h3>E2001 : fichier introuvable (I/O)</h3>
+<pre><code>let path = "data/config.txt"
+if !std.fs::exists(path) {
+  std.io::eprintln("config manquante:" + path)
+  return 3
+}
+let txt = std.fs::read_to_string(path)?
+</code></pre>
+
+      <h3>Messages enrichis</h3>
+<pre><code>// I/O robuste
+let path = argv[1]
+if !std.fs::exists(path) {
+  std.io::eprintln("E2001: fichier introuvable → " + path)
+  std.io::eprintln("Astuce: lancer depuis la racine du projet ou passer un chemin absolu.")
+  return 3
+}
+</code></pre>
+<pre><code>// FFI robuste
+let msg = std.c::CString::from_str("ok\n")
+if msg.is_err() { return Result::Err("E0601: CString invalide (caractère nul)") }
+unsafe { _ = puts(msg.unwrap().as_ptr()) }
+</code></pre>
+    </section>
+
+    <hr />
+
+    <!-- 14) CHECKLIST -->
+    <section id="checklist">
+      <h2>14) Checklist avant de livrer</h2>
+      <ul>
+        <li>[ ] <code>module app.main</code> défini</li>
+        <li>[ ] <code>fn main()-&gt;i32</code> présent</li>
+        <li>[ ] Imports réduits au nécessaire</li>
+        <li>[ ] <code>vitl test</code> passe</li>
+        <li>[ ] <code>build/app</code> généré dans <code>/build</code></li>
+      </ul>
+      <p class="note">FIN DU GUIDE</p>
+    </section>
+  </main>
+
+  <!-- Bouton flottant Sommaire -->
+  <button id="tocFab" class="toc-fab" type="button" aria-label="Revenir au sommaire" title="Sommaire (Alt+S)">
+    ↑ Sommaire
+  </button>
+
+  <!-- Script de navigation vers le sommaire -->
+  <script>
+    (function(){
+      const btn = document.getElementById('tocFab');
+      const toc = document.getElementById('sommaire');
+      if(!btn || !toc) return;
+
+      function nearToc(){
+        const y = window.scrollY || document.documentElement.scrollTop || 0;
+        const r = toc.getBoundingClientRect();
+        const top = y + r.top;
+        const h = r.height || toc.offsetHeight || 0;
+        return y < (top + h * 0.6);
+      }
+      function toggle(){ btn.hidden = nearToc(); }
+
+      toggle();
+      window.addEventListener('scroll', toggle, {passive:true});
+      window.addEventListener('resize', toggle);
+
+      btn.addEventListener('click', () => {
+        toc.scrollIntoView({behavior: 'smooth', block: 'start'});
+      });
+
+      // Raccourci clavier : Alt+S
+      window.addEventListener('keydown', (e) => {
+        if(e.altKey && (e.key === 's' || e.key === 'S')) { e.preventDefault(); btn.click(); }
+      });
+    })();
+  </script>
+</body>
+</html>
+
