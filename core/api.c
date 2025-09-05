@@ -1,1084 +1,809 @@
-// vitte-light/core/api.c
-// C99 runtime API for VitteLight: context, values, bytecode VM, FFI, globals,
-// errors, logging. Standalone. Pair with a minimal api.h if desired. Build: cc
-// -std=c99 -O2 -Wall -Wextra -pedantic -o vitte_light_api_test api.c Define
-// VL_API_TEST_MAIN to compile the built-in smoke test.
+/* ============================================================================
+   /core/api.c — Runtime C99 « ultra complet » pour applis Vitte/Vitl
+   Mono-fichier amalgamé. Zéro dépendance hors libc.
+   Plateformes: POSIX (Linux/macOS), Windows.
+   ============================================================================
+ */
 
-#include <inttypes.h>
+#if defined(_MSC_VER)
+#define _CRT_SECURE_NO_WARNINGS
+#ifndef __STDC_VERSION__
+#define __STDC_VERSION__ 199901L
+#endif
+#endif
+
+#include <errno.h>
 #include <stdarg.h>
 #include <stdbool.h>
-#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <cstdio>
-
-// ───────────────────────── Public-ish types (would normally be in api.h)
-// ─────────────────────────
-
-typedef enum {
-  VL_OK = 0,
-  VL_ERR_OOM,
-  VL_ERR_BAD_BYTECODE,
-  VL_ERR_RUNTIME,
-  VL_ERR_NOT_FOUND,
-  VL_ERR_BAD_ARG,
-} VL_Status;
-
-typedef enum {
-  VT_NIL = 0,
-  VT_BOOL,
-  VT_INT,
-  VT_FLOAT,
-  VT_STR,
-  VT_ARRAY,  // reserved for future use
-  VT_MAP,    // reserved for future use
-  VT_FUNC,   // reserved for future use
-  VT_NATIVE,
-} VL_Type;
-
-struct VL_Context;
-
-typedef struct {
-  VL_Type type;
-  union {
-    bool b;
-    int64_t i;
-    double f;
-    struct VL_String *s;
-    void *ptr;
-  } as;
-} VL_Value;
-
-typedef struct {
-  int code;       // VL_Status-like
-  char msg[256];  // last error string
-} VL_Error;
-
-// Native function ABI: return VL_OK on success and set *ret if non-NULL.
-typedef VL_Status (*VL_NativeFn)(struct VL_Context *ctx, VL_Value *args,
-                                 size_t argc, VL_Value *ret, void *user);
-
-// Config hooks (all optional). If NULL, defaults to malloc/free/realloc and
-// stderr logging.
-typedef void *(*VL_AllocFn)(void *ud, void *ptr, size_t oldsz,
-                            size_t newsz);  // realloc-style. newsz=0 => free
-typedef void (*VL_LogFn)(void *ud, const char *level, const char *fmt, ...);
-
-typedef struct {
-  VL_AllocFn alloc;  // optional
-  void *alloc_ud;    // optional
-  VL_LogFn log;      // optional
-  void *log_ud;      // optional
-  size_t stack_cap;  // optional, default 1024
-} VL_Config;
-
-// ───────────────────────── Internal structures ─────────────────────────
-
-// Simple FNV-1a 32-bit
-static uint32_t vl_hash(const void *data, size_t len) {
-  const uint8_t *p = (const uint8_t *)data;
-  uint32_t h = 2166136261u;
-  for (size_t i = 0; i < len; ++i) {
-    h ^= p[i];
-    h *= 16777619u;
-  }
-  return h ? h : 1u;  // never 0
-}
-
-// String object (interned)
-typedef struct VL_String {
-  uint32_t hash;
-  uint32_t len;
-  char data[];  // NUL-terminated
-} VL_String;
-
-// Open addressing map for string keys -> VL_Value
-typedef struct {
-  VL_String **keys;  // interned keys
-  VL_Value *vals;
-  size_t cap;   // power of two or 0
-  size_t len;   // number of occupied slots (excluding tombstones)
-  size_t tomb;  // tombstones
-} VL_Map;
-
-// Native registry entry
-typedef struct {
-  VL_NativeFn fn;
-  void *ud;
-} VL_Native;
-
-// VM context
-typedef struct VL_Context {
-  VL_AllocFn ralloc;
-  void *alloc_ud;
-  VL_LogFn log;
-  void *log_ud;
-
-  VL_Error last_error;
-
-  // VM
-  uint8_t *bc;  // bytecode buffer
-  size_t bc_len;
-  size_t ip;  // instruction pointer
-
-  VL_Value *stack;
-  size_t sp;
-  size_t stack_cap;
-
-  // Constants pool: interned strings (indexable)
-  VL_String **kstr;
-  size_t kstr_len;
-
-  // Globals and natives
-  VL_Map globals;
-  VL_Map natives;  // value.as.ptr -> VL_Native*
-
-} VL_Context;
-
-// ───────────────────────── Alloc, logging, errors ─────────────────────────
-
-static void *vl_sys_alloc(void *ud, void *ptr, size_t oldsz, size_t newsz) {
-  (void)ud;
-  (void)oldsz;
-  if (newsz == 0) {
-    free(ptr);
-    return NULL;
-  }
-  return realloc(ptr, newsz);
-}
-
-static void vl_sys_log(void *ud, const char *level, const char *fmt, ...) {
-  (void)ud;
-  fprintf(stderr, "[VL][%s] ", level ? level : "log");
-  va_list ap;
-  va_start(ap, fmt);
-  vfprintf(stderr, fmt, ap);
-  va_end(ap);
-  fputc('\n', stderr);
-}
-
-static void *vl_alloc(VL_Context *ctx, void *ptr, size_t oldsz, size_t newsz) {
-  return ctx->ralloc ? ctx->ralloc(ctx->alloc_ud, ptr, oldsz, newsz)
-                     : vl_sys_alloc(NULL, ptr, oldsz, newsz);
-}
-
-static void vl_logf(VL_Context *ctx, const char *lvl, const char *fmt, ...) {
-  VL_LogFn lg = ctx && ctx->log ? ctx->log : vl_sys_log;
-  void *ud = ctx ? ctx->log_ud : NULL;
-  va_list ap;
-  va_start(ap, fmt);
-  if (lg) {
-    // We cannot pass va_list directly to user function with this signature, so
-    // build a temp buffer.
-    char buf[512];
-    vsnprintf(buf, sizeof(buf), fmt, ap);
-    lg(ud, lvl, "%s", buf);
-  }
-  va_end(ap);
-}
-
-static VL_Status vl_set_err(VL_Context *ctx, VL_Status code, const char *fmt,
-                            ...) {
-  if (!ctx) return code;
-  ctx->last_error.code = code;
-  va_list ap;
-  va_start(ap, fmt);
-  vsnprintf(ctx->last_error.msg, sizeof(ctx->last_error.msg), fmt, ap);
-  va_end(ap);
-  vl_logf(ctx, "error", "%s", ctx->last_error.msg);
-  return code;
-}
-
-// ───────────────────────── Value helpers ─────────────────────────
-
-static VL_Value vl_nil(void) {
-  VL_Value v;
-  v.type = VT_NIL;
-  v.as.ptr = NULL;
-  return v;
-}
-static VL_Value vl_bool(bool b) {
-  VL_Value v;
-  v.type = VT_BOOL;
-  v.as.b = b;
-  return v;
-}
-static VL_Value vl_int(int64_t i) {
-  VL_Value v;
-  v.type = VT_INT;
-  v.as.i = i;
-  return v;
-}
-static VL_Value vl_float(double f) {
-  VL_Value v;
-  v.type = VT_FLOAT;
-  v.as.f = f;
-  return v;
-}
-static VL_Value vl_str(VL_String *s) {
-  VL_Value v;
-  v.type = VT_STR;
-  v.as.s = s;
-  return v;
-}
-static const char *vl_type_name(VL_Type t) {
-  switch (t) {
-    case VT_NIL:
-      return "nil";
-    case VT_BOOL:
-      return "bool";
-    case VT_INT:
-      return "int";
-    case VT_FLOAT:
-      return "float";
-    case VT_STR:
-      return "str";
-    case VT_ARRAY:
-      return "array";
-    case VT_MAP:
-      return "map";
-    case VT_FUNC:
-      return "func";
-    case VT_NATIVE:
-      return "native";
-    default:
-      return "?";
-  }
-}
-
-// ───────────────────────── Map (open addressing, linear probe)
-// ─────────────────────────
-
-static uint32_t vl_str_hash(VL_String *s) { return s ? s->hash : 0; }
-
-static bool vl_str_eq(VL_String *a, VL_String *b) {
-  return a == b || (a && b && a->len == b->len && a->hash == b->hash &&
-                    memcmp(a->data, b->data, a->len) == 0);
-}
-
-static bool vl_map_init(VL_Context *ctx, VL_Map *m, size_t cap_pow2) {
-  memset(m, 0, sizeof(*m));
-  size_t cap = cap_pow2 < 4 ? 8 : (size_t)1 << cap_pow2;
-  m->keys = (VL_String **)vl_alloc(ctx, NULL, 0, cap * sizeof(VL_String *));
-  m->vals = (VL_Value *)vl_alloc(ctx, NULL, 0, cap * sizeof(VL_Value));
-  if (!m->keys || !m->vals) return false;
-  memset(m->keys, 0, cap * sizeof(VL_String *));
-  for (size_t i = 0; i < cap; i++) m->vals[i] = vl_nil();
-  m->cap = cap;
-  m->len = 0;
-  m->tomb = 0;
-  return true;
-}
-
-static void vl_map_free(VL_Context *ctx, VL_Map *m) {
-  if (!m || !m->cap) return;
-  vl_alloc(ctx, m->keys, m->cap * sizeof(VL_String *), 0);
-  vl_alloc(ctx, m->vals, m->cap * sizeof(VL_Value), 0);
-  memset(m, 0, sizeof(*m));
-}
-
-static size_t vl_map_probe(VL_Map *m, VL_String *key, bool *found,
-                           bool *is_tomb) {
-  uint32_t h = vl_str_hash(key);
-  size_t mask = m->cap - 1;
-  size_t idx = h & mask;
-  size_t first_tomb = SIZE_MAX;
-  for (;;) {
-    VL_String *k = m->keys[idx];
-    if (k == NULL) {
-      *found = false;
-      if (is_tomb) *is_tomb = false;
-      return (first_tomb != SIZE_MAX) ? first_tomb : idx;
-    }
-    if (k == (VL_String *)(uintptr_t)1) {  // tombstone marker
-      if (first_tomb == SIZE_MAX) first_tomb = idx;
-    } else if (vl_str_eq(k, key)) {
-      *found = true;
-      if (is_tomb) *is_tomb = false;
-      return idx;
-    }
-    idx = (idx + 1) & mask;
-  }
-}
-
-static bool vl_map_rehash(VL_Context *ctx, VL_Map *m, size_t new_cap) {
-  VL_String **oldk = m->keys;
-  VL_Value *oldv = m->vals;
-  size_t oldcap = m->cap;
-  if (!vl_map_init(ctx, m,
-                   (size_t)(new_cap ? new_cap : oldcap * 2) == 0
-                       ? 4
-                       : (size_t)(new_cap ? new_cap : oldcap * 2)))
-    return false;
-  for (size_t i = 0; i < oldcap; i++) {
-    VL_String *k = oldk[i];
-    if (k && k != (VL_String *)(uintptr_t)1) {
-      bool found, tomb;
-      size_t idx = vl_map_probe(m, k, &found, &tomb);
-      m->keys[idx] = k;
-      m->vals[idx] = oldv[i];
-      m->len++;
-    }
-  }
-  vl_alloc(ctx, oldk, oldcap * sizeof(VL_String *), 0);
-  vl_alloc(ctx, oldv, oldcap * sizeof(VL_Value), 0);
-  return true;
-}
-
-static bool vl_map_put(VL_Context *ctx, VL_Map *m, VL_String *key,
-                       VL_Value val) {
-  if ((m->len + m->tomb) * 100 / m->cap > 70) {
-    if (!vl_map_rehash(ctx, m, m->cap * 2)) return false;
-  }
-  bool found, tomb;
-  size_t idx = vl_map_probe(m, key, &found, &tomb);
-  if (found) {
-    m->vals[idx] = val;
-    return true;
-  }
-  if (m->keys[idx] == (VL_String *)(uintptr_t)1) m->tomb--;  // reuse tomb
-  m->keys[idx] = key;
-  m->vals[idx] = val;
-  m->len++;
-  return true;
-}
-
-static bool vl_map_get(VL_Map *m, VL_String *key, VL_Value *out) {
-  if (m->cap == 0) return false;
-  bool found, tomb;
-  size_t idx = vl_map_probe(m, key, &found, &tomb);
-  if (!found) return false;
-  if (out) *out = m->vals[idx];
-  return true;
-}
-
-static bool vl_map_del(VL_Map *m, VL_String *key) {
-  if (m->cap == 0) return false;
-  bool found, tomb;
-  size_t idx = vl_map_probe(m, key, &found, &tomb);
-  if (!found) return false;
-  m->keys[idx] = (VL_String *)(uintptr_t)1;  // tombstone
-  m->vals[idx] = vl_nil();
-  m->len--;
-  m->tomb++;
-  return true;
-}
-
-// ───────────────────────── String interning ─────────────────────────
-
-static VL_String *vl_str_new(VL_Context *ctx, const char *s, size_t n) {
-  uint32_t h = vl_hash(s, n);
-  size_t total = sizeof(VL_String) + n + 1;
-  VL_String *st = (VL_String *)vl_alloc(ctx, NULL, 0, total);
-  if (!st) return NULL;
-  st->hash = h;
-  st->len = (uint32_t)n;
-  memcpy(st->data, s, n);
-  st->data[n] = '\0';
-  return st;
-}
-
-static VL_String *vl_intern(VL_Context *ctx, VL_Map *table, const char *s,
-                            size_t n) {
-  VL_String tmp = {vl_hash(s, n), (uint32_t)n, {0}};
-  VL_String *key_probe = &tmp;  // stack key for equality/hash
-
-  // search
-  if (table->cap) {
-    bool found, tomb;
-    size_t mask = table->cap - 1;
-    size_t idx = tmp.hash & mask;
-    for (;;) {
-      VL_String *k = table->keys[idx];
-      if (k == NULL) {
-        break;
-      }
-      if (k != (VL_String *)(uintptr_t)1 && k->len == tmp.len &&
-          k->hash == tmp.hash && memcmp(k->data, s, n) == 0) {
-        return k;  // already interned
-      }
-      idx = (idx + 1) & mask;
-    }
-  }
-
-  // create new and insert
-  VL_String *st = vl_str_new(ctx, s, n);
-  if (!st) return NULL;
-  if (table->cap == 0 && !vl_map_init(ctx, table, 4)) return NULL;
-  if (!vl_map_put(ctx, table, st, vl_nil())) return NULL;
-  return st;
-}
-
-// ───────────────────────── Bytecode format ─────────────────────────
-// Layout (little-endian):
-//   magic "VLBC" (4 bytes)
-//   u8 version (=1)
-//   u32 nstrings
-//     repeat nstrings: u32 len, bytes[len]
-//   u32 code_size
-//   u8  code[code_size]
-// Execution starts at IP=0.
-
-// Opcodes
-enum {
-  OP_NOP = 0,
-  OP_PUSHI = 1,  // int64
-  OP_PUSHF = 2,  // double
-  OP_PUSHS = 3,  // u32 string index
-  OP_ADD = 4,
-  OP_SUB = 5,
-  OP_MUL = 6,
-  OP_DIV = 7,
-  OP_EQ = 8,
-  OP_NEQ = 9,
-  OP_LT = 10,
-  OP_GT = 11,
-  OP_LE = 12,
-  OP_GE = 13,
-  OP_PRINT = 14,  // pop 1, print
-  OP_POP = 15,
-  OP_STOREG = 16,  // u32 str idx, pop -> globals[name]
-  OP_LOADG = 17,   // u32 str idx, push globals[name]
-  OP_CALLN = 18,   // u32 str idx, u8 argc  ; call native(name, argc)
-  OP_HALT = 19
-};
-
-static bool rd_u8(const uint8_t *p, size_t n, size_t *io, uint8_t *out) {
-  if (*io + 1 > n) return false;
-  *out = p[(*io)++];
-  return true;
-}
-static bool rd_u32(const uint8_t *p, size_t n, size_t *io, uint32_t *out) {
-  if (*io + 4 > n) return false;
-  uint32_t v = (uint32_t)p[*io] | ((uint32_t)p[*io + 1] << 8) |
-               ((uint32_t)p[*io + 2] << 16) | ((uint32_t)p[*io + 3] << 24);
-  *io += 4;
-  *out = v;
-  return true;
-}
-static bool rd_u64(const uint8_t *p, size_t n, size_t *io, uint64_t *out) {
-  if (*io + 8 > n) return false;
-  uint64_t v = 0;
-  for (int i = 0; i < 8; i++) v |= ((uint64_t)p[*io + i]) << (8 * i);
-  *io += 8;
-  *out = v;
-  return true;
-}
-static bool rd_f64(const uint8_t *p, size_t n, size_t *io, double *out) {
-  if (*io + 8 > n) return false;
-  union {
-    uint64_t u;
-    double d;
-  } u;
-  rd_u64(p, n, io, &u.u);
-  *out = u.d;
-  return true;
-}
-
-// ───────────────────────── VM core ─────────────────────────
-
-static bool vl_stack_grow(VL_Context *ctx) {
-  size_t newcap = ctx->stack_cap ? ctx->stack_cap * 2 : 1024;
-  VL_Value *ns =
-      (VL_Value *)vl_alloc(ctx, ctx->stack, ctx->stack_cap * sizeof(VL_Value),
-                           newcap * sizeof(VL_Value));
-  if (!ns) return false;
-  ctx->stack = ns;
-  ctx->stack_cap = newcap;
-  return true;
-}
-
-static bool vl_push(VL_Context *ctx, VL_Value v) {
-  if (ctx->sp >= ctx->stack_cap && !vl_stack_grow(ctx)) return false;
-  ctx->stack[ctx->sp++] = v;
-  return true;
-}
-
-static VL_Value vl_pop(VL_Context *ctx) {
-  if (ctx->sp == 0) {
-    return vl_nil();
-  }
-  return ctx->stack[--ctx->sp];
-}
-
-static VL_String *vl_kstr_at(VL_Context *ctx, uint32_t idx) {
-  return (idx < ctx->kstr_len) ? ctx->kstr[idx] : NULL;
-}
-
-static VL_Status vl_exec_step(VL_Context *ctx) {
-  if (ctx->ip >= ctx->bc_len)
-    return vl_set_err(ctx, VL_ERR_BAD_BYTECODE, "IP past code");
-  uint8_t op = ctx->bc[ctx->ip++];
-  switch (op) {
-    case OP_NOP:
-      break;
-    case OP_HALT:
-      return VL_OK;  // signal as OK, upper loop stops on HALT
-    case OP_PUSHI: {
-      if (ctx->ip + 8 > ctx->bc_len)
-        return vl_set_err(ctx, VL_ERR_BAD_BYTECODE, "PUSHI truncated");
-      int64_t v = 0;
-      for (int i = 0; i < 8; i++)
-        v |= ((int64_t)ctx->bc[ctx->ip + i]) << (8 * i);
-      ctx->ip += 8;
-      if (!vl_push(ctx, vl_int(v)))
-        return vl_set_err(ctx, VL_ERR_OOM, "stack OOM");
-    } break;
-    case OP_PUSHF: {
-      if (ctx->ip + 8 > ctx->bc_len)
-        return vl_set_err(ctx, VL_ERR_BAD_BYTECODE, "PUSHF truncated");
-      union {
-        uint64_t u;
-        double d;
-      } u = {0};
-      for (int i = 0; i < 8; i++)
-        u.u |= ((uint64_t)ctx->bc[ctx->ip + i]) << (8 * i);
-      ctx->ip += 8;
-      if (!vl_push(ctx, vl_float(u.d)))
-        return vl_set_err(ctx, VL_ERR_OOM, "stack OOM");
-    } break;
-    case OP_PUSHS: {
-      if (ctx->ip + 4 > ctx->bc_len)
-        return vl_set_err(ctx, VL_ERR_BAD_BYTECODE, "PUSHS truncated");
-      uint32_t si = (uint32_t)ctx->bc[ctx->ip] |
-                    ((uint32_t)ctx->bc[ctx->ip + 1] << 8) |
-                    ((uint32_t)ctx->bc[ctx->ip + 2] << 16) |
-                    ((uint32_t)ctx->bc[ctx->ip + 3] << 24);
-      ctx->ip += 4;
-      VL_String *s = vl_kstr_at(ctx, si);
-      if (!s)
-        return vl_set_err(ctx, VL_ERR_BAD_BYTECODE, "PUSHS bad idx %u", si);
-      if (!vl_push(ctx, vl_str(s)))
-        return vl_set_err(ctx, VL_ERR_OOM, "stack OOM");
-    } break;
-    case OP_POP: {
-      (void)vl_pop(ctx);
-    } break;
-    case OP_ADD:
-    case OP_SUB:
-    case OP_MUL:
-    case OP_DIV: {
-      VL_Value b = vl_pop(ctx);
-      VL_Value a = vl_pop(ctx);
-      double x, y;  // numeric promotion: int->double when needed
-      if ((a.type == VT_INT || a.type == VT_FLOAT) &&
-          (b.type == VT_INT || b.type == VT_FLOAT)) {
-        x = (a.type == VT_FLOAT) ? a.as.f : (double)a.as.i;
-        y = (b.type == VT_FLOAT) ? b.as.f : (double)b.as.i;
-        double r = 0.0;
-        if (op == OP_ADD)
-          r = x + y;
-        else if (op == OP_SUB)
-          r = x - y;
-        else if (op == OP_MUL)
-          r = x * y;
-        else {
-          if (y == 0.0)
-            return vl_set_err(ctx, VL_ERR_RUNTIME, "division by zero");
-          r = x / y;
-        }
-        if (!vl_push(ctx, vl_float(r)))
-          return vl_set_err(ctx, VL_ERR_OOM, "stack OOM");
-      } else {
-        return vl_set_err(ctx, VL_ERR_RUNTIME, "arith on non-numbers (%s,%s)",
-                          vl_type_name(a.type), vl_type_name(b.type));
-      }
-    } break;
-    case OP_EQ:
-    case OP_NEQ:
-    case OP_LT:
-    case OP_GT:
-    case OP_LE:
-    case OP_GE: {
-      VL_Value b = vl_pop(ctx);
-      VL_Value a = vl_pop(ctx);
-      if ((a.type == VT_INT || a.type == VT_FLOAT) &&
-          (b.type == VT_INT || b.type == VT_FLOAT)) {
-        double x = (a.type == VT_FLOAT) ? a.as.f : (double)a.as.i;
-        double y = (b.type == VT_FLOAT) ? b.as.f : (double)b.as.i;
-        bool r = false;
-        if (op == OP_EQ)
-          r = (x == y);
-        else if (op == OP_NEQ)
-          r = (x != y);
-        else if (op == OP_LT)
-          r = (x < y);
-        else if (op == OP_GT)
-          r = (x > y);
-        else if (op == OP_LE)
-          r = (x <= y);
-        else if (op == OP_GE)
-          r = (x >= y);
-        if (!vl_push(ctx, vl_bool(r)))
-          return vl_set_err(ctx, VL_ERR_OOM, "stack OOM");
-      } else if (a.type == VT_STR && b.type == VT_STR &&
-                 (op == OP_EQ || op == OP_NEQ)) {
-        bool eq = vl_str_eq(a.as.s, b.as.s);
-        if (!vl_push(ctx, vl_bool(op == OP_EQ ? eq : !eq)))
-          return vl_set_err(ctx, VL_ERR_OOM, "stack OOM");
-      } else {
-        return vl_set_err(ctx, VL_ERR_RUNTIME, "cmp on types (%s,%s)",
-                          vl_type_name(a.type), vl_type_name(b.type));
-      }
-    } break;
-    case OP_PRINT: {
-      VL_Value v = vl_pop(ctx);
-      switch (v.type) {
-        case VT_NIL:
-          printf("nil\n");
-          break;
-        case VT_BOOL:
-          printf(v.as.b ? "true\n" : "false\n");
-          break;
-        case VT_INT:
-          printf("%" PRId64 "\n", v.as.i);
-          break;
-        case VT_FLOAT:
-          printf("%g\n", v.as.f);
-          break;
-        case VT_STR:
-          printf("%.*s\n", (int)v.as.s->len, v.as.s->data);
-          break;
-        default:
-          printf("<%s>\n", vl_type_name(v.type));
-          break;
-      }
-    } break;
-    case OP_STOREG: {
-      if (ctx->ip + 4 > ctx->bc_len)
-        return vl_set_err(ctx, VL_ERR_BAD_BYTECODE, "STOREG truncated");
-      uint32_t si = (uint32_t)ctx->bc[ctx->ip] |
-                    ((uint32_t)ctx->bc[ctx->ip + 1] << 8) |
-                    ((uint32_t)ctx->bc[ctx->ip + 2] << 16) |
-                    ((uint32_t)ctx->bc[ctx->ip + 3] << 24);
-      ctx->ip += 4;
-      VL_String *name = vl_kstr_at(ctx, si);
-      if (!name)
-        return vl_set_err(ctx, VL_ERR_BAD_BYTECODE, "STOREG bad idx %u", si);
-      VL_Value v = vl_pop(ctx);
-      if (!vl_map_put(ctx, &ctx->globals, name, v))
-        return vl_set_err(ctx, VL_ERR_OOM, "globals put OOM");
-    } break;
-    case OP_LOADG: {
-      if (ctx->ip + 4 > ctx->bc_len)
-        return vl_set_err(ctx, VL_ERR_BAD_BYTECODE, "LOADG truncated");
-      uint32_t si = (uint32_t)ctx->bc[ctx->ip] |
-                    ((uint32_t)ctx->bc[ctx->ip + 1] << 8) |
-                    ((uint32_t)ctx->bc[ctx->ip + 2] << 16) |
-                    ((uint32_t)ctx->bc[ctx->ip + 3] << 24);
-      ctx->ip += 4;
-      VL_String *name = vl_kstr_at(ctx, si);
-      if (!name)
-        return vl_set_err(ctx, VL_ERR_BAD_BYTECODE, "LOADG bad idx %u", si);
-      VL_Value v;
-      if (!vl_map_get(&ctx->globals, name, &v)) v = vl_nil();
-      if (!vl_push(ctx, v)) return vl_set_err(ctx, VL_ERR_OOM, "stack OOM");
-    } break;
-    case OP_CALLN: {
-      if (ctx->ip + 5 > ctx->bc_len)
-        return vl_set_err(ctx, VL_ERR_BAD_BYTECODE, "CALLN truncated");
-      uint32_t si = (uint32_t)ctx->bc[ctx->ip] |
-                    ((uint32_t)ctx->bc[ctx->ip + 1] << 8) |
-                    ((uint32_t)ctx->bc[ctx->ip + 2] << 16) |
-                    ((uint32_t)ctx->bc[ctx->ip + 3] << 24);
-      ctx->ip += 4;
-      uint8_t argc = ctx->bc[ctx->ip++];
-      VL_String *name = vl_kstr_at(ctx, si);
-      if (!name)
-        return vl_set_err(ctx, VL_ERR_BAD_BYTECODE, "CALLN bad idx %u", si);
-      VL_Value entry;
-      if (!vl_map_get(&ctx->natives, name, &entry) || entry.type != VT_NATIVE ||
-          !entry.as.ptr) {
-        return vl_set_err(ctx, VL_ERR_NOT_FOUND, "native '%.*s' not found",
-                          name->len, name->data);
-      }
-      VL_Native *nat = (VL_Native *)entry.as.ptr;
-      if (argc > ctx->sp)
-        return vl_set_err(ctx, VL_ERR_RUNTIME, "stack underflow in call");
-      VL_Value *args = &ctx->stack[ctx->sp - argc];
-      VL_Value ret = vl_nil();
-      VL_Status rc = nat->fn(ctx, args, argc, &ret, nat->ud);
-      // pop args
-      ctx->sp -= argc;
-      if (rc != VL_OK)
-        return vl_set_err(ctx, rc, "native '%.*s' failed", name->len,
-                          name->data);
-      if (!vl_push(ctx, ret)) return vl_set_err(ctx, VL_ERR_OOM, "stack OOM");
-    } break;
-    default:
-      return vl_set_err(ctx, VL_ERR_BAD_BYTECODE, "unknown opcode %u at %zu",
-                        op, ctx->ip - 1);
-  }
-  return VL_OK;
-}
-
-// ───────────────────────── Public API ─────────────────────────
-
-static VL_Context *vl_create(const VL_Config *cfg) {
-  VL_Context *ctx =
-      (VL_Context *)(cfg && cfg->alloc
-                         ? cfg->alloc(cfg->alloc_ud, NULL, 0,
-                                      sizeof(VL_Context))
-                         : vl_sys_alloc(NULL, NULL, 0, sizeof(VL_Context)));
-  if (!ctx) return NULL;
-  memset(ctx, 0, sizeof(*ctx));
-  ctx->ralloc = cfg && cfg->alloc ? cfg->alloc : vl_sys_alloc;
-  ctx->alloc_ud = cfg ? cfg->alloc_ud : NULL;
-  ctx->log = cfg && cfg->log ? cfg->log : vl_sys_log;
-  ctx->log_ud = cfg ? cfg->log_ud : NULL;
-  ctx->stack_cap = (cfg && cfg->stack_cap) ? cfg->stack_cap : 1024;
-  ctx->stack =
-      (VL_Value *)vl_alloc(ctx, NULL, 0, ctx->stack_cap * sizeof(VL_Value));
-  if (!ctx->stack) {
-    vl_alloc(ctx, ctx, sizeof(VL_Context), 0);
-    return NULL;
-  }
-  if (!vl_map_init(ctx, &ctx->globals, 4)) {
-    vl_alloc(ctx, ctx->stack, ctx->stack_cap * sizeof(VL_Value), 0);
-    vl_alloc(ctx, ctx, sizeof(VL_Context), 0);
-    return NULL;
-  }
-  if (!vl_map_init(ctx, &ctx->natives, 4)) {
-    vl_map_free(ctx, &ctx->globals);
-    vl_alloc(ctx, ctx->stack, ctx->stack_cap * sizeof(VL_Value), 0);
-    vl_alloc(ctx, ctx, sizeof(VL_Context), 0);
-    return NULL;
-  }
-  return ctx;
-}
-
-static void vl_destroy(VL_Context *ctx) {
-  if (!ctx) return;
-  // free bytecode
-  if (ctx->bc) vl_alloc(ctx, ctx->bc, ctx->bc_len, 0);
-  // free interned strings array
-  for (size_t i = 0; i < ctx->kstr_len; i++)
-    if (ctx->kstr[i])
-      vl_alloc(ctx, ctx->kstr[i], sizeof(VL_String) + ctx->kstr[i]->len + 1, 0);
-  vl_alloc(ctx, ctx->kstr, ctx->kstr_len * sizeof(VL_String *), 0);
-  // free natives table values (VL_Native)
-  if (ctx->natives.cap) {
-    for (size_t i = 0; i < ctx->natives.cap; i++) {
-      VL_String *k = ctx->natives.keys[i];
-      if (k && k != (VL_String *)(uintptr_t)1) {
-        VL_Value v = ctx->natives.vals[i];
-        if (v.type == VT_NATIVE && v.as.ptr)
-          vl_alloc(ctx, v.as.ptr, sizeof(VL_Native), 0);
-      }
-    }
-  }
-  vl_map_free(ctx, &ctx->natives);
-  vl_map_free(ctx, &ctx->globals);
-  vl_alloc(ctx, ctx->stack, ctx->stack_cap * sizeof(VL_Value), 0);
-  vl_alloc(ctx, ctx, sizeof(VL_Context), 0);
-}
-
-static const VL_Error *vl_last_error(VL_Context *ctx) {
-  return ctx ? &ctx->last_error : NULL;
-}
-static void vl_clear_error(VL_Context *ctx) {
-  if (ctx) {
-    ctx->last_error.code = VL_OK;
-    ctx->last_error.msg[0] = '\0';
-  }
-}
-
-// Load VLBC buffer
-static VL_Status vl_load_program_from_memory(VL_Context *ctx, const void *buf,
-                                             size_t len) {
-  if (!ctx || !buf || len < 4)
-    return vl_set_err(ctx, VL_ERR_BAD_ARG, "bad args to load");
-  const uint8_t *p = (const uint8_t *)buf;
-  size_t i = 0;
-  if (!(len >= 5 && p[0] == 'V' && p[1] == 'L' && p[2] == 'B' && p[3] == 'C'))
-    return vl_set_err(ctx, VL_ERR_BAD_BYTECODE, "bad magic");
-  i = 4;
-  uint8_t ver;
-  if (!rd_u8(p, len, &i, &ver))
-    return vl_set_err(ctx, VL_ERR_BAD_BYTECODE, "truncated ver");
-  if (ver != 1)
-    return vl_set_err(ctx, VL_ERR_BAD_BYTECODE, "unsupported ver %u", ver);
-  uint32_t nstr = 0;
-  if (!rd_u32(p, len, &i, &nstr))
-    return vl_set_err(ctx, VL_ERR_BAD_BYTECODE, "truncated nstr");
-
-  // free previous
-  for (size_t k = 0; k < ctx->kstr_len; k++)
-    if (ctx->kstr[k])
-      vl_alloc(ctx, ctx->kstr[k], sizeof(VL_String) + ctx->kstr[k]->len + 1, 0);
-  vl_alloc(ctx, ctx->kstr, ctx->kstr_len * sizeof(VL_String *), 0);
-  ctx->kstr = NULL;
-  ctx->kstr_len = 0;
-
-  ctx->kstr = (VL_String **)vl_alloc(ctx, NULL, 0, nstr * sizeof(VL_String *));
-  if (!ctx->kstr) return vl_set_err(ctx, VL_ERR_OOM, "kstr OOM");
-  ctx->kstr_len = nstr;
-  for (uint32_t s = 0; s < nstr; s++) {
-    uint32_t slen = 0;
-    if (!rd_u32(p, len, &i, &slen))
-      return vl_set_err(ctx, VL_ERR_BAD_BYTECODE, "str len trunc");
-    if (i + slen > len)
-      return vl_set_err(ctx, VL_ERR_BAD_BYTECODE, "str bytes trunc");
-    VL_String *st = vl_str_new(ctx, (const char *)(p + i), slen);
-    if (!st) return vl_set_err(ctx, VL_ERR_OOM, "str OOM");
-    ctx->kstr[s] = st;
-    i += slen;
-  }
-
-  uint32_t code_sz = 0;
-  if (!rd_u32(p, len, &i, &code_sz))
-    return vl_set_err(ctx, VL_ERR_BAD_BYTECODE, "code sz trunc");
-  if (i + code_sz > len)
-    return vl_set_err(ctx, VL_ERR_BAD_BYTECODE, "code bytes trunc");
-
-  if (ctx->bc) vl_alloc(ctx, ctx->bc, ctx->bc_len, 0);
-  ctx->bc = (uint8_t *)vl_alloc(ctx, NULL, 0, code_sz);
-  if (!ctx->bc) return vl_set_err(ctx, VL_ERR_OOM, "code OOM");
-  memcpy(ctx->bc, p + i, code_sz);
-  ctx->bc_len = code_sz;
-  ctx->ip = 0;
-  ctx->sp = 0;
-  return VL_OK;
-}
-
-// Run until HALT or step limit (0 => no limit). Returns status. On HALT,
-// returns VL_OK.
-static VL_Status vl_run(VL_Context *ctx, uint64_t max_steps) {
-  if (!ctx) return VL_ERR_BAD_ARG;
-  uint64_t steps = 0;
-  for (;;) {
-    if (max_steps && steps++ >= max_steps)
-      return VL_OK;  // soft stop for embedding
-    size_t prev_ip = ctx->ip;
-    VL_Status rc = vl_exec_step(ctx);
-    if (rc != VL_OK) {
-      if (prev_ip < ctx->bc_len && ctx->bc[prev_ip] == OP_HALT)
-        return VL_OK;  // graceful halt
-      return rc;
-    }
-    // stop on HALT opcode (exec_step returns VL_OK but we detect by prev
-    // opcode)
-    if (prev_ip < ctx->bc_len && ctx->bc[prev_ip] == OP_HALT) return VL_OK;
-  }
-}
-
-static VL_Status vl_step(VL_Context *ctx) {
-  return ctx ? vl_exec_step(ctx) : VL_ERR_BAD_ARG;
-}
-
-static VL_Status vl_register_native(VL_Context *ctx, const char *name,
-                                    VL_NativeFn fn, void *ud) {
-  if (!ctx || !name || !fn) return VL_ERR_BAD_ARG;
-  // intern key in natives map's keyspace. We reuse the map's own pool by
-  // interning into its keys set
-  if (!ctx->natives.cap && !vl_map_init(ctx, &ctx->natives, 4))
-    return VL_ERR_OOM;
-  VL_String *ks = vl_intern(ctx, &ctx->natives, name, strlen(name));
-  if (!ks) return VL_ERR_OOM;
-  VL_Native *nat = (VL_Native *)vl_alloc(ctx, NULL, 0, sizeof(VL_Native));
-  if (!nat) return VL_ERR_OOM;
-  nat->fn = fn;
-  nat->ud = ud;
-  VL_Value v;
-  v.type = VT_NATIVE;
-  v.as.ptr = nat;
-  if (!vl_map_put(ctx, &ctx->natives, ks, v)) {
-    vl_alloc(ctx, nat, sizeof(VL_Native), 0);
-    return VL_ERR_OOM;
-  }
-  return VL_OK;
-}
-
-static VL_Status vl_set_global(VL_Context *ctx, const char *name, VL_Value v) {
-  if (!ctx || !name) return VL_ERR_BAD_ARG;
-  if (!ctx->globals.cap && !vl_map_init(ctx, &ctx->globals, 4))
-    return VL_ERR_OOM;
-  VL_String *ks = vl_intern(ctx, &ctx->globals, name, strlen(name));
-  if (!ks) return VL_ERR_OOM;
-  return vl_map_put(ctx, &ctx->globals, ks, v) ? VL_OK : VL_ERR_OOM;
-}
-
-static VL_Status vl_get_global(VL_Context *ctx, const char *name,
-                               VL_Value *out) {
-  if (!ctx || !name) return VL_ERR_BAD_ARG;
-  if (!ctx->globals.cap) return VL_ERR_NOT_FOUND;
-  VL_String tmp = {vl_hash(name, strlen(name)), (uint32_t)strlen(name), {0}};
-  bool found, tomb;
-  size_t idx = vl_map_probe(&ctx->globals, &tmp, &found, &tomb);
-  if (!found) return VL_ERR_NOT_FOUND;
-  if (out) *out = ctx->globals.vals[idx];
-  return VL_OK;
-}
-
-// Helper creators for API users
-static VL_Value vl_make_str(VL_Context *ctx, const char *s) {
-  VL_String *st = vl_str_new(ctx, s, strlen(s));
-  return st ? vl_str(st) : vl_nil();
-}
-
-// ───────────────────────── Example built-in natives ─────────────────────────
-
-static VL_Status native_now_ms(VL_Context *ctx, VL_Value *args, size_t argc,
-                               VL_Value *ret, void *ud) {
-  (void)ctx;
-  (void)args;
-  (void)ud;
-  (void)argc;
-// very rough portable time in milliseconds
-#ifdef _WIN32
-#include <windows.h>
-  ULONGLONG ms = GetTickCount64();
-  if (ret) *ret = vl_float((double)ms);
-#else
 #include <time.h>
+
+#if defined(_WIN32)
+#include <direct.h>
+#include <io.h>
+#include <windows.h>
+#define PATH_SEP '\\'
+#define mkdir_p(path) _mkdir(path)
+#define statx _stat64
+#include <sys/types.h>
+#include <sys/utime.h>
+#else
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
+#define PATH_SEP '/'
+#define mkdir_p(path) mkdir(path, 0777)
+#define statx stat
+#endif
+
+/* --------------------------------------------------------------------------
+   Export / visibilité
+   -------------------------------------------------------------------------- */
+#if defined(_WIN32)
+#define API_EXPORT __declspec(dllexport)
+#else
+#define API_EXPORT __attribute__((visibility("default")))
+#endif
+
+/* --------------------------------------------------------------------------
+   Types de base
+   -------------------------------------------------------------------------- */
+typedef int8_t i8;
+typedef int16_t i16;
+typedef int32_t i32;
+typedef int64_t i64;
+typedef uint8_t u8;
+typedef uint16_t u16;
+typedef uint32_t u32;
+typedef uint64_t u64;
+typedef float f32;
+typedef double f64;
+typedef size_t usize;
+typedef ptrdiff_t isize;
+
+/* --------------------------------------------------------------------------
+   Utilitaires généraux
+   -------------------------------------------------------------------------- */
+#define ARR_LEN(a) ((isize)(sizeof(a) / sizeof((a)[0])))
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
+#define CLAMP(x, l, h) (((x) < (l)) ? (l) : (((x) > (h)) ? (h) : (x)))
+#define ALIGN_UP(x, a) (((x) + ((a) - 1)) & ~((a) - 1))
+
+static inline void* xmalloc(usize n) {
+  void* p = malloc(n ? n : 1);
+  if (!p) {
+    fprintf(stderr, "OOM (%zu bytes)\n", (size_t)n);
+    abort();
+  }
+  return p;
+}
+static inline void* xrealloc(void* p, usize n) {
+  void* q = realloc(p, n ? n : 1);
+  if (!q) {
+    fprintf(stderr, "OOM-realloc (%zu bytes)\n", (size_t)n);
+    abort();
+  }
+  return q;
+}
+static inline char* xstrdup(const char* s) {
+  usize n = strlen(s);
+  char* d = (char*)xmalloc(n + 1);
+  memcpy(d, s, n + 1);
+  return d;
+}
+
+/* --------------------------------------------------------------------------
+   Erreur simple
+   -------------------------------------------------------------------------- */
+typedef struct Err {
+  int code; /* 0 = OK */
+  char msg[256];
+} Err;
+
+static inline Err ok(void) {
+  Err e;
+  e.code = 0;
+  e.msg[0] = 0;
+  return e;
+}
+static inline Err errf(int code, const char* fmt, ...) {
+  Err e;
+  e.code = code;
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(e.msg, sizeof(e.msg), fmt, ap);
+  va_end(ap);
+  return e;
+}
+
+/* --------------------------------------------------------------------------
+   Logger minimal (ANSI)
+   -------------------------------------------------------------------------- */
+typedef enum {
+  LOG_TRACE = 0,
+  LOG_DEBUG,
+  LOG_INFO,
+  LOG_WARN,
+  LOG_ERROR
+} LogLevel;
+static LogLevel g_log_level = LOG_INFO;
+static bool g_log_color = true;
+
+API_EXPORT void log_set_level(LogLevel lvl) { g_log_level = lvl; }
+API_EXPORT void log_set_color(bool on) { g_log_color = on; }
+
+static const char* lvl_name(LogLevel l) {
+  switch (l) {
+    case LOG_TRACE:
+      return "TRACE";
+    case LOG_DEBUG:
+      return "DEBUG";
+    case LOG_INFO:
+      return "INFO";
+    case LOG_WARN:
+      return "WARN";
+    default:
+      return "ERROR";
+  }
+}
+static const char* lvl_color(LogLevel l) {
+  if (!g_log_color) return "";
+  switch (l) {
+    case LOG_TRACE:
+      return "\x1b[90m";
+    case LOG_DEBUG:
+      return "\x1b[36m";
+    case LOG_INFO:
+      return "\x1b[32m";
+    case LOG_WARN:
+      return "\x1b[33m";
+    default:
+      return "\x1b[31m";
+  }
+}
+static inline void vlogf(LogLevel lvl, const char* fmt, va_list ap) {
+  if (lvl < g_log_level) return;
+  char buf[1024];
+  vsnprintf(buf, sizeof(buf), fmt, ap);
+  fprintf((lvl >= LOG_WARN) ? stderr : stdout, "%s[%s]\x1b[0m %s\n",
+          lvl_color(lvl), lvl_name(lvl), buf);
+}
+API_EXPORT void logf(LogLevel lvl, const char* fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  vlogf(lvl, fmt, ap);
+  va_end(ap);
+}
+
+/* --------------------------------------------------------------------------
+   Chrono / horloge
+   -------------------------------------------------------------------------- */
+API_EXPORT u64 time_ns_monotonic(void) {
+#if defined(_WIN32)
+  LARGE_INTEGER f, c;
+  QueryPerformanceFrequency(&f);
+  QueryPerformanceCounter(&c);
+  return (u64)((1e9 * (double)c.QuadPart) / (double)f.QuadPart);
+#else
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
-  double ms = (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
-  if (ret) *ret = vl_float(ms);
+  return (u64)ts.tv_sec * 1000000000ull + (u64)ts.tv_nsec;
 #endif
-  return VL_OK;
+}
+API_EXPORT u64 time_ms_wall(void) {
+#if defined(_WIN32)
+  FILETIME ft;
+  GetSystemTimeAsFileTime(&ft);
+  ULARGE_INTEGER u;
+  u.LowPart = ft.dwLowDateTime;
+  u.HighPart = ft.dwHighDateTime;
+  /* Windows epoch 1601 → Unix 1970 offset */
+  const u64 EPOCH_DIFF_100NS = 116444736000000000ull;
+  u64 t100ns = (u64)u.QuadPart - EPOCH_DIFF_100NS;
+  return t100ns / 10000ull;
+#else
+  struct timespec ts;
+  clock_gettime(CLOCK_REALTIME, &ts);
+  return (u64)ts.tv_sec * 1000ull + (u64)(ts.tv_nsec / 1000000ull);
+#endif
+}
+API_EXPORT void sleep_ms(u32 ms) {
+#if defined(_WIN32)
+  Sleep(ms);
+#else
+  struct timespec ts;
+  ts.tv_sec = ms / 1000;
+  ts.tv_nsec = (ms % 1000) * 1000000L;
+  nanosleep(&ts, NULL);
+#endif
 }
 
-static VL_Status native_print(VL_Context *ctx, VL_Value *args, size_t argc,
-                              VL_Value *ret, void *ud) {
-  (void)ud;
-  (void)ret;
-  (void)ctx;
-  for (size_t i = 0; i < argc; i++) {
-    VL_Value v = args[i];
-    switch (v.type) {
-      case VT_NIL:
-        printf("nil");
-        break;
-      case VT_BOOL:
-        printf(v.as.b ? "true" : "false");
-        break;
-      case VT_INT:
-        printf("%" PRId64, v.as.i);
-        break;
-      case VT_FLOAT:
-        printf("%g", v.as.f);
-        break;
-      case VT_STR:
-        printf("%.*s", (int)v.as.s->len, v.as.s->data);
-        break;
-      default:
-        printf("<%s>", vl_type_name(v.type));
-        break;
+/* --------------------------------------------------------------------------
+   Aléatoire
+   -------------------------------------------------------------------------- */
+typedef struct Lcg {
+  u64 s;
+} Lcg;
+static inline Lcg lcg_new(u64 seed) {
+  if (!seed) seed = 0x9e3779b97f4a7c15ull;
+  Lcg r = {seed};
+  return r;
+}
+static inline u64 lcg_next(Lcg* r) {
+  r->s = r->s * 6364136223846793005ull + 1442695040888963407ull;
+  return r->s;
+}
+API_EXPORT u64 rand_u64(void) {
+#if defined(_WIN32)
+  /* rand_s: 32-bit; combine */
+  unsigned int a = 0, b = 0;
+  rand_s(&a);
+  rand_s(&b);
+  return ((u64)a << 32) | b;
+#else
+  FILE* f = fopen("/dev/urandom", "rb");
+  if (!f) { /* fallback LCG seeded by time */
+    static Lcg g;
+    static bool init = false;
+    if (!init) {
+      g = lcg_new((u64)time_ns_monotonic());
+      init = true;
     }
-    if (i + 1 < argc) printf(" ");
+    return lcg_next(&g);
   }
-  printf("\n");
-  return VL_OK;
+  u64 x = 0;
+  fread(&x, 1, sizeof(x), f);
+  fclose(f);
+  return x;
+#endif
+}
+API_EXPORT u64 rand_range_u64(u64 lo, u64 hi) {
+  if (hi <= lo) return lo;
+  u64 span = hi - lo + 1;
+  return lo + (rand_u64() % span);
 }
 
-// ───────────────────────── Convenience factory for embedders
-// ─────────────────────────
+/* --------------------------------------------------------------------------
+   StringBuilder
+   -------------------------------------------------------------------------- */
+typedef struct StrBuf {
+  char* data;
+  usize len;
+  usize cap;
+} StrBuf;
 
-// Create a context with defaults and a couple of convenience natives.
-static VL_Context *vl_create_default(void) {
-  VL_Config c = {0};
-  VL_Context *ctx = vl_create(&c);
-  if (!ctx) return NULL;
-  vl_register_native(ctx, "now_ms", native_now_ms, NULL);
-  vl_register_native(ctx, "print", native_print, NULL);
-  return ctx;
+API_EXPORT void sb_init(StrBuf* sb) {
+  sb->data = NULL;
+  sb->len = 0;
+  sb->cap = 0;
+}
+API_EXPORT void sb_free(StrBuf* sb) {
+  free(sb->data);
+  sb->data = NULL;
+  sb->len = sb->cap = 0;
+}
+static void sb_grow(StrBuf* sb, usize need) {
+  if (sb->len + need + 1 <= sb->cap) return;
+  usize ncap = sb->cap ? sb->cap : 64;
+  while (ncap < sb->len + need + 1) ncap = ncap * 2;
+  sb->data = (char*)xrealloc(sb->data, ncap);
+  sb->cap = ncap;
+}
+API_EXPORT void sb_append(StrBuf* sb, const char* s) {
+  usize n = strlen(s);
+  sb_grow(sb, n);
+  memcpy(sb->data + sb->len, s, n);
+  sb->len += n;
+  sb->data[sb->len] = '\0';
+}
+API_EXPORT void sb_append_n(StrBuf* sb, const char* s, usize n) {
+  sb_grow(sb, n);
+  memcpy(sb->data + sb->len, s, n);
+  sb->len += n;
+  sb->data[sb->len] = '\0';
+}
+API_EXPORT void sb_append_fmt(StrBuf* sb, const char* fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  char tmp[1024];
+  int k = vsnprintf(tmp, sizeof(tmp), fmt, ap);
+  va_end(ap);
+  if (k < 0) return;
+  if ((usize)k < sizeof(tmp)) {
+    sb_append_n(sb, tmp, (usize)k);
+    return;
+  }
+  /* rare: allouer juste ce qu'il faut */
+  char* big = (char*)xmalloc((usize)k + 1);
+  va_list aq;
+  va_start(aq, fmt);
+  vsnprintf(big, (usize)k + 1, fmt, aq);
+  va_end(aq);
+  sb_append_n(sb, big, (usize)k);
+  free(big);
 }
 
-// ───────────────────────── Public API exposure (optional header-less)
-// ───────────────────────── If you do not want a separate header yet, you can
-// expose the symbols with the following names:
-//   vl_create, vl_destroy, vl_last_error, vl_clear_error,
-//   vl_load_program_from_memory, vl_run, vl_step,
-//   vl_register_native, vl_set_global, vl_get_global,
-//   vl_make_str, vl_create_default
+/* --------------------------------------------------------------------------
+   Vecteur dynamique générique (macro)
+   -------------------------------------------------------------------------- */
+#define VEC(T) \
+  struct {     \
+    T* data;   \
+    usize len; \
+    usize cap; \
+  }
+#define vec_init(v)   \
+  do {                \
+    (v)->data = NULL; \
+    (v)->len = 0;     \
+    (v)->cap = 0;     \
+  } while (0)
+#define vec_free(v)          \
+  do {                       \
+    free((v)->data);         \
+    (v)->data = NULL;        \
+    (v)->len = (v)->cap = 0; \
+  } while (0)
+#define vec_reserve(v, need)                                           \
+  do {                                                                 \
+    if ((v)->len + (need) <= (v)->cap) break;                          \
+    usize ncap = (v)->cap ? (v)->cap : 8;                              \
+    while (ncap < (v)->len + (need)) ncap <<= 1;                       \
+    (v)->data = (void*)xrealloc((v)->data, ncap * sizeof(*(v)->data)); \
+    (v)->cap = ncap;                                                   \
+  } while (0)
+#define vec_push(v, val)           \
+  do {                             \
+    vec_reserve((v), 1);           \
+    (v)->data[(v)->len++] = (val); \
+  } while (0)
 
-// ───────────────────────── Embedded smoke test ─────────────────────────
-#ifdef VL_API_TEST_MAIN
-int main(void) {
-  VL_Context *vm = vl_create_default();
-  if (!vm) {
-    fprintf(stderr, "no vm\n");
+/* --------------------------------------------------------------------------
+   UTF-8 (lecture/écriture de base)
+   -------------------------------------------------------------------------- */
+API_EXPORT u32 utf8_decode_1(const char* s, usize n, usize* adv) {
+  if (!n) {
+    *adv = 0;
+    return 0xfffd;
+  }
+  const unsigned char c = (unsigned char)s[0];
+  if (c < 0x80) {
+    *adv = 1;
+    return c;
+  }
+  if ((c >> 5) == 0x6 && n >= 2) {
+    *adv = 2;
+    return ((c & 0x1f) << 6) | ((unsigned char)s[1] & 0x3f);
+  }
+  if ((c >> 4) == 0xe && n >= 3) {
+    *adv = 3;
+    return ((c & 0x0f) << 12) | (((unsigned char)s[1] & 0x3f) << 6) |
+           ((unsigned char)s[2] & 0x3f);
+  }
+  if ((c >> 3) == 0x1e && n >= 4) {
+    *adv = 4;
+    return ((c & 0x07) << 18) | (((unsigned char)s[1] & 0x3f) << 12) |
+           (((unsigned char)s[2] & 0x3f) << 6) | ((unsigned char)s[3] & 0x3f);
+  }
+  *adv = 1;
+  return 0xfffd;
+}
+API_EXPORT usize utf8_encode_1(u32 cp, char out[4]) {
+  if (cp <= 0x7f) {
+    out[0] = (char)cp;
     return 1;
   }
-
-  // Build a tiny program: print("hello"), 1+2 => print, HALT
-  // kstr: ["hello", "print"]
-  uint8_t buf[256];
-  size_t o = 0;
-#define EMIT8(x)             \
-  do {                       \
-    buf[o++] = (uint8_t)(x); \
-  } while (0)
-#define EMIT32(x)               \
-  do {                          \
-    uint32_t _ = (uint32_t)(x); \
-    memcpy(buf + o, &_, 4);     \
-    o += 4;                     \
-  } while (0)
-#define EMIT64(x)               \
-  do {                          \
-    uint64_t _ = (uint64_t)(x); \
-    memcpy(buf + o, &_, 8);     \
-    o += 8;                     \
-  } while (0)
-
-  // header
-  EMIT8('V');
-  EMIT8('L');
-  EMIT8('B');
-  EMIT8('C');
-  EMIT8(1);   // ver
-  EMIT32(2);  // nstr
-  const char *s0 = "hello";
-  EMIT32((uint32_t)strlen(s0));
-  memcpy(buf + o, s0, strlen(s0));
-  o += strlen(s0);
-  const char *s1 = "print";
-  EMIT32((uint32_t)strlen(s1));
-  memcpy(buf + o, s1, strlen(s1));
-  o += strlen(s1);
-
-  // code placeholder size
-  size_t code_sz_pos = o;
-  EMIT32(0);
-  size_t code_start = o;
-
-  EMIT8(OP_PUSHS);
-  EMIT32(0);  // "hello"
-  EMIT8(OP_CALLN);
-  EMIT32(1);
-  EMIT8(1);  // call native "print" with 1 arg
-
-  EMIT8(OP_PUSHI);
-  EMIT64(1);
-  EMIT8(OP_PUSHI);
-  EMIT64(2);
-  EMIT8(OP_ADD);
-  EMIT8(OP_CALLN);
-  EMIT32(1);
-  EMIT8(1);  // print result
-
-  EMIT8(OP_HALT);
-
-  // patch code size
-  uint32_t code_sz = (uint32_t)(o - code_start);
-  memcpy(buf + code_sz_pos, &code_sz, 4);
-
-  VL_Status rc = vl_load_program_from_memory(vm, buf, o);
-  if (rc != VL_OK) {
-    fprintf(stderr, "load failed: %s\n", vl_last_error(vm)->msg);
+  if (cp <= 0x7ff) {
+    out[0] = (char)(0xC0 | (cp >> 6));
+    out[1] = (char)(0x80 | (cp & 0x3f));
     return 2;
   }
-  rc = vl_run(vm, 0);
-  if (rc != VL_OK) {
-    fprintf(stderr, "run failed: %s\n", vl_last_error(vm)->msg);
+  if (cp <= 0xffff) {
+    out[0] = (char)(0xE0 | (cp >> 12));
+    out[1] = (char)(0x80 | ((cp >> 6) & 0x3f));
+    out[2] = (char)(0x80 | (cp & 0x3f));
     return 3;
   }
+  out[0] = (char)(0xF0 | (cp >> 18));
+  out[1] = (char)(0x80 | ((cp >> 12) & 0x3f));
+  out[2] = (char)(0x80 | ((cp >> 6) & 0x3f));
+  out[3] = (char)(0x80 | (cp & 0x3f));
+  return 4;
+}
 
-  vl_destroy(vm);
+/* --------------------------------------------------------------------------
+   Fichiers (lecture/écriture atomique simple)
+   -------------------------------------------------------------------------- */
+API_EXPORT Err file_read_all(const char* path, VEC(u8) * out) {
+  FILE* f = fopen(path, "rb");
+  if (!f) return errf(errno, "open '%s' failed: %s", path, strerror(errno));
+  if (fseek(f, 0, SEEK_END) != 0) {
+    fclose(f);
+    return errf(errno, "seek end");
+  }
+  long sz = ftell(f);
+  if (sz < 0) {
+    fclose(f);
+    return errf(errno, "ftell");
+  }
+  if (fseek(f, 0, SEEK_SET) != 0) {
+    fclose(f);
+    return errf(errno, "seek start");
+  }
+  vec_init(out);
+  vec_reserve(out, (usize)sz);
+  out->len = (usize)sz;
+  if (sz && fread(out->data, 1, (usize)sz, f) != (usize)sz) {
+    fclose(f);
+    vec_free(out);
+    return errf(errno, "read");
+  }
+  fclose(f);
+  return ok();
+}
+API_EXPORT Err file_write_all(const char* path, const void* data, usize n) {
+  FILE* f = fopen(path, "wb");
+  if (!f) return errf(errno, "open '%s' failed: %s", path, strerror(errno));
+  if (n && fwrite(data, 1, n, f) != n) {
+    int e = errno;
+    fclose(f);
+    return errf(e, "write");
+  }
+  if (fclose(f) != 0) return errf(errno, "close");
+  return ok();
+}
+API_EXPORT bool file_exists(const char* path) {
+  FILE* f = fopen(path, "rb");
+  if (!f) return false;
+  fclose(f);
+  return true;
+}
+
+/* --------------------------------------------------------------------------
+   Chemins / dossiers
+   -------------------------------------------------------------------------- */
+API_EXPORT void path_join(const char* a, const char* b, char* out,
+                          usize out_cap) {
+  usize na = strlen(a), nb = strlen(b);
+  if (na + 1 + nb + 1 > out_cap) { /* tronque */
+    snprintf(out, out_cap, "%s%c%s", a, PATH_SEP, b);
+    return;
+  }
+  memcpy(out, a, na);
+  out[na] = PATH_SEP;
+  memcpy(out + na + 1, b, nb);
+  out[na + 1 + nb] = '\0';
+}
+API_EXPORT Err dir_ensure(const char* path) {
+  /* naïf: tente mkdir; si existe déjà, OK */
+  if (mkdir_p(path) == 0) return ok();
+#if defined(_WIN32)
+  if (errno == EEXIST) return ok();
+#else
+  if (errno == EEXIST) return ok();
+#endif
+  return errf(errno, "mkdir '%s' failed: %s", path, strerror(errno));
+}
+
+/* --------------------------------------------------------------------------
+   Hash (FNV-1a 64)
+   -------------------------------------------------------------------------- */
+API_EXPORT u64 hash64(const void* data, usize n) {
+  const u8* p = (const u8*)data;
+  u64 h = 1469598103934665603ull;
+  for (usize i = 0; i < n; i++) {
+    h ^= p[i];
+    h *= 1099511628211ull;
+  }
+  return h;
+}
+API_EXPORT u64 hash_str(const char* s) { return hash64(s, strlen(s)); }
+
+/* --------------------------------------------------------------------------
+   Table de hachage (open addressing, string → u64)
+   -------------------------------------------------------------------------- */
+typedef struct {
+  char* key; /* propriété: dupliquée (malloc) */
+  u64 val;
+  u64 hash;
+  bool used;
+} HSlot;
+
+typedef struct {
+  HSlot* slots;
+  usize cap;
+  usize len;
+} MapStrU64;
+
+static usize map_ideal_cap(usize need) {
+  usize c = 16;
+  while (c < need * 2) c <<= 1;
+  return c;
+}
+static void map_rehash(MapStrU64* m, usize ncap) {
+  HSlot* ns = (HSlot*)calloc(ncap, sizeof(HSlot));
+  for (usize i = 0; i < m->cap; i++) {
+    HSlot* s = &m->slots[i];
+    if (!s->used) continue;
+    usize j = s->hash & (ncap - 1);
+    while (ns[j].used) j = (j + 1) & (ncap - 1);
+    ns[j] = *s;
+  }
+  free(m->slots);
+  m->slots = ns;
+  m->cap = ncap;
+}
+API_EXPORT void map_init(MapStrU64* m) {
+  m->slots = NULL;
+  m->cap = 0;
+  m->len = 0;
+}
+API_EXPORT void map_free(MapStrU64* m) {
+  if (m->slots) {
+    for (usize i = 0; i < m->cap; i++)
+      if (m->slots[i].used) free(m->slots[i].key);
+    free(m->slots);
+  }
+  m->slots = NULL;
+  m->cap = 0;
+  m->len = 0;
+}
+API_EXPORT void map_put(MapStrU64* m, const char* key, u64 val) {
+  if (m->cap == 0) {
+    m->cap = 16;
+    m->slots = (HSlot*)calloc(m->cap, sizeof(HSlot));
+  }
+  if ((m->len * 10) / m->cap >= 7) {
+    map_rehash(m, m->cap * 2);
+  }
+  u64 h = hash_str(key);
+  usize i = h & (m->cap - 1);
+  for (;;) {
+    HSlot* s = &m->slots[i];
+    if (!s->used) {
+      s->used = true;
+      s->hash = h;
+      s->key = xstrdup(key);
+      s->val = val;
+      m->len++;
+      return;
+    }
+    if (s->hash == h && strcmp(s->key, key) == 0) {
+      s->val = val;
+      return;
+    }
+    i = (i + 1) & (m->cap - 1);
+  }
+}
+API_EXPORT bool map_get(const MapStrU64* m, const char* key, u64* out) {
+  if (m->cap == 0) return false;
+  u64 h = hash_str(key);
+  usize i = h & (m->cap - 1);
+  for (;;) {
+    const HSlot* s = &m->slots[i];
+    if (!s->used) return false;
+    if (s->hash == h && strcmp(s->key, key) == 0) {
+      if (out) *out = s->val;
+      return true;
+    }
+    i = (i + 1) & (m->cap - 1);
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Arena allocator (bump)
+   -------------------------------------------------------------------------- */
+typedef struct Arena {
+  u8* base;
+  usize cap;
+  usize off;
+} Arena;
+
+API_EXPORT Arena arena_new(usize cap) {
+  Arena a;
+  a.base = (u8*)xmalloc(cap);
+  a.cap = cap;
+  a.off = 0;
+  return a;
+}
+API_EXPORT void arena_free(Arena* a) {
+  free(a->base);
+  a->base = NULL;
+  a->cap = a->off = 0;
+}
+API_EXPORT void arena_reset(Arena* a) { a->off = 0; }
+API_EXPORT void* arena_alloc(Arena* a, usize n, usize align) {
+  usize p = ALIGN_UP(a->off, align ? align : 1);
+  if (p + n > a->cap) {
+    fprintf(stderr, "arena: OOM (%zu/%zu)\n", (size_t)(p + n), (size_t)a->cap);
+    abort();
+  }
+  void* mem = a->base + p;
+  a->off = p + n;
+  return mem;
+}
+API_EXPORT char* arena_strdup(Arena* a, const char* s) {
+  usize n = strlen(s) + 1;
+  char* d = (char*)arena_alloc(a, n, 1);
+  memcpy(d, s, n);
+  return d;
+}
+
+/* --------------------------------------------------------------------------
+   Petite API JSON (écriture seulement, sans échappement avancé)
+   -------------------------------------------------------------------------- */
+typedef struct {
+  StrBuf sb;
+  int depth;
+  bool first_in_level[64];
+} JsonW;
+
+API_EXPORT void jw_begin(JsonW* w) {
+  sb_init(&w->sb);
+  w->depth = 0;
+  memset(w->first_in_level, 1, sizeof(w->first_in_level));
+}
+API_EXPORT void jw_free(JsonW* w) { sb_free(&w->sb); }
+static void jw_sep(JsonW* w) {
+  if (!w->first_in_level[w->depth])
+    sb_append(&w->sb, ",");
+  else
+    w->first_in_level[w->depth] = false;
+}
+API_EXPORT void jw_obj_begin(JsonW* w) {
+  jw_sep(w);
+  sb_append(&w->sb, "{");
+  w->depth++;
+  w->first_in_level[w->depth] = true;
+}
+API_EXPORT void jw_obj_end(JsonW* w) {
+  w->depth--;
+  sb_append(&w->sb, "}");
+}
+API_EXPORT void jw_arr_begin(JsonW* w) {
+  jw_sep(w);
+  sb_append(&w->sb, "[");
+  w->depth++;
+  w->first_in_level[w->depth] = true;
+}
+API_EXPORT void jw_arr_end(JsonW* w) {
+  w->depth--;
+  sb_append(&w->sb, "]");
+}
+API_EXPORT void jw_key(JsonW* w, const char* k) {
+  jw_sep(w);
+  sb_append_fmt(&w->sb, "\"%s\":", k);
+}
+API_EXPORT void jw_str(JsonW* w, const char* v) {
+  jw_sep(w);
+  sb_append_fmt(&w->sb, "\"%s\"", v);
+}
+API_EXPORT void jw_i64(JsonW* w, i64 v) {
+  jw_sep(w);
+  sb_append_fmt(&w->sb, "%lld", (long long)v);
+}
+API_EXPORT void jw_f64(JsonW* w, f64 v) {
+  jw_sep(w);
+  sb_append_fmt(&w->sb, "%.17g", v);
+}
+API_EXPORT void jw_bool(JsonW* w, bool v) {
+  jw_sep(w);
+  sb_append(&w->sb, v ? "true" : "false");
+}
+API_EXPORT void jw_null(JsonW* w) {
+  jw_sep(w);
+  sb_append(&w->sb, "null");
+}
+API_EXPORT const char* jw_cstr(JsonW* w) {
+  return w->sb.data ? w->sb.data : "";
+}
+
+/* --------------------------------------------------------------------------
+   Process/env (lecture)
+   -------------------------------------------------------------------------- */
+API_EXPORT const char* env_get(const char* key) {
+#if defined(_WIN32)
+  static char buf[32768];
+  DWORD n = GetEnvironmentVariableA(key, buf, (DWORD)sizeof(buf));
+  if (n == 0 || n >= sizeof(buf)) return NULL;
+  return buf;
+#else
+  return getenv(key);
+#endif
+}
+
+/* --------------------------------------------------------------------------
+   Mini-CLI ANSI helpers (paint)
+   -------------------------------------------------------------------------- */
+API_EXPORT const char* ansi_reset(void) { return "\x1b[0m"; }
+API_EXPORT const char* ansi_bold(void) { return "\x1b[1m"; }
+API_EXPORT const char* ansi_red(void) { return "\x1b[31m"; }
+API_EXPORT const char* ansi_green(void) { return "\x1b[32m"; }
+API_EXPORT const char* ansi_yellow(void) { return "\x1b[33m"; }
+API_EXPORT const char* ansi_blue(void) { return "\x1b[34m"; }
+API_EXPORT void ansi_paint_to(StrBuf* out, const char* text, const char* pre) {
+  sb_append(out, pre);
+  sb_append(out, text);
+  sb_append(out, ansi_reset());
+}
+
+/* --------------------------------------------------------------------------
+   Démonstration intégrée (peut servir de test rapide)
+   -------------------------------------------------------------------------- */
+#ifdef API_DEMO_MAIN
+int main(void) {
+  log_set_level(LOG_DEBUG);
+  logf(LOG_INFO, "api init t=%llums", (unsigned long long)time_ms_wall());
+
+  /* RNG */
+  logf(LOG_DEBUG, "rand=%llu", (unsigned long long)rand_u64());
+
+  /* StrBuf + JSON */
+  JsonW jw;
+  jw_begin(&jw);
+  jw_obj_begin(&jw);
+  jw_key(&jw, "hello");
+  jw_str(&jw, "world");
+  jw_key(&jw, "num");
+  jw_i64(&jw, 42);
+  jw_key(&jw, "ok");
+  jw_bool(&jw, true);
+  jw_obj_end(&jw);
+  logf(LOG_INFO, "json: %s", jw_cstr(&jw));
+  jw_free(&jw);
+
+  /* Map */
+  MapStrU64 mp;
+  map_init(&mp);
+  map_put(&mp, "a", 1);
+  map_put(&mp, "b", 2);
+  map_put(&mp, "a", 3);
+  u64 v = 0;
+  if (map_get(&mp, "a", &v))
+    logf(LOG_INFO, "map[a]=%llu", (unsigned long long)v);
+  map_free(&mp);
+
+  /* Arena */
+  Arena a = arena_new(1024);
+  char* s = arena_strdup(&a, "arena-string");
+  logf(LOG_INFO, "arena str: %s", s);
+  arena_free(&a);
+
+  /* File roundtrip */
+  const char* path = "api_demo.txt";
+  const char* msg = "Hello from api.c\n";
+  Err e = file_write_all(path, msg, strlen(msg));
+  if (e.code) logf(LOG_ERROR, "write failed: %s", e.msg);
+  VEC(u8) bin;
+  if (!e.code) {
+    e = file_read_all(path, &bin);
+  }
+  if (!e.code) {
+    StrBuf sb;
+    sb_init(&sb);
+    ansi_paint_to(&sb, (const char*)bin.data, ansi_green());
+    logf(LOG_INFO, "%s", sb.data);
+    sb_free(&sb);
+    vec_free(&bin);
+  }
+
+  /* UTF-8 */
+  const char* u8s = "été";
+  usize i = 0;
+  while (u8s[i]) {
+    usize adv = 0;
+    u32 cp = utf8_decode_1(u8s + i, strlen(u8s) - i, &adv);
+    logf(LOG_DEBUG, "cp U+%04X", (unsigned)cp);
+    i += adv ? adv : 1;
+  }
+
+  logf(LOG_INFO, "done");
   return 0;
 }
 #endif
+
+/* ========================================================================== */
