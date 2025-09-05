@@ -1,384 +1,406 @@
-// vitte-light/core/gc.c
-// Collecteur minimal optionnel pour VitteLight (marquage → balayage des
-// chaînes). Objectif: gérer la vie des VL_String allouées dynamiquement par la
-// VM, avec un registre externe au contexte et un balayage basé sur les racines
-// visibles (pile, globaux, constantes VLBC, clés de maps). Sans intrusion dans
-// api.c.
-//
-// ⚠️ Sécurité: par défaut, ce GC NE LIBÈRE PAS la mémoire des chaînes (mode
-// "observateur"). Activez la libération en définissant l'ownership via
-// vl_gc_set_ownership(ctx, true) ET en enregistrant chaque chaîne créée par la
-// VM avec vl_gc_register_string(...). Sans ces deux conditions, le GC ne libère
-// rien pour éviter les doubles free.
-//
-// API (implémentée ici; créez gc.h si besoin):
-//   void      vl_gc_attach(struct VL_Context *ctx, size_t trigger_bytes);
-//   void      vl_gc_detach(struct VL_Context *ctx);
-//   void      vl_gc_set_ownership(struct VL_Context *ctx, bool own_strings);
-//   void      vl_gc_register_string(struct VL_Context *ctx, struct VL_String
-//   *s); VL_Status vl_gc_collect(struct VL_Context *ctx, int flags); void
-//   vl_gc_stats(struct VL_Context *ctx, size_t *tracked, size_t *bytes, size_t
-//   *frees);
-//   // util debug
-//   void      vl_gc_preindex_existing(struct VL_Context *ctx); // indexe
-//   racines actuelles
-//
-// Flags vl_gc_collect:
-//   0           : défaut (full mark-sweep)
-//   1 (VERBOSE) : log minimal sur stderr
-//
-// Build:
-//   cc -std=c99 -O2 -Wall -Wextra -pedantic -c core/gc.c
-// Link avec: api.c, ctype.c
-
-#include <inttypes.h>
-#include <stdbool.h>
+/* ============================================================================
+   gc.c — Collecteur mark-sweep précis avec racines explicites (C17).
+   Caractéristiques:
+     - API simple: create/destroy, alloc(trace,finalizer), collect, stats.
+     - Tracing précis via callback utilisateur (pas de scan conservatif).
+     - Racines explicites: enregistrer des pointeurs (void**) modifiables.
+     - Finalizers optionnels, pin/unpin, limite d’heap, stats.
+     - Thread-safe si <threads.h> dispo, sinon mono-thread.
+   Auteur: MIT.
+   ============================================================================
+ */
+#include <assert.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
-#include "api.h"
-#include "ctype.h"
+#if __STDC_VERSION__ >= 201112L && !defined(__STDC_NO_THREADS__)
+#include <threads.h>
+#define VTGC_HAS_THREADS 1
+#else
+#define VTGC_HAS_THREADS 0
+#endif
 
-// ───────────────────────── Redéclarations internes (sync api.c)
-// ─────────────────────────
+/* -------------------------------- API publique (protos) ------------------- */
+typedef struct vt_gc vt_gc;
 
-typedef struct VL_String {
-  uint32_t hash, len;
-  char data[];
-} VL_String;
-
-typedef struct {
-  VL_String **keys;
-  VL_Value *vals;
-  size_t cap, len, tomb;
-} VL_Map;
+typedef void (*vt_gc_visit_fn)(void* child, void* ctx);
+typedef void (*vt_gc_trace_fn)(void* obj, vt_gc_visit_fn visit, void* ctx);
+typedef void (*vt_gc_finalizer)(void* obj);
 
 typedef struct {
-  VL_NativeFn fn;
-  void *ud;
-} VL_Native;
+  size_t heap_limit_bytes; /* 0 = auto (8 Mo) */
+  int enable_logging;      /* 1 = logs sur stderr */
+} vt_gc_config;
 
-struct VL_Context {
-  void *ralloc;
-  void *alloc_ud;
-  void *log;
-  void *log_ud;  // opaque
-  VL_Error last_error;
-  uint8_t *bc;
-  size_t bc_len;
-  size_t ip;
-  VL_Value *stack;
-  size_t sp;
-  size_t stack_cap;
-  VL_String **kstr;
-  size_t kstr_len;
-  VL_Map globals;
-  VL_Map natives;  // natives keys = names (VL_String*)
+vt_gc* vt_gc_create(const vt_gc_config* cfg);
+void vt_gc_destroy(vt_gc* gc);
+
+void* vt_gc_alloc(vt_gc* gc, size_t size, vt_gc_trace_fn trace,
+                  vt_gc_finalizer fin, uint32_t tag);
+
+void vt_gc_collect(vt_gc* gc, const char* reason);
+
+void vt_gc_add_root(vt_gc* gc, void** slot);
+void vt_gc_remove_root(vt_gc* gc, void** slot);
+
+void vt_gc_pin(void* obj);
+void vt_gc_unpin(void* obj);
+
+void vt_gc_set_limit(vt_gc* gc, size_t bytes);
+
+size_t vt_gc_bytes_live(vt_gc* gc);
+size_t vt_gc_object_count(vt_gc* gc);
+uint32_t vt_gc_tag_of(const void* obj);
+void vt_gc_set_tag(void* obj, uint32_t tag);
+
+void vt_gc_dump(vt_gc* gc, FILE* out); /* debug */
+
+/* -------------------------------- Implémentation -------------------------- */
+#ifndef alignof
+#define alignof _Alignof
+#endif
+
+typedef struct vt_gc_obj vt_gc_obj;
+
+typedef struct {
+  void*** v; /* tableau de slots racines (adresses de pointeurs) */
+  size_t n, cap;
+} vt_gc_roots;
+
+struct vt_gc_obj {
+  vt_gc_obj* next_all;
+  vt_gc_obj* next_gray;
+  size_t size;         /* taille du payload */
+  uint32_t tag;        /* libre pour l’utilisateur */
+  uint32_t pin;        /* >0 => non libérable */
+  uint32_t mark_epoch; /* dernière époque marquée */
+  vt_gc_trace_fn trace;
+  vt_gc_finalizer fin;
+  max_align_t _align_guard; /* force l’alignement du payload */
+                            /* payload suit immédiatement */
 };
 
-// ───────────────────────── Registre GC par-contexte ─────────────────────────
+struct vt_gc {
+  vt_gc_obj* all;    /* liste simplement chaînée de tous les objets */
+  vt_gc_obj* gray;   /* pile gris pour le marquage */
+  vt_gc_roots roots; /* racines explicites */
+  size_t bytes_live;
+  size_t obj_count;
+  size_t heap_limit;
+  size_t bytes_since_gc;
+  uint32_t epoch;
+  int logging;
+#if VTGC_HAS_THREADS
+  mtx_t lock;
+#endif
+};
 
-typedef struct {
-  VL_String *ptr;
-  uint32_t marked : 1;
-  uint32_t owned : 1;  // libérable par le GC
-  uint32_t pad : 30;
-  uint32_t size;  // approx (sizeof+len+1)
-} GCNode;
-
-typedef struct {
-  GCNode *nodes;
-  size_t len;
-  size_t cap;
-  size_t bytes;  // total estimé
-  size_t freed_bytes;
-  size_t freed_count;
-  size_t trigger_bytes;  // seuil soft
-  int own_strings;       // comportement par défaut de libération
-} GCState;
-
-typedef struct {
-  struct VL_Context *ctx;
-  GCState st;
-} GCEntry;
-
-static GCEntry *g_entries = NULL;
-static size_t g_elen = 0, g_ecap = 0;
-
-static GCState *gc_state_of(struct VL_Context *ctx) {
-  for (size_t i = 0; i < g_elen; i++)
-    if (g_entries[i].ctx == ctx) return &g_entries[i].st;
-  return NULL;
+/* --------- Utils lock --------- */
+static inline void vtgc_lock(vt_gc* gc) {
+#if VTGC_HAS_THREADS
+  mtx_lock(&gc->lock);
+#else
+  (void)gc;
+#endif
 }
-static GCState *gc_state_ensure(struct VL_Context *ctx) {
-  GCState *st = gc_state_of(ctx);
-  if (st) return st;
-  if (g_elen == g_ecap) {
-    size_t nc = g_ecap ? g_ecap * 2 : 8;
-    GCEntry *nv = (GCEntry *)realloc(g_entries, nc * sizeof(GCEntry));
-    if (!nv) return NULL;
-    g_entries = nv;
-    g_ecap = nc;
+static inline void vtgc_unlock(vt_gc* gc) {
+#if VTGC_HAS_THREADS
+  mtx_unlock(&gc->lock);
+#else
+  (void)gc;
+#endif
+}
+
+/* --------- Journal minimal --------- */
+static void vtgc_log(vt_gc* gc, const char* level, const char* fmt, ...) {
+  if (!gc || !gc->logging) return;
+  char ts[32];
+  {
+    time_t t = time(NULL);
+    struct tm tmv;
+#if defined(_WIN32)
+    gmtime_s(&tmv, &t);
+#else
+    gmtime_r(&t, &tmv);
+#endif
+    strftime(ts, sizeof ts, "%Y-%m-%dT%H:%M:%SZ", &tmv);
   }
-  g_entries[g_elen].ctx = ctx;
-  memset(&g_entries[g_elen].st, 0, sizeof(GCState));
-  g_entries[g_elen].st.trigger_bytes = 1 << 20;  // 1 MiB par défaut
-  return &g_entries[g_elen++].st;
+  fprintf(stderr, "[%s] GC %-5s | ", ts, level);
+  va_list ap;
+  va_start(ap, fmt);
+  vfprintf(stderr, fmt, ap);
+  va_end(ap);
+  fputc('\n', stderr);
 }
 
-void vl_gc_attach(struct VL_Context *ctx, size_t trigger_bytes) {
-  GCState *st = gc_state_ensure(ctx);
-  if (!st) return;
-  if (trigger_bytes) st->trigger_bytes = trigger_bytes;
-}
-
-void vl_gc_detach(struct VL_Context *ctx) {
-  for (size_t i = 0; i < g_elen; i++)
-    if (g_entries[i].ctx == ctx) {
-      free(g_entries[i].st.nodes);
-      memmove(&g_entries[i], &g_entries[g_elen - 1], sizeof(GCEntry));
-      g_elen--;
-      break;
-    }
-}
-
-void vl_gc_set_ownership(struct VL_Context *ctx, bool own_strings) {
-  GCState *st = gc_state_ensure(ctx);
-  if (!st) return;
-  st->own_strings = own_strings ? 1 : 0;
-}
-
-static size_t approx_vlstring_size(VL_String *s) {
-  return s ? (sizeof(*s) + (size_t)s->len + 1) : 0;
-}
-
-static int gc_register_node(GCState *st, VL_String *s, int owned) {
-  if (!s) return 0;  // ignore
-  // dédup simple: ne pas dupliquer l'entrée si déjà vue
-  for (size_t i = 0; i < st->len; i++) {
-    if (st->nodes[i].ptr == s) {
-      st->nodes[i].owned |= owned ? 1 : 0;
+/* --------- Helpers racines --------- */
+static int vtgc_roots_find(vt_gc_roots* R, void** slot, size_t* idx_out) {
+  for (size_t i = 0; i < R->n; ++i) {
+    if (R->v[i] == slot) {
+      if (idx_out) *idx_out = i;
       return 1;
     }
   }
-  if (st->len == st->cap) {
-    size_t nc = st->cap ? st->cap * 2 : 64;
-    GCNode *nv = (GCNode *)realloc(st->nodes, nc * sizeof(GCNode));
-    if (!nv) return 0;
-    st->nodes = nv;
-    st->cap = nc;
-  }
-  st->nodes[st->len] = (GCNode){.ptr = s,
-                                .marked = 0,
-                                .owned = (uint32_t)owned,
-                                .size = (uint32_t)approx_vlstring_size(s)};
-  st->bytes += st->nodes[st->len].size;
-  st->len++;
-  return 1;
-}
-
-void vl_gc_register_string(struct VL_Context *ctx, struct VL_String *s) {
-  GCState *st = gc_state_ensure(ctx);
-  if (!st) return;
-  gc_register_node(st, s, st->own_strings);
-}
-
-// Indexation opportuniste des chaînes déjà présentes dans les structures du
-// contexte
-void vl_gc_preindex_existing(struct VL_Context *ctx) {
-  GCState *st = gc_state_ensure(ctx);
-  if (!st) return;
-  // pool constantes
-  for (size_t i = 0; i < ctx->kstr_len; i++)
-    if (ctx->kstr[i]) gc_register_node(st, ctx->kstr[i], 0);
-  // globaux: clés et valeurs string
-  for (size_t i = 0; i < ctx->globals.cap; i++) {
-    VL_String *k = ctx->globals.keys ? ctx->globals.keys[i] : NULL;
-    if (k && k != (VL_String *)(uintptr_t)1) gc_register_node(st, k, 0);
-    if (ctx->globals.vals) {
-      VL_Value v = ctx->globals.vals[i];
-      if (v.type == VT_STR && v.as.s) gc_register_node(st, v.as.s, 0);
-    }
-  }
-  // pile
-  for (size_t i = 0; i < ctx->sp; i++) {
-    VL_Value v = ctx->stack[i];
-    if (v.type == VT_STR && v.as.s) gc_register_node(st, v.as.s, 0);
-  }
-  // natives: clés = noms
-  for (size_t i = 0; i < ctx->natives.cap; i++) {
-    VL_String *k = ctx->natives.keys ? ctx->natives.keys[i] : NULL;
-    if (k && k != (VL_String *)(uintptr_t)1) gc_register_node(st, k, 0);
-  }
-}
-
-// ───────────────────────── Marquage ─────────────────────────
-static void mark_str(GCState *st, VL_String *s) {
-  if (!s) return;
-  for (size_t i = 0; i < st->len; i++) {
-    if (st->nodes[i].ptr == s) {
-      st->nodes[i].marked = 1;
-      return;
-    }
-  }
-}
-static void mark_val(GCState *st, const VL_Value *v) {
-  if (!v) return;
-  if (v->type == VT_STR) mark_str(st, v->as.s);
-}
-
-static void mark_roots(struct VL_Context *ctx, GCState *st) {
-  // pile
-  for (size_t i = 0; i < ctx->sp; i++) mark_val(st, &ctx->stack[i]);
-  // globaux
-  for (size_t i = 0; i < ctx->globals.cap; i++) {
-    VL_String *k = ctx->globals.keys ? ctx->globals.keys[i] : NULL;
-    if (k && k != (VL_String *)(uintptr_t)1) mark_str(st, k);
-    if (ctx->globals.vals) mark_val(st, &ctx->globals.vals[i]);
-  }
-  // pool constantes
-  for (size_t i = 0; i < ctx->kstr_len; i++) mark_str(st, ctx->kstr[i]);
-  // natives
-  for (size_t i = 0; i < ctx->natives.cap; i++) {
-    VL_String *k = ctx->natives.keys ? ctx->natives.keys[i] : NULL;
-    if (k && k != (VL_String *)(uintptr_t)1) mark_str(st, k);
-  }
-}
-
-// ───────────────────────── Balayage ─────────────────────────
-static void sweep(struct VL_Context *ctx, GCState *st, int verbose) {
-  (void)ctx;  // ctx unused for now
-  size_t w = 0;
-  for (size_t i = 0; i < st->len; i++) {
-    GCNode *n = &st->nodes[i];
-    if (n->ptr == NULL) continue;
-    if (n->marked) {
-      n->marked = 0;
-      st->nodes[w++] = *n;
-      continue;
-    }
-    // non marqué
-    if (n->owned) {
-      free(n->ptr);
-      st->freed_bytes += n->size;
-      st->freed_count++;
-    }
-    // sinon, on oublie juste la référence
-    // ne pas copier dans la zone conservée
-  }
-  st->len = w;  // compacte implicitement
-}
-
-// ───────────────────────── Collect ─────────────────────────
-VL_Status vl_gc_collect(struct VL_Context *ctx, int flags) {
-  GCState *st = gc_state_of(ctx);
-  if (!st) return VL_ERR_BAD_ARG;
-  int verbose = (flags & 1) ? 1 : 0;
-  size_t before = st->len;
-  size_t bbytes = st->bytes;
-  if (verbose)
-    fprintf(stderr, "[gc] start: nodes=%zu bytes=%zu\n", before, bbytes);
-  mark_roots(ctx, st);
-  sweep(ctx, st, verbose);
-  if (verbose)
-    fprintf(stderr, "[gc] end: nodes=%zu freed=%zu objects, %zu bytes\n",
-            st->len, st->freed_count, st->freed_bytes);
-  return VL_OK;
-}
-
-void vl_gc_stats(struct VL_Context *ctx, size_t *tracked, size_t *bytes,
-                 size_t *frees) {
-  GCState *st = gc_state_of(ctx);
-  if (!st) {
-    if (tracked) *tracked = 0;
-    if (bytes) *bytes = 0;
-    if (frees) *frees = 0;
-    return;
-  }
-  if (tracked) *tracked = st->len;
-  if (bytes) *bytes = st->bytes;
-  if (frees) *frees = st->freed_count;
-}
-
-// ───────────────────────── Déclenchement heuristique (optionnel)
-// ─────────────────────────
-static void maybe_trigger(struct VL_Context *ctx) {
-  GCState *st = gc_state_of(ctx);
-  if (!st) return;
-  if (st->bytes > st->trigger_bytes) {
-    vl_gc_collect(ctx, 0);  // silencieux
-    // relever le seuil progressivement
-    st->trigger_bytes = st->bytes * 2;
-    if (st->trigger_bytes < (1 << 20)) st->trigger_bytes = (1 << 20);
-  }
-}
-
-// Helper facultatif à appeler depuis la VM après allocation d’une chaîne
-void vl_gc_on_string_alloc(struct VL_Context *ctx, struct VL_String *s) {
-  if (!s) return;
-  vl_gc_register_string(ctx, s);
-  maybe_trigger(ctx);
-}
-
-// ───────────────────────── Test autonome ─────────────────────────
-#ifdef VL_GC_TEST_MAIN
-#include "debug.h"
-static void emit_u8(uint8_t **p, uint8_t v) { *(*p)++ = v; }
-static void emit_u32(uint8_t **p, uint32_t v) {
-  memcpy(*p, &v, 4);
-  *p += 4;
-}
-static void emit_u64(uint8_t **p, uint64_t v) {
-  memcpy(*p, &v, 8);
-  *p += 8;
-}
-int main(void) {
-  uint8_t buf[512];
-  uint8_t *p = buf;
-  emit_u8(&p, 'V');
-  emit_u8(&p, 'L');
-  emit_u8(&p, 'B');
-  emit_u8(&p, 'C');
-  emit_u8(&p, 1);
-  const char *s0 = "hello";
-  const char *s1 = "print";
-  emit_u32(&p, 2);
-  emit_u32(&p, (uint32_t)strlen(s0));
-  memcpy(p, s0, strlen(s0));
-  p += strlen(s0);
-  emit_u32(&p, (uint32_t)strlen(s1));
-  memcpy(p, s1, strlen(s1));
-  p += strlen(s1);
-  uint8_t *csz = p;
-  emit_u32(&p, 0);
-  uint8_t *cs = p;
-  emit_u8(&p, 3 /*PUSHS*/);
-  emit_u32(&p, 0);
-  emit_u8(&p, 18 /*CALLN*/);
-  emit_u32(&p, 1);
-  emit_u8(&p, 1);
-  emit_u8(&p, 19 /*HALT*/);
-  uint32_t code_sz = (uint32_t)(p - cs);
-  memcpy(csz, &code_sz, 4);
-  VL_Context *vm = vl_create_default();
-  vl_gc_attach(vm, 0);
-  vl_gc_set_ownership(vm, true);
-  if (vl_load_program_from_memory(vm, buf, (size_t)(p - buf)) != VL_OK) {
-    fprintf(stderr, "load fail: %s\n", vl_last_error(vm)->msg);
-    return 2;
-  }
-  // préindexation pour les constantes
-  vl_gc_preindex_existing(vm);
-  // exécuter
-  vl_run(vm, 0);
-  // forcer GC
-  vl_gc_collect(vm, 1);
-  size_t n = 0, b = 0, f = 0;
-  vl_gc_stats(vm, &n, &b, &f);
-  fprintf(stderr, "tracked=%zu bytes=%zu freed=%zu\n", n, b, f);
-  vl_destroy(vm);
   return 0;
 }
+static int vtgc_roots_push(vt_gc_roots* R, void** slot) {
+  if (R->n == R->cap) {
+    size_t ncap = R->cap ? R->cap * 2 : 32;
+    void*** nv = (void***)realloc(R->v, ncap * sizeof(void**));
+    if (!nv) return 0;
+    R->v = nv;
+    R->cap = ncap;
+  }
+  R->v[R->n++] = slot;
+  return 1;
+}
+static void vtgc_roots_remove_at(vt_gc_roots* R, size_t i) {
+  if (i < R->n - 1) R->v[i] = R->v[R->n - 1];
+  R->n--;
+}
+
+/* --------- Header <-> payload --------- */
+static inline vt_gc_obj* vtgc_hdr_from_ptr(const void* p) {
+  if (!p) return NULL;
+  return (vt_gc_obj*)((uint8_t*)p - sizeof(vt_gc_obj));
+}
+static inline void* vtgc_ptr_from_hdr(vt_gc_obj* h) {
+  return (void*)((uint8_t*)h + sizeof(vt_gc_obj));
+}
+
+/* --------- Marquage --------- */
+static inline void vtgc_mark_hdr(vt_gc* gc, vt_gc_obj* h) {
+  if (!h) return;
+  if (h->mark_epoch == gc->epoch) return;
+  h->mark_epoch = gc->epoch;
+  h->next_gray = gc->gray;
+  gc->gray = h;
+}
+static void vtgc_visit_child(void* child, void* ctx) {
+  if (!child) return;
+  vt_gc* gc = (vt_gc*)ctx;
+  vtgc_mark_hdr(gc, vtgc_hdr_from_ptr(child));
+}
+
+/* --------- Sweep --------- */
+static void vtgc_sweep(vt_gc* gc) {
+  vt_gc_obj* prev = NULL;
+  vt_gc_obj* cur = gc->all;
+  size_t new_live = 0, new_count = 0;
+  while (cur) {
+    vt_gc_obj* next = cur->next_all;
+    const int alive = (cur->mark_epoch == gc->epoch) || (cur->pin > 0);
+    if (alive) {
+      new_live += cur->size;
+      new_count += 1;
+      prev = cur;
+    } else {
+      if (cur->fin) {
+        /* Le finalizer ne doit pas ressusciter l’objet. */
+        cur->fin(vtgc_ptr_from_hdr(cur));
+      }
+      if (prev)
+        prev->next_all = next;
+      else
+        gc->all = next;
+      free(cur);
+    }
+    cur = next;
+  }
+  gc->bytes_live = new_live;
+  gc->obj_count = new_count;
+}
+
+/* --------- Collect --------- */
+static void vtgc_mark_from_roots(vt_gc* gc) {
+  /* 1) Marquer racines */
+  for (size_t i = 0; i < gc->roots.n; ++i) {
+    void** slot = gc->roots.v[i];
+    if (!slot) continue;
+    vtgc_mark_hdr(gc, vtgc_hdr_from_ptr(*slot));
+  }
+  /* 2) Propager */
+  while (gc->gray) {
+    vt_gc_obj* h = gc->gray;
+    gc->gray = h->next_gray;
+    h->next_gray = NULL;
+    if (h->trace) {
+      h->trace(vtgc_ptr_from_hdr(h), vtgc_visit_child, gc);
+    }
+  }
+}
+
+void vt_gc_collect(vt_gc* gc, const char* reason) {
+  if (!gc) return;
+  vtgc_lock(gc);
+  gc->epoch++;
+  vtgc_log(gc, "INFO",
+           "collect start (epoch=%u, reason=%s, objs=%zu, live=%zu)", gc->epoch,
+           reason ? reason : "manual", gc->obj_count, gc->bytes_live);
+  vtgc_mark_from_roots(gc);
+  vtgc_sweep(gc);
+  gc->bytes_since_gc = 0;
+  vtgc_log(gc, "INFO", "collect end   (objs=%zu, live=%zu)", gc->obj_count,
+           gc->bytes_live);
+  vtgc_unlock(gc);
+}
+
+/* --------- Politique de GC --------- */
+static void vtgc_maybe_collect(vt_gc* gc, size_t just_alloc) {
+  gc->bytes_since_gc += just_alloc;
+  const size_t limit =
+      gc->heap_limit ? gc->heap_limit : (8u << 20); /* 8 MiB par défaut */
+  if (gc->bytes_live > limit || gc->bytes_since_gc > limit / 2) {
+    vt_gc_collect(
+        gc, gc->bytes_live > limit ? "heap_limit" : "allocation_pressure");
+  }
+}
+
+/* --------- API publique --------- */
+vt_gc* vt_gc_create(const vt_gc_config* cfg) {
+  vt_gc* gc = (vt_gc*)calloc(1, sizeof *gc);
+  if (!gc) return NULL;
+  gc->heap_limit =
+      (cfg && cfg->heap_limit_bytes) ? cfg->heap_limit_bytes : (8u << 20);
+  gc->logging = (cfg && cfg->enable_logging) ? 1 : 0;
+  gc->epoch = 1; /* éviter zéro */
+#if VTGC_HAS_THREADS
+  if (mtx_init(&gc->lock, mtx_plain) != thrd_success) {
+    free(gc);
+    return NULL;
+  }
 #endif
+  vtgc_log(gc, "INFO", "gc created (limit=%zu)", gc->heap_limit);
+  return gc;
+}
+
+void vt_gc_destroy(vt_gc* gc) {
+  if (!gc) return;
+  vtgc_lock(gc);
+  /* libère tout sans marquage */
+  vt_gc_obj* cur = gc->all;
+  while (cur) {
+    vt_gc_obj* next = cur->next_all;
+    if (cur->fin) cur->fin(vtgc_ptr_from_hdr(cur));
+    free(cur);
+    cur = next;
+  }
+  free(gc->roots.v);
+  vtgc_unlock(gc);
+#if VTGC_HAS_THREADS
+  mtx_destroy(&gc->lock);
+#endif
+  vtgc_log(gc, "INFO", "gc destroyed");
+  free(gc);
+}
+
+void* vt_gc_alloc(vt_gc* gc, size_t size, vt_gc_trace_fn trace,
+                  vt_gc_finalizer fin, uint32_t tag) {
+  if (!gc || size == 0) return NULL;
+  /* on s’assure d’un header aligné pour payload */
+  size_t total = sizeof(vt_gc_obj) + size;
+  vt_gc_obj* h = (vt_gc_obj*)malloc(total);
+  if (!h) return NULL;
+
+  h->next_all = gc->all;
+  gc->all = h;
+  h->next_gray = NULL;
+  h->size = size;
+  h->tag = tag;
+  h->pin = 0;
+  h->mark_epoch = 0; /* pas marqué */
+  h->trace = trace;
+  h->fin = fin;
+
+  void* p = vtgc_ptr_from_hdr(h);
+
+  vtgc_lock(gc);
+  gc->bytes_live += size;
+  gc->obj_count += 1;
+  vtgc_unlock(gc);
+
+  vtgc_maybe_collect(gc, size);
+  return p;
+}
+
+void vt_gc_add_root(vt_gc* gc, void** slot) {
+  if (!gc || !slot) return;
+  vtgc_lock(gc);
+  size_t idx;
+  if (!vtgc_roots_find(&gc->roots, slot, &idx)) {
+    (void)vtgc_roots_push(&gc->roots, slot);
+    vtgc_log(gc, "TRACE", "root + %p", (void*)slot);
+  }
+  vtgc_unlock(gc);
+}
+void vt_gc_remove_root(vt_gc* gc, void** slot) {
+  if (!gc || !slot) return;
+  vtgc_lock(gc);
+  size_t idx;
+  if (vtgc_roots_find(&gc->roots, slot, &idx)) {
+    vtgc_roots_remove_at(&gc->roots, idx);
+    vtgc_log(gc, "TRACE", "root - %p", (void*)slot);
+  }
+  vtgc_unlock(gc);
+}
+
+void vt_gc_pin(void* obj) {
+  vt_gc_obj* h = vtgc_hdr_from_ptr(obj);
+  if (!h) return;
+  h->pin++;
+}
+void vt_gc_unpin(void* obj) {
+  vt_gc_obj* h = vtgc_hdr_from_ptr(obj);
+  if (!h) return;
+  if (h->pin > 0) h->pin--;
+}
+
+void vt_gc_set_limit(vt_gc* gc, size_t bytes) {
+  if (!gc) return;
+  vtgc_lock(gc);
+  gc->heap_limit = bytes;
+  vtgc_unlock(gc);
+}
+
+size_t vt_gc_bytes_live(vt_gc* gc) { return gc ? gc->bytes_live : 0; }
+size_t vt_gc_object_count(vt_gc* gc) { return gc ? gc->obj_count : 0; }
+
+uint32_t vt_gc_tag_of(const void* obj) {
+  const vt_gc_obj* h = vtgc_hdr_from_ptr(obj);
+  return h ? h->tag : 0;
+}
+void vt_gc_set_tag(void* obj, uint32_t tag) {
+  vt_gc_obj* h = vtgc_hdr_from_ptr(obj);
+  if (h) h->tag = tag;
+}
+
+/* --------- Dump debug --------- */
+void vt_gc_dump(vt_gc* gc, FILE* out) {
+  if (!gc) return;
+  if (!out) out = stderr;
+  fprintf(out, "GC dump: objs=%zu live=%zuB epoch=%u roots=%zu limit=%zuB\n",
+          gc->obj_count, gc->bytes_live, gc->epoch, gc->roots.n,
+          gc->heap_limit);
+  size_t i = 0;
+  for (vt_gc_obj* h = gc->all; h; h = h->next_all, ++i) {
+    fprintf(out, "  #%zu obj=%p size=%zu tag=%u pin=%u mark=%u\n", i,
+            (void*)vtgc_ptr_from_hdr(h), h->size, h->tag, h->pin,
+            h->mark_epoch);
+  }
+}
+
+/* --------- Exemple d’adaptateur de trace (optionnel, non exporté) ---------
+   Exposez ce genre de helper dans votre code applicatif:
+
+   typedef struct Node { struct Node* left; struct Node* right; int v; } Node;
+   static void node_trace(void* obj, vt_gc_visit_fn visit, void* ctx) {
+       Node* n = (Node*)obj;
+       visit(n->left, ctx);
+       visit(n->right, ctx);
+   }
+   Node* n = (Node*)vt_gc_alloc(gc, sizeof(Node), node_trace, NULL, 0);
+   ------------------------------------------------------------------------- */

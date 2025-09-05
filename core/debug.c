@@ -1,524 +1,559 @@
-// vitte-light/core/debug.c
-// Outils de debug et d’inspection pour VitteLight.
-// - hexdump et inspecteur VLBC
-// - trace pas-à-pas de la VM
-// - dump de stack et de globaux
-// - mini désassembleur lisible
-// - timers/profilage rudimentaires
-//
-// Build:
-//   cc -std=c99 -O2 -Wall -Wextra -pedantic -c debug.c
-// Link avec: api.c, ctype.c, ctype_ext.c
-//
-// Note: ce module redéclare quelques structures internes pour l’inspection.
-// Il doit rester synchronisé avec api.c.
+/* ============================================================================
+   debug.c — utilitaires de debug/logging ultra complets (C17, cross-platform)
+   - Niveaux: TRACE, DEBUG, INFO, WARN, ERROR, FATAL
+   - Formats: texte (coloré) ou JSON ligne par ligne
+   - Sorties: stderr par défaut, fichier avec rotation par taille
+   - Thread-safe, horodatage local, TID, source (file:line:func)
+   - Hexdump, backtrace (POSIX/Windows), capture signaux/SEH
+   - Windows: activation VT100, DbgHelp pour symboles
+   - Intégration: inclure “debug.h” si disponible, sinon prototypes ci-dessous.
+   Licence: MIT
+   ============================================================================
+ */
 
-#include <inttypes.h>
+#include <errno.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
-#include "api.h"
-#include "ctype.h"
-
-// ───────────────────────── Opcodes (doivent matcher api.c/code.c)
-// ─────────────────────────
-
-enum {
-  OP_NOP = 0,
-  OP_PUSHI = 1,
-  OP_PUSHF = 2,
-  OP_PUSHS = 3,
-  OP_ADD = 4,
-  OP_SUB = 5,
-  OP_MUL = 6,
-  OP_DIV = 7,
-  OP_EQ = 8,
-  OP_NEQ = 9,
-  OP_LT = 10,
-  OP_GT = 11,
-  OP_LE = 12,
-  OP_GE = 13,
-  OP_PRINT = 14,
-  OP_POP = 15,
-  OP_STOREG = 16,
-  OP_LOADG = 17,
-  OP_CALLN = 18,
-  OP_HALT = 19
-};
-
-static const char *op_name(uint8_t op) {
-  switch (op) {
-    case OP_NOP:
-      return "NOP";
-    case OP_PUSHI:
-      return "PUSHI";
-    case OP_PUSHF:
-      return "PUSHF";
-    case OP_PUSHS:
-      return "PUSHS";
-    case OP_ADD:
-      return "ADD";
-    case OP_SUB:
-      return "SUB";
-    case OP_MUL:
-      return "MUL";
-    case OP_DIV:
-      return "DIV";
-    case OP_EQ:
-      return "EQ";
-    case OP_NEQ:
-      return "NEQ";
-    case OP_LT:
-      return "LT";
-    case OP_GT:
-      return "GT";
-    case OP_LE:
-      return "LE";
-    case OP_GE:
-      return "GE";
-    case OP_PRINT:
-      return "PRINT";
-    case OP_POP:
-      return "POP";
-    case OP_STOREG:
-      return "STOREG";
-    case OP_LOADG:
-      return "LOADG";
-    case OP_CALLN:
-      return "CALLN";
-    case OP_HALT:
-      return "HALT";
-    default:
-      return "?";
-  }
-}
-
-// ───────────────────────── Redéclarations internes (sync api.c)
-// ─────────────────────────
-
-typedef struct VL_String {
-  uint32_t hash, len;
-  char data[];
-} VL_String;
-
-typedef struct {
-  VL_String **keys;
-  VL_Value *vals;
-  size_t cap, len, tomb;
-} VL_Map;
-
-typedef struct {
-  VL_NativeFn fn;
-  void *ud;
-} VL_Native;
-
-struct VL_Context {
-  // alloc/log
-  void *ralloc;
-  void *alloc_ud;
-  void *log;
-  void *log_ud;  // types masqués, non utilisés ici
-  VL_Error last_error;
-  // VM
-  uint8_t *bc;
-  size_t bc_len;
-  size_t ip;
-  VL_Value *stack;
-  size_t sp;
-  size_t stack_cap;
-  VL_String **kstr;
-  size_t kstr_len;
-  VL_Map globals;
-  VL_Map natives;
-};
-
-// ───────────────────────── Utils temps ─────────────────────────
-static double now_ms(void) {
 #if defined(_WIN32)
-  // Fallback simple
-  return (double)clock() * 1000.0 / (double)CLOCKS_PER_SEC;
+#define WIN32_LEAN_AND_MEAN 1
+#include <DbgHelp.h> /* link: Dbghelp.lib */
+#include <fcntl.h>
+#include <io.h>
+#include <process.h>
+#include <windows.h>
+#pragma comment(lib, "Dbghelp.lib")
 #else
-  struct timespec ts;
-  clock_gettime(CLOCK_MONOTONIC, &ts);
-  return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
+#include <execinfo.h>
+#include <pthread.h>
+#include <signal.h>
+#include <unistd.h>
+#endif
+
+/* ----------------------------------------------------------------------------
+   API publique (si debug.h absent)
+---------------------------------------------------------------------------- */
+#ifndef VT_DEBUG_HAVE_HEADER
+#ifndef VT_DEBUG_API
+#define VT_DEBUG_API extern
+#endif
+typedef enum {
+  VT_LL_TRACE = 0,
+  VT_LL_DEBUG,
+  VT_LL_INFO,
+  VT_LL_WARN,
+  VT_LL_ERROR,
+  VT_LL_FATAL
+} vt_log_level;
+
+typedef enum { VT_FMT_TEXT = 0, VT_FMT_JSON = 1 } vt_log_format;
+
+typedef struct {
+  vt_log_level level;    /* niveau minimal */
+  vt_log_format format;  /* texte ou JSON */
+  int use_color;         /* 1=colors si TTY */
+  const char* file_path; /* NULL=stderr */
+  size_t rotate_bytes;   /* 0=pas de rotation */
+  int capture_crash;     /* installe handlers */
+} vt_log_config;
+
+VT_DEBUG_API int vt_log_init(const vt_log_config* cfg);
+VT_DEBUG_API void vt_log_shutdown(void);
+VT_DEBUG_API void vt_log_set_level(vt_log_level lvl);
+VT_DEBUG_API vt_log_level vt_log_get_level(void);
+VT_DEBUG_API void vt_log_set_format(vt_log_format fmt);
+VT_DEBUG_API void vt_log_enable_color(int on);
+VT_DEBUG_API void vt_log_force_flush(void);
+VT_DEBUG_API void vt_log_set_file(const char* path, size_t rotate_bytes);
+
+VT_DEBUG_API void vt_log_write(vt_log_level lvl, const char* file, int line,
+                               const char* func, const char* fmt, ...);
+
+VT_DEBUG_API void vt_debug_hexdump(const void* data, size_t len,
+                                   const char* label);
+VT_DEBUG_API void vt_debug_backtrace(void);
+VT_DEBUG_API void vt_debug_install_crash_handlers(void);
+#endif
+
+/* ----------------------------------------------------------------------------
+   Config interne et synchronisation
+---------------------------------------------------------------------------- */
+typedef struct {
+  vt_log_level level;
+  vt_log_format format;
+  int color_enabled; /* demandé par l’utilisateur */
+  int color_active;  /* effectif (TTY/VT ok) */
+  FILE* out;
+  char file_path[1024];
+  size_t rotate_bytes;
+  size_t written_bytes;
+
+#if defined(_WIN32)
+  CRITICAL_SECTION lock;
+  HANDLE hErr;
+  int vt_enabled;
+#else
+  pthread_mutex_t lock;
+#endif
+} vt_log_state;
+
+static vt_log_state g_log;
+
+static int vt__isatty(void) {
+#if defined(_WIN32)
+  return _isatty(_fileno(g_log.out ? g_log.out : stderr));
+#else
+  return isatty(fileno(g_log.out ? g_log.out : stderr));
 #endif
 }
 
-// ───────────────────────── Hexdump ─────────────────────────
-void vl_debug_hexdump(const void *data, size_t len, FILE *out) {
-  if (!out) out = stdout;
-  const unsigned char *p = (const unsigned char *)data;
-  for (size_t i = 0; i < len; i += 16) {
-    fprintf(out, "%08zx  ", i);
-    for (size_t j = 0; j < 16; j++) {
-      if (i + j < len)
-        fprintf(out, "%02x ", p[i + j]);
-      else
-        fprintf(out, "   ");
-      if (j == 7) fputc(' ', out);
-    }
-    fputc(' ', out);
-    for (size_t j = 0; j < 16 && i + j < len; j++) {
-      unsigned char c = p[i + j];
-      fputc((c >= 32 && c < 127) ? c : '.', out);
-    }
-    fputc('\n', out);
+static void vt__lock(void) {
+#if defined(_WIN32)
+  EnterCriticalSection(&g_log.lock);
+#else
+  pthread_mutex_lock(&g_log.lock);
+#endif
+}
+static void vt__unlock(void) {
+#if defined(_WIN32)
+  LeaveCriticalSection(&g_log.lock);
+#else
+  pthread_mutex_unlock(&g_log.lock);
+#endif
+}
+
+/* ----------------------------------------------------------------------------
+   Windows: activer VT100 + file handle
+---------------------------------------------------------------------------- */
+#if defined(_WIN32)
+static void vt__enable_vt100(void) {
+  DWORD mode = 0;
+  HANDLE h = GetStdHandle(STD_ERROR_HANDLE);
+  if (h == INVALID_HANDLE_VALUE || h == NULL) return;
+  if (!GetConsoleMode(h, &mode)) return;
+  mode |= 0x0004; /* ENABLE_VIRTUAL_TERMINAL_PROCESSING */
+  if (SetConsoleMode(h, mode)) g_log.vt_enabled = 1;
+}
+#endif
+
+/* ----------------------------------------------------------------------------
+   Noms niveaux + couleurs
+---------------------------------------------------------------------------- */
+static const char* vt__lvl_name(vt_log_level l) {
+  switch (l) {
+    case VT_LL_TRACE:
+      return "TRACE";
+    case VT_LL_DEBUG:
+      return "DEBUG";
+    case VT_LL_INFO:
+      return "INFO";
+    case VT_LL_WARN:
+      return "WARN";
+    case VT_LL_ERROR:
+      return "ERROR";
+    default:
+      return "FATAL";
+  }
+}
+static const char* vt__lvl_color(vt_log_level l) {
+  /* CSI */
+  switch (l) {
+    case VT_LL_TRACE:
+      return "\x1b[90m"; /* bright black */
+    case VT_LL_DEBUG:
+      return "\x1b[36m"; /* cyan */
+    case VT_LL_INFO:
+      return "\x1b[32m"; /* green */
+    case VT_LL_WARN:
+      return "\x1b[33m"; /* yellow */
+    case VT_LL_ERROR:
+      return "\x1b[31m"; /* red */
+    default:
+      return "\x1b[41;97m"; /* red bg, white fg */
   }
 }
 
-// ───────────────────────── Helpers lecture VLBC ─────────────────────────
-static int rd_u8(const uint8_t *p, size_t n, size_t *io, uint8_t *out) {
-  if (*io + 1 > n) return 0;
-  *out = p[(*io)++];
-  return 1;
-}
-static int rd_u32(const uint8_t *p, size_t n, size_t *io, uint32_t *out) {
-  if (*io + 4 > n) return 0;
-  uint32_t v = (uint32_t)p[*io] | ((uint32_t)p[*io + 1] << 8) |
-               ((uint32_t)p[*io + 2] << 16) | ((uint32_t)p[*io + 3] << 24);
-  *io += 4;
-  *out = v;
-  return 1;
-}
-static int rd_u64(const uint8_t *p, size_t n, size_t *io, uint64_t *out) {
-  if (*io + 8 > n) return 0;
-  uint64_t v = 0;
-  for (int i = 0; i < 8; i++) v |= ((uint64_t)p[*io + i]) << (8 * i);
-  *io += 8;
-  *out = v;
-  return 1;
-}
-static int rd_f64(const uint8_t *p, size_t n, size_t *io, double *out) {
-  if (*io + 8 > n) return 0;
-  union {
-    uint64_t u;
-    double d;
-  } u;
-  if (!rd_u64(p, n, io, &u.u)) return 0;
-  *out = u.d;
-  return 1;
+/* ----------------------------------------------------------------------------
+   Horodatage local "YYYY-MM-DD HH:MM:SS.mmm"
+---------------------------------------------------------------------------- */
+static void vt__fmt_timestamp(char* dst, size_t cap) {
+  struct timespec ts;
+#if defined(_WIN32)
+  /* Windows 10+ : timespec via _timespec64 ? Simple: GetSystemTime +
+   * milliseconds */
+  SYSTEMTIME st;
+  GetLocalTime(&st);
+  snprintf(dst, cap, "%04u-%02u-%02u %02u:%02u:%02u.%03u", (unsigned)st.wYear,
+           (unsigned)st.wMonth, (unsigned)st.wDay, (unsigned)st.wHour,
+           (unsigned)st.wMinute, (unsigned)st.wSecond,
+           (unsigned)st.wMilliseconds);
+#else
+  clock_gettime(CLOCK_REALTIME, &ts);
+  struct tm tmval;
+  localtime_r(&ts.tv_sec, &tmval);
+  int ms = (int)(ts.tv_nsec / 1000000);
+  snprintf(dst, cap, "%04d-%02d-%02d %02d:%02d:%02d.%03d", 1900 + tmval.tm_year,
+           1 + tmval.tm_mon, tmval.tm_mday, tmval.tm_hour, tmval.tm_min,
+           tmval.tm_sec, ms);
+#endif
 }
 
-// ───────────────────────── Inspecteur VLBC ─────────────────────────
-// Affiche l’entête, le pool de chaînes et le code size.
-bool vl_debug_vlbc_inspect(const uint8_t *buf, size_t n, FILE *out) {
-  if (!out) out = stdout;
-  if (!buf || n < 5) {
-    fprintf(out, "VLBC: buffer trop court\n");
-    return false;
-  }
-  if (memcmp(buf, "VLBC", 4) != 0) {
-    fprintf(out, "VLBC: mauvaise magic\n");
-    return false;
-  }
-  size_t i = 4;
-  uint8_t ver = 0;
-  if (!rd_u8(buf, n, &i, &ver)) {
-    fprintf(out, "VLBC: tronc ver\n");
-    return false;
-  }
-  fprintf(out, "> VLBC v%u\n", ver);
-  uint32_t nstr = 0;
-  if (!rd_u32(buf, n, &i, &nstr)) {
-    fprintf(out, "VLBC: tronc nstr\n");
-    return false;
-  }
-  fprintf(out, "  strings=%u\n", nstr);
-  for (uint32_t s = 0; s < nstr; s++) {
-    uint32_t sl = 0;
-    if (!rd_u32(buf, n, &i, &sl) || i + sl > n) {
-      fprintf(out, "VLBC: tronc str[%u]\n", s);
-      return false;
-    }
-    fprintf(out, "  [%u] \"%.*s\"\n", s, (int)sl, (const char *)(buf + i));
-    i += sl;
-  }
-  uint32_t code_sz = 0;
-  if (!rd_u32(buf, n, &i, &code_sz) || i + code_sz > n) {
-    fprintf(out, "VLBC: tronc code\n");
-    return false;
-  }
-  fprintf(out, "  code=%u bytes\n", code_sz);
-  return true;
+/* ----------------------------------------------------------------------------
+   Thread ID
+---------------------------------------------------------------------------- */
+static unsigned long long vt__tid(void) {
+#if defined(_WIN32)
+  return (unsigned long long)GetCurrentThreadId();
+#elif defined(__APPLE__)
+  uint64_t tid;
+  pthread_threadid_np(NULL, &tid);
+  return (unsigned long long)tid;
+#else
+  return (unsigned long long)pthread_self();
+#endif
 }
 
-// ───────────────────────── Désassembleur minimal ─────────────────────────
-bool vl_debug_disassemble(const uint8_t *buf, size_t n, FILE *out) {
-  if (!out) out = stdout;
-  if (!buf || n < 5 || memcmp(buf, "VLBC", 4) != 0) {
-    fprintf(out, "VLBC: magic invalide\n");
-    return false;
+/* ----------------------------------------------------------------------------
+   Rotation fichier
+---------------------------------------------------------------------------- */
+static int vt__ensure_rotation_unlocked(size_t next_write) {
+  if (!g_log.out || g_log.out == stderr) return 0;
+  if (g_log.rotate_bytes == 0) return 0;
+  if (g_log.written_bytes + next_write < g_log.rotate_bytes) return 0;
+
+  /* Fermer et renommer: <file>.1 (écrase) */
+  fclose(g_log.out);
+  g_log.out = NULL;
+  char bak[1200] = {0};
+  snprintf(bak, sizeof(bak), "%s.1", g_log.file_path);
+#if defined(_WIN32)
+  MoveFileExA(g_log.file_path, bak, MOVEFILE_REPLACE_EXISTING);
+#else
+  rename(g_log.file_path, bak);
+#endif
+  g_log.out = fopen(g_log.file_path, "ab");
+  g_log.written_bytes = 0;
+  if (!g_log.out) {
+    g_log.out = stderr;
+    return -1;
   }
-  size_t i = 4;
-  uint8_t ver = 0;
-  if (!rd_u8(buf, n, &i, &ver) || ver != 1) {
-    fprintf(out, "VLBC: ver invalide\n");
-    return false;
-  }
-  uint32_t nstr = 0;
-  if (!rd_u32(buf, n, &i, &nstr)) {
-    fprintf(out, "VLBC: tronc nstr\n");
-    return false;
-  }
-  const char **pool = (const char **)calloc(nstr, sizeof(char *));
-  if (!pool) return false;
-  for (uint32_t s = 0; s < nstr; s++) {
-    uint32_t sl = 0;
-    if (!rd_u32(buf, n, &i, &sl) || i + sl > n) {
-      fprintf(out, "VLBC: tronc str\n");
-      goto fail;
-    }
-    char *dup = (char *)malloc(sl + 1);
-    if (!dup) goto fail;
-    memcpy(dup, buf + i, sl);
-    dup[sl] = '\0';
-    pool[s] = dup;
-    i += sl;
-  }
-  uint32_t code_sz = 0;
-  if (!rd_u32(buf, n, &i, &code_sz) || i + code_sz > n) {
-    fprintf(out, "VLBC: tronc code\n");
-    goto fail;
-  }
-  size_t ip = i, end = i + code_sz;
-  fprintf(out, "; disassembly (%u bytes)\n", code_sz);
-  while (ip < end) {
-    uint8_t op = 0;
-    rd_u8(buf, n, &ip, &op);
-    fprintf(out, "%04zu\t%s", ip - 1 - i, op_name(op));
-    switch (op) {
-      case OP_PUSHI: {
-        uint64_t v = 0;
-        rd_u64(buf, n, &ip, &v);
-        fprintf(out, "\t%" PRId64, (int64_t)v);
-      } break;
-      case OP_PUSHF: {
-        double d = 0;
-        rd_f64(buf, n, &ip, &d);
-        fprintf(out, "\t%g", d);
-      } break;
-      case OP_PUSHS:
-      case OP_STOREG:
-      case OP_LOADG: {
-        uint32_t si = 0;
-        rd_u32(buf, n, &ip, &si);
-        fprintf(out, "\t%u ; \"%s\"", si, si < nstr ? pool[si] : "<bad>");
-      } break;
-      case OP_CALLN: {
-        uint32_t si = 0;
-        uint8_t argc = 0;
-        rd_u32(buf, n, &ip, &si);
-        rd_u8(buf, n, &ip, &argc);
-        fprintf(out, "\t%u,%u ; \"%s\"", si, argc,
-                si < nstr ? pool[si] : "<bad>");
-      } break;
-      default:
-        break;
-    }
-    fputc('\n', out);
-  }
-  for (uint32_t s = 0; s < nstr; s++) free((void *)pool[s]);
-  free(pool);
-  return true;
-fail:
-  for (uint32_t s = 0; s < nstr; s++) free((void *)pool[s]);
-  free(pool);
-  return false;
+  return 0;
 }
 
-// ───────────────────────── Dump stack / globaux ─────────────────────────
-void vl_debug_dump_stack(struct VL_Context *ctx, FILE *out) {
-  if (!out) out = stdout;
-  if (!ctx) {
-    fprintf(out, "<no ctx>\n");
-    return;
+/* ----------------------------------------------------------------------------
+   Init / Shutdown
+---------------------------------------------------------------------------- */
+int vt_log_init(const vt_log_config* cfg) {
+  memset(&g_log, 0, sizeof(g_log));
+  g_log.level = cfg ? cfg->level : VT_LL_INFO;
+  g_log.format = cfg ? cfg->format : VT_FMT_TEXT;
+  g_log.color_enabled = cfg ? cfg->use_color : 1;
+  g_log.rotate_bytes = cfg ? cfg->rotate_bytes : 0;
+  if (cfg && cfg->file_path) {
+    strncpy(g_log.file_path, cfg->file_path, sizeof(g_log.file_path) - 1);
+    g_log.out = fopen(g_log.file_path, "ab");
+    if (!g_log.out) g_log.out = stderr;
+  } else {
+    g_log.out = stderr;
   }
-  fprintf(out, "-- stack sp=%zu cap=%zu --\n", ctx->sp, ctx->stack_cap);
-  for (size_t i = 0; i < ctx->sp; i++) {
-    fprintf(out, "[%03zu] ", i);
-    vl_value_print(&ctx->stack[i], out);
-    fputc('\n', out);
-  }
+
+#if defined(_WIN32)
+  InitializeCriticalSection(&g_log.lock);
+  g_log.hErr = GetStdHandle(STD_ERROR_HANDLE);
+  vt__enable_vt100();
+#else
+  pthread_mutexattr_t at;
+  pthread_mutexattr_init(&at);
+  pthread_mutexattr_settype(&at, PTHREAD_MUTEX_RECURSIVE);
+  pthread_mutex_init(&g_log.lock, &at);
+  pthread_mutexattr_destroy(&at);
+#endif
+
+  g_log.color_active = g_log.color_enabled && vt__isatty();
+  if (cfg && cfg->capture_crash) vt_debug_install_crash_handlers();
+  return 0;
 }
 
-void vl_debug_dump_globals(struct VL_Context *ctx, FILE *out) {
-  if (!out) out = stdout;
-  if (!ctx) {
-    fprintf(out, "<no ctx>\n");
-    return;
-  }
-  fprintf(out, "-- globals len=%zu cap=%zu --\n", ctx->globals.len,
-          ctx->globals.cap);
-  for (size_t i = 0; i < ctx->globals.cap; i++) {
-    VL_String *k = ctx->globals.keys ? ctx->globals.keys[i] : NULL;
-    if (k && k != (VL_String *)(uintptr_t)1) {
-      VL_Value v = ctx->globals.vals[i];
-      fprintf(out, "[%03zu] %.*s = ", i, (int)k->len, k->data);
-      vl_value_print(&v, out);
-      fputc('\n', out);
-    }
-  }
+void vt_log_shutdown(void) {
+  vt__lock();
+  FILE* f = g_log.out;
+  if (f && f != stderr) fclose(f);
+  g_log.out = stderr;
+  g_log.written_bytes = 0;
+  vt__unlock();
+#if defined(_WIN32)
+  DeleteCriticalSection(&g_log.lock);
+#else
+  pthread_mutex_destroy(&g_log.lock);
+#endif
 }
 
-// ───────────────────────── Trace exécution ─────────────────────────
-// Exécute en traçant instruction, IP et top de pile. S’arrête sur HALT ou
-// erreur.
-VL_Status vl_debug_run_trace(struct VL_Context *ctx, uint64_t max_steps,
-                             FILE *out) {
-  if (!out) out = stdout;
-  if (!ctx) return VL_ERR_BAD_ARG;
-  size_t start_ip = ctx->ip;
-  double t0 = now_ms();
-  uint64_t steps = 0;
-  VL_Status rc = VL_OK;
-  int halted = 0;
-  fprintf(out, "== TRACE: ip=%zu, steps<=%" PRIu64 " ==\n", (size_t)ctx->ip,
-          max_steps);
-  while (1) {
-    if (ctx->ip >= ctx->bc_len) {
-      fprintf(out, "ip past code\n");
-      rc = VL_ERR_BAD_BYTECODE;
-      break;
-    }
-    uint8_t op = ctx->bc[ctx->ip];
-    fprintf(out, "%06zu  %s\tsp=%zu  top=", (size_t)ctx->ip, op_name(op),
-            ctx->sp);
-    if (ctx->sp > 0)
-      vl_value_print(&ctx->stack[ctx->sp - 1], out);
-    else
-      fprintf(out, "<empty>");
-    fputc('\n', out);
-    rc = vl_step(ctx);
-    if (rc != VL_OK) {
-      // Check if it was HALT
-      if (op == OP_HALT) {
-        halted = 1;
-        rc = VL_OK;
-      }
-      break;
-    }
-    steps++;
-    if (op == OP_HALT) {
-      halted = 1;
-      break;
-    }
-    if (max_steps && steps >= max_steps) break;
+void vt_log_set_level(vt_log_level lvl) {
+  vt__lock();
+  g_log.level = lvl;
+  vt__unlock();
+}
+vt_log_level vt_log_get_level(void) { return g_log.level; }
+void vt_log_set_format(vt_log_format fmt) {
+  vt__lock();
+  g_log.format = fmt;
+  vt__unlock();
+}
+void vt_log_enable_color(int on) {
+  vt__lock();
+  g_log.color_enabled = on ? 1 : 0;
+  g_log.color_active = g_log.color_enabled && vt__isatty();
+  vt__unlock();
+}
+void vt_log_force_flush(void) {
+  vt__lock();
+  if (g_log.out) fflush(g_log.out);
+  vt__unlock();
+}
+void vt_log_set_file(const char* path, size_t rotate_bytes) {
+  vt__lock();
+  if (g_log.out && g_log.out != stderr) fclose(g_log.out);
+  g_log.rotate_bytes = rotate_bytes;
+  g_log.written_bytes = 0;
+  if (path) {
+    strncpy(g_log.file_path, path, sizeof(g_log.file_path) - 1);
+    g_log.out = fopen(g_log.file_path, "ab");
+    if (!g_log.out) g_log.out = stderr;
+  } else {
+    g_log.file_path[0] = '\0';
+    g_log.out = stderr;
   }
-  double dt = now_ms() - t0;
-  fprintf(out,
-          "== END: rc=%d halted=%d steps=%" PRIu64
-          " ip:%zu→%zu time=%.3f ms ==\n",
-          rc, halted, steps, (size_t)start_ip, (size_t)ctx->ip, dt);
-  if (rc != VL_OK && vl_last_error(ctx) && vl_last_error(ctx)->msg[0]) {
-    fprintf(out, "error: %s\n", vl_last_error(ctx)->msg);
-  }
-  return rc;
+  vt__unlock();
 }
 
-// ───────────────────────── Aides d’assertion ─────────────────────────
-int vl_debug_expect_true(int cond, const char *expr, const char *file,
-                         int line) {
-  if (!cond) {
-    fprintf(stderr, "ASSERT FAIL at %s:%d: %s\n", file, line, expr);
-    return 0;
-  }
-  return 1;
-}
-
-#define VL_EXPECT(x)                                        \
-  do {                                                      \
-    if (!vl_debug_expect_true((x), #x, __FILE__, __LINE__)) \
-      return VL_ERR_RUNTIME;                                \
-  } while (0)
-
-// ───────────────────────── Test autonome ─────────────────────────
-#ifdef VL_DEBUG_TEST_MAIN
-int main(void) {
-  // Programme simple: print("dbg"), 1+2 -> print, HALT
-  uint8_t buf[256];
+/* ----------------------------------------------------------------------------
+   Echappement JSON minimal
+---------------------------------------------------------------------------- */
+static void vt__json_escape(const char* s, char* out, size_t cap) {
   size_t o = 0;
-#define EMIT8(x)             \
-  do {                       \
-    buf[o++] = (uint8_t)(x); \
-  } while (0)
-#define EMIT32(x)               \
-  do {                          \
-    uint32_t _ = (uint32_t)(x); \
-    memcpy(buf + o, &_, 4);     \
-    o += 4;                     \
-  } while (0)
-#define EMIT64(x)               \
-  do {                          \
-    uint64_t _ = (uint64_t)(x); \
-    memcpy(buf + o, &_, 8);     \
-    o += 8;                     \
-  } while (0)
+  for (size_t i = 0; s[i] && o + 6 < cap; ++i) {
+    unsigned char c = (unsigned char)s[i];
+    if (c == '"' || c == '\\') {
+      out[o++] = '\\';
+      out[o++] = c;
+    } else if (c >= 0x20 && c != 0x7F) {
+      out[o++] = c;
+    } else {
+      /* \u00XX */
+      int n = snprintf(out + o, cap - o, "\\u%04X", (unsigned)c);
+      o += (n > 0) ? (size_t)n : 0;
+    }
+  }
+  out[o] = 0;
+}
 
-  EMIT8('V');
-  EMIT8('L');
-  EMIT8('B');
-  EMIT8('C');
-  EMIT8(1);
-  EMIT32(2);
-  const char *s0 = "dbg";
-  EMIT32((uint32_t)strlen(s0));
-  memcpy(buf + o, s0, strlen(s0));
-  o += strlen(s0);
-  const char *s1 = "print";
-  EMIT32((uint32_t)strlen(s1));
-  memcpy(buf + o, s1, strlen(s1));
-  o += strlen(s1);
-  size_t pos = o;
-  EMIT32(0);
-  size_t cs = o;
-  EMIT8(OP_PUSHS);
-  EMIT32(0);
-  EMIT8(OP_CALLN);
-  EMIT32(1);
-  EMIT8(1);
-  EMIT8(OP_PUSHI);
-  EMIT64(1);
-  EMIT8(OP_PUSHI);
-  EMIT64(2);
-  EMIT8(OP_ADD);
-  EMIT8(OP_CALLN);
-  EMIT32(1);
-  EMIT8(1);
-  EMIT8(OP_HALT);
-  uint32_t code_sz = (uint32_t)(o - cs);
-  memcpy(buf + pos, &code_sz, 4);
+/* ----------------------------------------------------------------------------
+   Ecriture d’un message
+---------------------------------------------------------------------------- */
+void vt_log_write(vt_log_level lvl, const char* file, int line,
+                  const char* func, const char* fmt, ...) {
+  if (lvl < g_log.level) return;
 
-  VL_Context *vm = vl_create_default();
-  if (!vm) {
-    fprintf(stderr, "vm alloc fail\n");
-    return 1;
+  char ts[48];
+  vt__fmt_timestamp(ts, sizeof ts);
+  unsigned long long tid = vt__tid();
+
+  char msgbuf[4096];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(msgbuf, sizeof(msgbuf), fmt, ap);
+  va_end(ap);
+
+  vt__lock();
+
+  /* Rotation éventuelle (approx: longueur estimée) */
+  size_t approx = strlen(msgbuf) + 128;
+  vt__ensure_rotation_unlocked(approx);
+
+  if (g_log.format == VT_FMT_JSON) {
+    char fbuf[1024];
+    char funcbuf[1024];
+    char jmsg[4096];
+    vt__json_escape(file ? file : "", fbuf, sizeof fbuf);
+    vt__json_escape(func ? func : "", funcbuf, sizeof funcbuf);
+    vt__json_escape(msgbuf, jmsg, sizeof jmsg);
+    int n =
+        fprintf(g_log.out,
+                "{\"ts\":\"%s\",\"lvl\":\"%s\",\"tid\":%llu,"
+                "\"file\":\"%s\",\"line\":%d,\"func\":\"%s\",\"msg\":\"%s\"}\n",
+                ts, vt__lvl_name(lvl), (unsigned long long)tid, fbuf, line,
+                funcbuf, jmsg);
+    if (n > 0) g_log.written_bytes += (size_t)n;
+  } else {
+    if (g_log.color_active) {
+      int n = fprintf(g_log.out, "%s%s\x1b[0m %s | %llu | %s:%d:%s | %s\n",
+                      vt__lvl_color(lvl), vt__lvl_name(lvl), ts,
+                      (unsigned long long)tid, file ? file : "", line,
+                      func ? func : "", msgbuf);
+      if (n > 0) g_log.written_bytes += (size_t)n;
+    } else {
+      int n = fprintf(g_log.out, "%s %s | %llu | %s:%d:%s | %s\n",
+                      vt__lvl_name(lvl), ts, (unsigned long long)tid,
+                      file ? file : "", line, func ? func : "", msgbuf);
+      if (n > 0) g_log.written_bytes += (size_t)n;
+    }
+  }
+  fflush(g_log.out);
+
+  if (lvl == VT_LL_FATAL) {
+    vt__unlock();
+    vt_debug_backtrace();
+    /* flush then abort */
+    vt__lock();
+    fflush(g_log.out);
+    vt__unlock();
+    abort();
   }
 
-  VL_Status rc = vl_load_program_from_memory(vm, buf, o);
-  if (rc != VL_OK) {
-    fprintf(stderr, "load: %s\n", vl_last_error(vm)->msg);
-    return 2;
+  vt__unlock();
+}
+
+/* ----------------------------------------------------------------------------
+   Hexdump
+---------------------------------------------------------------------------- */
+void vt_debug_hexdump(const void* data, size_t len, const char* label) {
+  const unsigned char* p = (const unsigned char*)data;
+  vt__lock();
+  if (label)
+    vt_log_write(VT_LL_DEBUG, __FILE__, __LINE__, __func__,
+                 "[hexdump] %s (%zu bytes)", label, len);
+  for (size_t i = 0; i < len; i += 16) {
+    char ascii[17];
+    ascii[16] = 0;
+    fprintf(g_log.out, "  %08zx  ", i);
+    for (size_t j = 0; j < 16; j++) {
+      if (i + j < len) {
+        fprintf(g_log.out, "%02x ", p[i + j]);
+        ascii[j] = (p[i + j] >= 32 && p[i + j] < 127) ? (char)p[i + j] : '.';
+      } else {
+        fputs("   ", g_log.out);
+        ascii[j] = ' ';
+      }
+      if ((j & 7) == 7) fputc(' ', g_log.out);
+    }
+    fprintf(g_log.out, " |%s|\n", ascii);
   }
+  fflush(g_log.out);
+  vt__unlock();
+}
 
-  puts("-- INSPECT --");
-  vl_debug_vlbc_inspect(buf, o, stdout);
-  puts("-- DISASM  --");
-  vl_debug_disassemble(buf, o, stdout);
-  puts("-- TRACE   --");
-  rc = vl_debug_run_trace(vm, 0, stdout);
-  if (rc != VL_OK) {
-    fprintf(stderr, "trace rc=%d: %s\n", rc, vl_last_error(vm)->msg);
+/* ----------------------------------------------------------------------------
+   Backtrace
+---------------------------------------------------------------------------- */
+#if defined(_WIN32)
+/* Windows: symbolisation via DbgHelp */
+static void vt__sym_init(void) {
+  static int inited = 0;
+  if (inited) return;
+  HANDLE h = GetCurrentProcess();
+  SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
+  (void)SymInitialize(h, NULL, TRUE);
+  inited = 1;
+}
+#endif
+
+void vt_debug_backtrace(void) {
+#if defined(_WIN32)
+  void* frames[64] = {0};
+  USHORT n = CaptureStackBackTrace(0, 64, frames, NULL);
+  vt__lock();
+  vt__sym_init();
+  HANDLE proc = GetCurrentProcess();
+  char symbuf[sizeof(SYMBOL_INFO) + 512];
+  PSYMBOL_INFO sym = (PSYMBOL_INFO)symbuf;
+  sym->SizeOfStruct = sizeof(SYMBOL_INFO);
+  sym->MaxNameLen = 512;
+  fprintf(g_log.out, "Backtrace (%u frames):\n", (unsigned)n);
+  for (USHORT i = 0; i < n; i++) {
+    DWORD64 addr = (DWORD64)(frames[i]);
+    DWORD64 disp = 0;
+    if (SymFromAddr(proc, addr, &disp, sym)) {
+      fprintf(g_log.out, "  #%02u  %p  %s +0x%llx\n", (unsigned)i, (void*)addr,
+              sym->Name, (unsigned long long)disp);
+    } else {
+      fprintf(g_log.out, "  #%02u  %p  <no symbol>\n", (unsigned)i,
+              (void*)addr);
+    }
   }
+  fflush(g_log.out);
+  vt__unlock();
+#else
+  void* buf[64];
+  int n = backtrace(buf, 64);
+  char** syms = backtrace_symbols(buf, n);
+  vt__lock();
+  fprintf(g_log.out, "Backtrace (%d frames):\n", n);
+  for (int i = 0; i < n; i++) {
+    fprintf(g_log.out, "  #%02d %s\n", i, syms ? syms[i] : "<no symbol>");
+  }
+  fflush(g_log.out);
+  vt__unlock();
+  free(syms);
+#endif
+}
 
-  puts("-- STACK   --");
-  vl_debug_dump_stack(vm, stdout);
-  puts("-- GLOBALS --");
-  vl_debug_dump_globals(vm, stdout);
+/* ----------------------------------------------------------------------------
+   Crash handlers (SIGSEGV etc. / SEH)
+---------------------------------------------------------------------------- */
+#if !defined(_WIN32)
+static void vt__sig_handler(int sig, siginfo_t* info, void* uctx) {
+  (void)info;
+  (void)uctx;
+  vt_log_write(VT_LL_FATAL, __FILE__, __LINE__, __func__, "Signal %d reçu",
+               sig);
+}
+#endif
 
-  vl_destroy(vm);
+void vt_debug_install_crash_handlers(void) {
+#if defined(_WIN32)
+  /* Minimal SEH: print backtrace on unhandled exception */
+  /* Note: pour un handling robuste, préférer un filter séparé dans l’app. */
+  static LONG(__stdcall * prev)(EXCEPTION_POINTERS*) = NULL;
+  (void)prev;
+  /* Pas de remplacement global ici pour éviter effets de bord.
+     L’app peut installer son propre filter et appeler vt_debug_backtrace(). */
+#else
+  struct sigaction sa;
+  memset(&sa, 0, sizeof sa);
+  sa.sa_sigaction = vt__sig_handler;
+  sa.sa_flags = SA_SIGINFO | SA_RESETHAND;
+  sigaction(SIGSEGV, &sa, NULL);
+  sigaction(SIGABRT, &sa, NULL);
+#ifdef SIGBUS
+  sigaction(SIGBUS, &sa, NULL);
+#endif
+  sigaction(SIGILL, &sa, NULL);
+  sigaction(SIGFPE, &sa, NULL);
+#endif
+}
+
+/* ----------------------------------------------------------------------------
+   Exemple d’utilisation (désactivé par défaut):
+   gcc -DVT_DEBUG_TEST debug.c -ldl -pthread
+---------------------------------------------------------------------------- */
+#ifdef VT_DEBUG_TEST
+int main(void) {
+  vt_log_config cfg = {.level = VT_LL_TRACE,
+                       .format = VT_FMT_TEXT,
+                       .use_color = 1,
+                       .file_path = NULL,
+                       .rotate_bytes = 0,
+                       .capture_crash = 1};
+  vt_log_init(&cfg);
+  vt_log_write(VT_LL_INFO, __FILE__, __LINE__, __func__, "Hello %s", "world");
+  vt_log_write(VT_LL_WARN, __FILE__, __LINE__, __func__, "Warn: x=%d", 42);
+  vt_debug_hexdump("ABCDEFG", 7, "sample");
+  vt_debug_backtrace();
+  vt_log_shutdown();
   return 0;
 }
 #endif

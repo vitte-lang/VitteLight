@@ -1,52 +1,136 @@
-// vitte-light/core/debug.h
-// API publique des outils de debug VitteLight
-// Implémentation: core/debug.c
+/* ============================================================================
+   debug.h — logging/debug cross-platform (C17)
+   Niveaux: TRACE..FATAL. Formats: texte ou JSON. Sorties: stderr ou fichier.
+   Thread-safe. Horodatage, TID, source (file:line:func). Hexdump, backtrace.
+   Lier avec debug.c. Licence: MIT.
+   ============================================================================
+ */
+#ifndef VT_DEBUG_H
+#define VT_DEBUG_H
+#pragma once
 
-#ifndef VITTE_LIGHT_CORE_DEBUG_H
-#define VITTE_LIGHT_CORE_DEBUG_H
+#include <stddef.h> /* size_t */
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#include <stdbool.h>
-#include <stddef.h>
-#include <stdint.h>
-#include <stdio.h>
+/* ----------------------------------------------------------------------------
+   Export et annotations printf-like
+---------------------------------------------------------------------------- */
+#ifndef VT_DEBUG_API
+#define VT_DEBUG_API extern
+#endif
 
-#include "api.h"
-#include "ctype.h"
+#if defined(__GNUC__) || defined(__clang__)
+#define VT_PRINTF(fmt_idx, va_idx) \
+  __attribute__((format(printf, fmt_idx, va_idx)))
+#else
+#define VT_PRINTF(fmt_idx, va_idx)
+#endif
 
-// ───────────────────── Hexdump ─────────────────────
-void vl_debug_hexdump(const void *data, size_t len, FILE *out);
+/* ----------------------------------------------------------------------------
+   Niveaux et formats
+---------------------------------------------------------------------------- */
+typedef enum {
+  VT_LL_TRACE = 0,
+  VT_LL_DEBUG = 1,
+  VT_LL_INFO = 2,
+  VT_LL_WARN = 3,
+  VT_LL_ERROR = 4,
+  VT_LL_FATAL = 5
+} vt_log_level;
 
-// ───────────────────── Inspecteur VLBC ─────────────────────
-// Affiche l’entête, pool de chaînes et taille code.
-bool vl_debug_vlbc_inspect(const uint8_t *buf, size_t n, FILE *out);
+typedef enum { VT_FMT_TEXT = 0, VT_FMT_JSON = 1 } vt_log_format;
 
-// ───────────────────── Désassembleur minimal ─────────────────────
-bool vl_debug_disassemble(const uint8_t *buf, size_t n, FILE *out);
+/* ----------------------------------------------------------------------------
+   Configuration runtime
+---------------------------------------------------------------------------- */
+typedef struct {
+  vt_log_level level;    /* niveau minimal */
+  vt_log_format format;  /* texte ou JSON */
+  int use_color;         /* 1=couleur si TTY */
+  const char* file_path; /* NULL=stderr */
+  size_t rotate_bytes;   /* 0=désactivé */
+  int capture_crash;     /* installe handlers */
+} vt_log_config;
 
-// ───────────────────── Dump VM ─────────────────────
-void vl_debug_dump_stack(struct VL_Context *ctx, FILE *out);
-void vl_debug_dump_globals(struct VL_Context *ctx, FILE *out);
+/* ----------------------------------------------------------------------------
+   API
+---------------------------------------------------------------------------- */
+VT_DEBUG_API int vt_log_init(const vt_log_config* cfg);
+VT_DEBUG_API void vt_log_shutdown(void);
 
-// ───────────────────── Trace exécution ─────────────────────
-// Exécute en traçant instruction par instruction. Arrêt sur HALT ou erreur.
-VL_Status vl_debug_run_trace(struct VL_Context *ctx, uint64_t max_steps,
-                             FILE *out);
+VT_DEBUG_API void vt_log_set_level(vt_log_level lvl);
+VT_DEBUG_API vt_log_level vt_log_get_level(void);
 
-// ───────────────────── Assertions ─────────────────────
-int vl_debug_expect_true(int cond, const char *expr, const char *file,
-                         int line);
-#define VL_EXPECT(x)                                        \
-  do {                                                      \
-    if (!vl_debug_expect_true((x), #x, __FILE__, __LINE__)) \
-      return VL_ERR_RUNTIME;                                \
+VT_DEBUG_API void vt_log_set_format(vt_log_format fmt);
+VT_DEBUG_API void vt_log_enable_color(int on);
+VT_DEBUG_API void vt_log_force_flush(void);
+VT_DEBUG_API void vt_log_set_file(const char* path, size_t rotate_bytes);
+
+/* message: printf-like */
+VT_DEBUG_API void vt_log_write(vt_log_level lvl, const char* file, int line,
+                               const char* func, const char* fmt, ...)
+    VT_PRINTF(5, 6);
+
+/* utilitaires */
+VT_DEBUG_API void vt_debug_hexdump(const void* data, size_t len,
+                                   const char* label);
+VT_DEBUG_API void vt_debug_backtrace(void);
+VT_DEBUG_API void vt_debug_install_crash_handlers(void);
+
+/* ----------------------------------------------------------------------------
+   Macros de confort
+---------------------------------------------------------------------------- */
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L
+#define VT_FUNC __func__
+#elif defined(_MSC_VER)
+#define VT_FUNC __FUNCTION__
+#else
+#define VT_FUNC "?"
+#endif
+
+/* Seuil compile-time. Par défaut: tout. */
+#ifndef VT_LOG_COMPILETIME_LEVEL
+#define VT_LOG_COMPILETIME_LEVEL VT_LL_TRACE
+#endif
+
+/* Appel interne conditionnel */
+#define VT__LOG_ENABLED(LVL) ((LVL) >= VT_LOG_COMPILETIME_LEVEL)
+
+/* Variadics compatibles MSVC */
+#if defined(_MSC_VER)
+#define VT__VA_OPT(...) , __VA_ARGS__
+#else
+#define VT__VA_OPT(...) , ##__VA_ARGS__
+#endif
+
+/* Macro générique */
+#define VT_LOG(LVL, FMT, ...)                          \
+  do {                                                 \
+    if (VT__LOG_ENABLED(LVL))                          \
+      vt_log_write((LVL), __FILE__, __LINE__, VT_FUNC, \
+                   (FMT)VT__VA_OPT(__VA_ARGS__));      \
+  } while (0)
+
+/* Niveaux dédiés */
+#define VT_TRACE(FMT, ...) VT_LOG(VT_LL_TRACE, FMT, __VA_ARGS__)
+#define VT_DEBUG(FMT, ...) VT_LOG(VT_LL_DEBUG, FMT, __VA_ARGS__)
+#define VT_INFO(FMT, ...) VT_LOG(VT_LL_INFO, FMT, __VA_ARGS__)
+#define VT_WARN(FMT, ...) VT_LOG(VT_LL_WARN, FMT, __VA_ARGS__)
+#define VT_ERROR(FMT, ...) VT_LOG(VT_LL_ERROR, FMT, __VA_ARGS__)
+#define VT_FATAL(FMT, ...) VT_LOG(VT_LL_FATAL, FMT, __VA_ARGS__)
+
+/* Assert light: log + abort via vt_log_write(FATAL) */
+#define VT_ASSERT(COND, FMT, ...)                                  \
+  do {                                                             \
+    if (!(COND)) {                                                 \
+      VT_FATAL("assertion failed: %s | " FMT, #COND, __VA_ARGS__); \
+    }                                                              \
   } while (0)
 
 #ifdef __cplusplus
-}  // extern "C"
+} /* extern "C" */
 #endif
-
-#endif  // VITTE_LIGHT_CORE_DEBUG_H
+#endif /* VT_DEBUG_H */

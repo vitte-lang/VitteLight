@@ -1,522 +1,1035 @@
-// vitte-light/core/func.c
-// Natives avec signatures, coercions et mini-stdlib pour VitteLight.
-// Fournit:
-//   - vl_register_native_sig(ctx, name, sig, fn, ud)
-//       * Vérifie l'arité et les types selon une signature compacte
-//       * Effectue des conversions sûres (int<->float, value->string,
-//       truthiness->bool, parse str)
-//       * Appelle votre VL_NativeFn avec des arguments déjà convertis
-//   - vl_register_std_natives(ctx, flags)
-//       * math: sin, cos, tan, sqrt, pow, abs, min, max
-//       * str:  len, concat
-//
-// Signature DSL:
-//   "i,f,s,b,n,a"  => int64, double, string, bool, nil, any
-//   Exemples:
-//     "i,i->i"      add deux int -> int
-//     "f->f"        mono float -> float
-//     "s,s->s"      concat
-//     "a->n"        arg quelconque, pas de retour (nil)
-//   Parenthèses optionnelles: "(i,f)->f" OK. Espaces ignorés.
-//   Varargs: terminez la liste par ",*" pour autoriser des args supplémentaires
-//   de tout type.
-//            ex: "s,*->s" (premier arg string requis, puis n'importe quoi)
-//
-// Build: cc -std=c99 -O2 -Wall -Wextra -pedantic -c core/func.c
+/* ============================================================================
+   dump.c — utilitaire binaire ultra complet (C17, cross-platform)
+   Fonctions:
+     - info        : type (ELF/PE/Mach-O), taille, horodatage, permissions
+     - hexdump     : hex/ascii, colonnes/groupes, offset/longueur
+     - strings     : extraction chaînes ASCII ou UTF-16LE, seuil min
+     - hash        : CRC32, SHA-256
+     - entropy     : Shannon globale ou fenêtrée
+     - diff        : comparaison de deux fichiers, résumé + contexte
+     - slice       : extrait une tranche vers un fichier
+   Dépendances: standard C. Optionnel: debug.h (VT_*). Sinon fallback.
+   Build (POSIX): cc -std=c17 -O2 dump.c -o dump
+   Build (Win)  : cl /std:c17 /O2 dump.c
+   Licence: MIT.
+   ============================================================================
+ */
+#if defined(_WIN32)
+#define _CRT_SECURE_NO_WARNINGS 1
+#include <io.h>
+#include <windows.h>
+#else
+#include <fcntl.h>
+#include <grp.h>
+#include <pwd.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
-#include <ctype.h>
-#include <inttypes.h>
-#include <math.h>
+#include <errno.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
-#include "api.h"
-#include "ctype.h"
+/* ---------------------------------------------------------------------------
+   Logging: utilise debug.h si présent, sinon macros fallback
+--------------------------------------------------------------------------- */
+#if __has_include("debug.h")
+#include "debug.h"
+#define D_LOG_INIT()       \
+  do {                     \
+    vt_log_config c = {0}; \
+    c.level = VT_LL_INFO;  \
+    vt_log_init(&c);       \
+  } while (0)
+#define D_LOG_SHUTDOWN() vt_log_shutdown()
+#define D_INFO(...) VT_INFO(__VA_ARGS__)
+#define D_WARN(...) VT_WARN(__VA_ARGS__)
+#define D_ERROR(...) VT_ERROR(__VA_ARGS__)
+#else
+#define D_LOG_INIT() ((void)0)
+#define D_LOG_SHUTDOWN() ((void)0)
+#define D_INFO(...)               \
+  do {                            \
+    fprintf(stderr, "[INFO] ");   \
+    fprintf(stderr, __VA_ARGS__); \
+    fputc('\n', stderr);          \
+  } while (0)
+#define D_WARN(...)               \
+  do {                            \
+    fprintf(stderr, "[WARN] ");   \
+    fprintf(stderr, __VA_ARGS__); \
+    fputc('\n', stderr);          \
+  } while (0)
+#define D_ERROR(...)              \
+  do {                            \
+    fprintf(stderr, "[ERR ] ");   \
+    fprintf(stderr, __VA_ARGS__); \
+    fputc('\n', stderr);          \
+  } while (0)
+#endif
 
-// ───────────────────────── Types internes ─────────────────────────
+/* ---------------------------------------------------------------------------
+   Utilitaires généraux
+--------------------------------------------------------------------------- */
+static int streq(const char* a, const char* b) {
+  return a && b && strcmp(a, b) == 0;
+}
 
-typedef enum { SK_I, SK_F, SK_S, SK_B, SK_N, SK_A } VL_ScalarK;
+static int strieq(const char* a, const char* b) {
+  if (!a || !b) return 0;
+  while (*a && *b) {
+    char ca = (char)((*a >= 'A' && *a <= 'Z') ? *a - 'A' + 'a' : *a);
+    char cb = (char)((*b >= 'A' && *b <= 'Z') ? *b - 'A' + 'a' : *b);
+    if (ca != cb) return 0;
+    ++a;
+    ++b;
+  }
+  return *a == 0 && *b == 0;
+}
 
-typedef struct {
-  VL_ScalarK ret;
-  VL_ScalarK args[16];
-  size_t argc;
-  int vararg;  // 1 si ",*" présent
-} VL_FuncSig;
+static uint64_t parse_u64(const char* s, int* ok) {
+  if (!s || !*s) {
+    if (ok) *ok = 0;
+    return 0;
+  }
+  char* end = NULL;
+  errno = 0;
+#if defined(_MSC_VER)
+  unsigned long long v = _strtoui64(s, &end, 0);
+#else
+  unsigned long long v = strtoull(s, &end, 0);
+#endif
+  if (errno || end == s) {
+    if (ok) *ok = 0;
+    return 0;
+  }
+  if (ok) *ok = 1;
+  return (uint64_t)v;
+}
 
-typedef struct {
-  VL_FuncSig sig;
-  VL_NativeFn user;
-  void *user_ud;
-  const char *name;  // debug only
-} VL_FuncWrap;
-
-// ───────────────────────── Parsing de signature ─────────────────────────
-static int sk_from_char(char c, VL_ScalarK *out) {
-  switch (c) {
-    case 'i':
-      *out = SK_I;
-      return 1;
-    case 'f':
-      *out = SK_F;
-      return 1;
-    case 's':
-      *out = SK_S;
-      return 1;
-    case 'b':
-      *out = SK_B;
-      return 1;
-    case 'n':
-      *out = SK_N;
-      return 1;
-    case 'a':
-      *out = SK_A;
-      return 1;
-    default:
+/* suffixes k,m,g, % (pourcentage de fichier si size connue) */
+static uint64_t parse_size_suff(const char* s, uint64_t total, int* ok) {
+  if (!s) {
+    if (ok) *ok = 0;
+    return 0;
+  }
+  size_t n = strlen(s);
+  if (n == 0) {
+    if (ok) *ok = 0;
+    return 0;
+  }
+  char suf = s[n - 1];
+  if (suf == '%' && total > 0) {
+    char buf[64];
+    if (n >= sizeof buf) {
+      if (ok) *ok = 0;
       return 0;
-  }
-}
-
-static void skip_ws(const char **p) {
-  while (**p == ' ' || **p == '\t') (*p)++;
-}
-
-static int parse_sig(const char *sig, VL_FuncSig *out) {
-  if (!sig || !out) return 0;
-  VL_FuncSig s = {0};
-  const char *p = sig;
-  skip_ws(&p);
-  if (*p == '(') {
-    p++;
-  }
-  // args
-  while (*p && *p != ')' && *p != '-') {
-    skip_ws(&p);
-    if (*p == '*') {
-      s.vararg = 1;
-      p++;
-      break;
     }
-    VL_ScalarK k;
-    if (!sk_from_char(*p, &k)) return 0;
-    p++;
-    if (s.argc >= 16) return 0;
-    s.args[s.argc++] = k;
-    skip_ws(&p);
-    if (*p == ',') {
-      p++;
+    memcpy(buf, s, n - 1);
+    buf[n - 1] = 0;
+    int oknum = 0;
+    uint64_t pct = parse_u64(buf, &oknum);
+    if (!oknum) {
+      if (ok) *ok = 0;
+      return 0;
+    }
+    if (pct > 100) pct = 100;
+    if (ok) *ok = 1;
+    return (total * pct) / 100u;
+  }
+  uint64_t mul = 1;
+  if (suf == 'k' || suf == 'K' || suf == 'm' || suf == 'M' || suf == 'g' ||
+      suf == 'G') {
+    if (suf == 'k' || suf == 'K')
+      mul = 1024ull;
+    else if (suf == 'm' || suf == 'M')
+      mul = 1024ull * 1024ull;
+    else
+      mul = 1024ull * 1024ull * 1024ull;
+    char buf[64];
+    if (n >= sizeof buf) {
+      if (ok) *ok = 0;
+      return 0;
+    }
+    memcpy(buf, s, n - 1);
+    buf[n - 1] = 0;
+    int oknum = 0;
+    uint64_t v = parse_u64(buf, &oknum);
+    if (!oknum) {
+      if (ok) *ok = 0;
+      return 0;
+    }
+    if (ok) *ok = 1;
+    return v * mul;
+  }
+  int oknum = 0;
+  uint64_t v = parse_u64(s, &oknum);
+  if (!oknum) {
+    if (ok) *ok = 0;
+    return 0;
+  }
+  if (ok) *ok = 1;
+  return v;
+}
+
+/* Clamp add */
+static size_t add_s(size_t a, size_t b) {
+  size_t m = (size_t)-1;
+  if (m - a < b) return m;
+  return a + b;
+}
+
+/* ---------------------------------------------------------------------------
+   Mappage fichier (mmap/MapViewOfFile) + fallback fread
+--------------------------------------------------------------------------- */
+typedef struct {
+  const uint8_t* ptr;
+  size_t len;
+#if defined(_WIN32)
+  HANDLE hFile, hMap;
+#endif
+  int via_map; /* 1=map, 0=malloc */
+} map_t;
+
+static int map_file(const char* path, map_t* m) {
+  memset(m, 0, sizeof *m);
+#if defined(_WIN32)
+  HANDLE hf = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL,
+                          OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (hf == INVALID_HANDLE_VALUE) return -1;
+  LARGE_INTEGER sz;
+  if (!GetFileSizeEx(hf, &sz)) {
+    CloseHandle(hf);
+    return -1;
+  }
+  if (sz.QuadPart == 0) {
+    m->ptr = (const uint8_t*)"";
+    m->len = 0;
+    m->via_map = 1;
+    m->hFile = hf;
+    m->hMap = NULL;
+    return 0;
+  }
+  HANDLE hm = CreateFileMappingA(hf, NULL, PAGE_READONLY, 0, 0, NULL);
+  if (!hm) {
+    CloseHandle(hf);
+    return -1;
+  }
+  void* v = MapViewOfFile(hm, FILE_MAP_READ, 0, 0, 0);
+  if (!v) {
+    /* fallback fread */
+    CloseHandle(hm);
+    CloseHandle(hf);
+    FILE* f = fopen(path, "rb");
+    if (!f) return -1;
+    if (fseek(f, 0, SEEK_END) != 0) {
+      fclose(f);
+      return -1;
+    }
+    long L = ftell(f);
+    if (L < 0) {
+      fclose(f);
+      return -1;
+    }
+    if (fseek(f, 0, SEEK_SET) != 0) {
+      fclose(f);
+      return -1;
+    }
+    uint8_t* buf = (uint8_t*)malloc((size_t)L);
+    if (!buf) {
+      fclose(f);
+      return -2;
+    }
+    size_t rd = fread(buf, 1, (size_t)L, f);
+    fclose(f);
+    if (rd != (size_t)L) {
+      free(buf);
+      return -1;
+    }
+    m->ptr = buf;
+    m->len = rd;
+    m->via_map = 0;
+    return 0;
+  }
+  m->ptr = (const uint8_t*)v;
+  m->len = (size_t)sz.QuadPart;
+  m->via_map = 1;
+  m->hFile = hf;
+  m->hMap = hm;
+  return 0;
+#else
+  int fd = open(path, O_RDONLY);
+  if (fd < 0) return -1;
+  struct stat st;
+  if (fstat(fd, &st) != 0) {
+    close(fd);
+    return -1;
+  }
+  if (st.st_size == 0) {
+    m->ptr = (const uint8_t*)"";
+    m->len = 0;
+    m->via_map = 1;
+    close(fd);
+    return 0;
+  }
+  void* v = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+  if (v == MAP_FAILED) {
+    /* fallback fread */
+    FILE* f = fdopen(fd, "rb");
+    if (!f) {
+      close(fd);
+      return -1;
+    }
+    uint8_t* buf = (uint8_t*)malloc((size_t)st.st_size);
+    if (!buf) {
+      fclose(f);
+      return -2;
+    }
+    size_t rd = fread(buf, 1, (size_t)st.st_size, f);
+    fclose(f);
+    if (rd != (size_t)st.st_size) {
+      free(buf);
+      return -1;
+    }
+    m->ptr = buf;
+    m->len = rd;
+    m->via_map = 0;
+    return 0;
+  }
+  m->ptr = (const uint8_t*)v;
+  m->len = (size_t)st.st_size;
+  m->via_map = 1;
+  close(fd);
+  return 0;
+#endif
+}
+
+static void unmap_file(map_t* m) {
+#if defined(_WIN32)
+  if (m->via_map && m->ptr && m->len) UnmapViewOfFile(m->ptr);
+  if (m->hMap) CloseHandle(m->hMap);
+  if (m->hFile && m->hFile != INVALID_HANDLE_VALUE) CloseHandle(m->hFile);
+#else
+  if (m->via_map && m->ptr && m->len) munmap((void*)m->ptr, m->len);
+#endif
+  if (!m->via_map && m->ptr && m->len) free((void*)m->ptr);
+  memset(m, 0, sizeof *m);
+}
+
+/* ---------------------------------------------------------------------------
+   Détection type (ELF/PE/Mach-O)
+--------------------------------------------------------------------------- */
+typedef enum { FT_UNKNOWN = 0, FT_ELF, FT_PE, FT_MACHO } ftype_t;
+
+static ftype_t detect_type(const uint8_t* p, size_t n) {
+  if (n >= 4 && p[0] == 0x7F && p[1] == 'E' && p[2] == 'L' && p[3] == 'F')
+    return FT_ELF;
+  if (n >= 64 && p[0] == 'M' && p[1] == 'Z') {
+    uint32_t peoff = 0;
+    if (n >= 0x3C + 4) {
+      peoff = (uint32_t)p[0x3C] | ((uint32_t)p[0x3D] << 8) |
+              ((uint32_t)p[0x3E] << 16) | ((uint32_t)p[0x3F] << 24);
+    }
+    if (peoff + 4 <= n && p[peoff] == 'P' && p[peoff + 1] == 'E' &&
+        p[peoff + 2] == 0 && p[peoff + 3] == 0)
+      return FT_PE;
+  }
+  if (n >= 4) {
+    uint32_t m = ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+                 ((uint32_t)p[2] << 8) | ((uint32_t)p[3]);
+    if (m == 0xFEEDFACEu || m == 0xFEEDFACFu || m == 0xCAFEBABEu ||
+        m == 0xCEFAEDFEu || m == 0xCFFAEDFEu)
+      return FT_MACHO;
+  }
+  return FT_UNKNOWN;
+}
+
+static const char* ftype_name(ftype_t t) {
+  switch (t) {
+    case FT_ELF:
+      return "ELF";
+    case FT_PE:
+      return "PE";
+    case FT_MACHO:
+      return "Mach-O";
+    default:
+      return "unknown";
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Hexdump
+--------------------------------------------------------------------------- */
+static void hexdump(const uint8_t* p, size_t len, uint64_t base, int cols,
+                    int group, int ascii) {
+  if (cols <= 0) cols = 16;
+  if (group <= 0) group = 1;
+  char ascii_buf[256];
+  for (size_t off = 0; off < len; off += (size_t)cols) {
+    size_t n = (len - off < (size_t)cols) ? (len - off) : (size_t)cols;
+    printf("%08llx  ", (unsigned long long)(base + off));
+    /* hex area */
+    for (int i = 0; i < cols; ++i) {
+      if (i < (int)n) {
+        printf("%02x", p[off + i]);
+      } else {
+        printf("  ");
+      }
+      if (i + 1 < cols) {
+        if (group > 0 && ((i + 1) % group) == 0) putchar(' ');
+      }
+    }
+    if (ascii) {
+      /* pad spaces to align ascii block */
+      int hexchars = cols * 2 + (cols - 1) / group + 1;
+      if (group <= 1) hexchars = cols * 2 + 1;
+      int printed =
+          (int)(n * 2 + ((n - 1) >= 0 ? ((int)((n - 1) / group) + 1) : 0));
+      for (int s = printed; s < hexchars; ++s) putchar(' ');
+      /* ascii */
+      int k = 0;
+      for (size_t i = 0; i < n; i++) {
+        unsigned char c = p[off + i];
+        ascii_buf[k++] = (c >= 32 && c <= 126) ? (char)c : '.';
+      }
+      ascii_buf[k] = 0;
+      printf("%s", ascii_buf);
+    }
+    putchar('\n');
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   CRC32 (IEEE 802.3) + SHA-256 (petite implémentation)
+--------------------------------------------------------------------------- */
+static uint32_t crc32_tab[256];
+static void crc32_init(void) {
+  uint32_t poly = 0xEDB88320u;
+  for (uint32_t i = 0; i < 256; i++) {
+    uint32_t c = i;
+    for (int j = 0; j < 8; j++) c = (c & 1) ? (poly ^ (c >> 1)) : (c >> 1);
+    crc32_tab[i] = c;
+  }
+}
+static uint32_t crc32_compute(const void* data, size_t len) {
+  const uint8_t* p = (const uint8_t*)data;
+  uint32_t c = 0xFFFFFFFFu;
+  for (size_t i = 0; i < len; i++) c = crc32_tab[(c ^ p[i]) & 0xFFu] ^ (c >> 8);
+  return c ^ 0xFFFFFFFFu;
+}
+
+/* ---- SHA-256 ---- */
+typedef struct {
+  uint32_t h[8];
+  uint64_t bits;
+  uint8_t buf[64];
+  size_t blen;
+} sha256_t;
+static uint32_t ROR(uint32_t x, int n) { return (x >> n) | (x << (32 - n)); }
+static uint32_t Ch(uint32_t x, uint32_t y, uint32_t z) {
+  return (x & y) ^ (~x & z);
+}
+static uint32_t Maj(uint32_t x, uint32_t y, uint32_t z) {
+  return (x & y) ^ (x & z) ^ (y & z);
+}
+static uint32_t BSIG0(uint32_t x) {
+  return ROR(x, 2) ^ ROR(x, 13) ^ ROR(x, 22);
+}
+static uint32_t BSIG1(uint32_t x) {
+  return ROR(x, 6) ^ ROR(x, 11) ^ ROR(x, 25);
+}
+static uint32_t SSIG0(uint32_t x) { return ROR(x, 7) ^ ROR(x, 18) ^ (x >> 3); }
+static uint32_t SSIG1(uint32_t x) {
+  return ROR(x, 17) ^ ROR(x, 19) ^ (x >> 10);
+}
+
+static const uint32_t K256[64] = {
+    0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u, 0x3956c25bu,
+    0x59f111f1u, 0x923f82a4u, 0xab1c5ed5u, 0xd807aa98u, 0x12835b01u,
+    0x243185beu, 0x550c7dc3u, 0x72be5d74u, 0x80deb1feu, 0x9bdc06a7u,
+    0xc19bf174u, 0xe49b69c1u, 0xefbe4786u, 0x0fc19dc6u, 0x240ca1ccu,
+    0x2de92c6fu, 0x4a7484aau, 0x5cb0a9dcu, 0x76f988dau, 0x983e5152u,
+    0xa831c66du, 0xb00327c8u, 0xbf597fc7u, 0xc6e00bf3u, 0xd5a79147u,
+    0x06ca6351u, 0x14292967u, 0x27b70a85u, 0x2e1b2138u, 0x4d2c6dfcu,
+    0x53380d13u, 0x650a7354u, 0x766a0abbu, 0x81c2c92eu, 0x92722c85u,
+    0xa2bfe8a1u, 0xa81a664bu, 0xc24b8b70u, 0xc76c51a3u, 0xd192e819u,
+    0xd6990624u, 0xf40e3585u, 0x106aa070u, 0x19a4c116u, 0x1e376c08u,
+    0x2748774cu, 0x34b0bcb5u, 0x391c0cb3u, 0x4ed8aa4au, 0x5b9cca4fu,
+    0x682e6ff3u, 0x748f82eeu, 0x78a5636fu, 0x84c87814u, 0x8cc70208u,
+    0x90befffau, 0xa4506cebu, 0xbef9a3f7u, 0xc67178f2u};
+
+static void sha256_init(sha256_t* s) {
+  s->h[0] = 0x6a09e667u;
+  s->h[1] = 0xbb67ae85u;
+  s->h[2] = 0x3c6ef372u;
+  s->h[3] = 0xa54ff53au;
+  s->h[4] = 0x510e527fu;
+  s->h[5] = 0x9b05688cu;
+  s->h[6] = 0x1f83d9abu;
+  s->h[7] = 0x5be0cd19u;
+  s->bits = 0;
+  s->blen = 0;
+}
+static void sha256_block(sha256_t* s, const uint8_t b[64]) {
+  uint32_t W[64];
+  for (int i = 0; i < 16; i++) {
+    W[i] = ((uint32_t)b[4 * i] << 24) | ((uint32_t)b[4 * i + 1] << 16) |
+           ((uint32_t)b[4 * i + 2] << 8) | ((uint32_t)b[4 * i + 3]);
+  }
+  for (int i = 16; i < 64; i++)
+    W[i] = SSIG1(W[i - 2]) + W[i - 7] + SSIG0(W[i - 15]) + W[i - 16];
+  uint32_t a = s->h[0], b0 = s->h[1], c = s->h[2], d = s->h[3], e = s->h[4],
+           f = s->h[5], g = s->h[6], h = s->h[7];
+  for (int i = 0; i < 64; i++) {
+    uint32_t T1 = h + BSIG1(e) + Ch(e, f, g) + K256[i] + W[i];
+    uint32_t T2 = BSIG0(a) + Maj(a, b0, c);
+    h = g;
+    g = f;
+    f = e;
+    e = d + T1;
+    d = c;
+    c = b0;
+    b0 = a;
+    a = T1 + T2;
+  }
+  s->h[0] += a;
+  s->h[1] += b0;
+  s->h[2] += c;
+  s->h[3] += d;
+  s->h[4] += e;
+  s->h[5] += f;
+  s->h[6] += g;
+  s->h[7] += h;
+}
+static void sha256_update(sha256_t* s, const void* data, size_t len) {
+  const uint8_t* p = (const uint8_t*)data;
+  s->bits += (uint64_t)len * 8u;
+  if (s->blen) {
+    size_t need = 64 - s->blen;
+    size_t take = (len < need) ? len : need;
+    memcpy(s->buf + s->blen, p, take);
+    s->blen += take;
+    p += take;
+    len -= take;
+    if (s->blen == 64) {
+      sha256_block(s, s->buf);
+      s->blen = 0;
+    }
+  }
+  while (len >= 64) {
+    sha256_block(s, p);
+    p += 64;
+    len -= 64;
+  }
+  if (len) {
+    memcpy(s->buf, p, len);
+    s->blen = len;
+  }
+}
+static void sha256_final(sha256_t* s, uint8_t out[32]) {
+  /* padding */
+  uint8_t pad[64] = {0x80};
+  size_t padlen = (s->blen < 56) ? (56 - s->blen) : (120 - s->blen);
+  sha256_update(s, pad, padlen);
+  uint8_t lenb[8];
+  for (int i = 0; i < 8; i++)
+    lenb[7 - i] = (uint8_t)((s->bits >> (i * 8)) & 0xFFu);
+  sha256_update(s, lenb, 8);
+  for (int i = 0; i < 8; i++) {
+    out[4 * i + 0] = (uint8_t)(s->h[i] >> 24);
+    out[4 * i + 1] = (uint8_t)(s->h[i] >> 16);
+    out[4 * i + 2] = (uint8_t)(s->h[i] >> 8);
+    out[4 * i + 3] = (uint8_t)(s->h[i]);
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Entropie de Shannon (0..8 bits) + version fenêtrée
+--------------------------------------------------------------------------- */
+static double entropy_shannon(const uint8_t* p, size_t n) {
+  if (n == 0) return 0.0;
+  uint32_t hist[256] = {0};
+  for (size_t i = 0; i < n; i++) hist[p[i]]++;
+  double H = 0.0;
+  for (int i = 0; i < 256; i++) {
+    if (!hist[i]) continue;
+    double q = (double)hist[i] / (double)n;
+    H -= q * (log(q) / log(2.0));
+  }
+  return H;
+}
+
+static void entropy_window(const uint8_t* p, size_t n, size_t win,
+                           size_t step) {
+  if (win == 0) win = 4096;
+  if (step == 0) step = win;
+  for (size_t off = 0; off < n;) {
+    size_t m = (n - off < win) ? (n - off) : win;
+    double H = entropy_shannon(p + off, m);
+    printf("%08llx  len=%5zu  H=%.4f\n", (unsigned long long)off, m, H);
+    if (n - off <= step) break;
+    off += step;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Strings extraction (ASCII et UTF-16LE)
+--------------------------------------------------------------------------- */
+static int is_printable_ascii(unsigned c) { return (c >= 32 && c <= 126); }
+
+static void extract_strings_ascii(const uint8_t* p, size_t n, size_t min_len) {
+  size_t i = 0;
+  while (i < n) {
+    size_t j = i;
+    while (j < n && is_printable_ascii(p[j])) j++;
+    size_t L = j - i;
+    if (L >= min_len) {
+      fwrite(p + i, 1, L, stdout);
+      fputc('\n', stdout);
+    }
+    if (j == n) break;
+    i = j + 1;
+  }
+}
+
+static void extract_strings_utf16le(const uint8_t* p, size_t n,
+                                    size_t min_len) {
+  size_t i = 0;
+  while (i + 1 < n) {
+    size_t j = i;
+    size_t chars = 0;
+    while (j + 1 < n) {
+      uint16_t u = (uint16_t)p[j] | ((uint16_t)p[j + 1] << 8);
+      if (!(u >= 32 && u <= 126)) break; /* ASCII dans U+0020..U+007E */
+      j += 2;
+      chars++;
+    }
+    if (chars >= min_len) {
+      /* convert to ASCII */
+      for (size_t k = 0; k < chars; k++) {
+        putchar((char)p[i + 2 * k]);
+      }
+      putchar('\n');
+    }
+    if (j == n) break;
+    i = j + 2;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Diff binaire
+--------------------------------------------------------------------------- */
+static void diff_files(const uint8_t* a, size_t na, const uint8_t* b, size_t nb,
+                       size_t context, int summary_only) {
+  size_t n = (na < nb) ? na : nb;
+  size_t diffs = 0, first_off = (size_t)-1, last_off = 0;
+
+  /* pass 1: stats */
+  for (size_t i = 0; i < n; i++) {
+    if (a[i] != b[i]) {
+      diffs++;
+      if (first_off == (size_t)-1) first_off = i;
+      last_off = i;
+    }
+  }
+  diffs += (na > nb) ? (na - nb) : (nb - na);
+  D_INFO("diff: A=%zu bytes, B=%zu bytes, common=%zu, total_diffs=%zu", na, nb,
+         n, diffs);
+  if (diffs == 0) {
+    puts("identical");
+    return;
+  }
+
+  if (summary_only) {
+    printf("first_diff=0x%zx last_diff=0x%zx\n", first_off, last_off);
+    return;
+  }
+
+  /* pass 2: show hunks */
+  size_t i = 0;
+  while (i < n) {
+    if (a[i] == b[i]) {
+      i++;
       continue;
     }
-  }
-  if (*p == ')') p++;
-  skip_ws(&p);
-  if (*p != '-') {  // pas de retour explicite => par défaut n (nil)
-    s.ret = SK_N;
-    *out = s;
-    return 1;
-  }
-  p++;
-  if (*p != '>') return 0;
-  p++;
-  skip_ws(&p);
-  VL_ScalarK r;
-  if (!sk_from_char(*p, &r)) return 0;
-  s.ret = r;
-  p++;
-  skip_ws(&p);
-  if (*p) {           // optionnelle fin
-    if (*p == ',') {  // support legacy "args->ret, *" (rare)
-      p++;
-      skip_ws(&p);
-      if (*p == '*') {
-        s.vararg = 1;
-        p++;
+    size_t start = (i > context) ? i - context : 0;
+    size_t end = i;
+    while (end < n && a[end] != b[end]) end++;
+    size_t endctx = (end + context < n) ? (end + context) : n;
+
+    printf("\n@@ 0x%zx..0x%zx (len=%zu)\n", start, endctx, endctx - start);
+    /* show side by side in hex ascii */
+    size_t off = start;
+    while (off < endctx) {
+      size_t m = (endctx - off < 16) ? (endctx - off) : 16;
+      printf("%08zx  ", off);
+      for (size_t k = 0; k < m; k++) printf("%02x", a[off + k]);
+      for (size_t k = m; k < 16; k++) printf("  ");
+      printf("  |  ");
+      for (size_t k = 0; k < m; k++) printf("%02x", b[off + k]);
+      for (size_t k = m; k < 16; k++) printf("  ");
+      printf("  |  ");
+      for (size_t k = 0; k < m; k++) {
+        unsigned ca = a[off + k], cb = b[off + k];
+        putchar((ca >= 32 && ca <= 126) ? (char)ca : '.');
       }
+      printf(" | ");
+      for (size_t k = 0; k < m; k++) {
+        unsigned cb = b[off + k];
+        putchar((cb >= 32 && cb <= 126) ? (char)cb : '.');
+      }
+      putchar('\n');
+      off += m;
     }
-    skip_ws(&p);
-    if (*p) return 0;
-  }
-  *out = s;
-  return 1;
-}
-
-static const char *sk_name(VL_ScalarK k) {
-  switch (k) {
-    case SK_I:
-      return "int";
-    case SK_F:
-      return "float";
-    case SK_S:
-      return "str";
-    case SK_B:
-      return "bool";
-    case SK_N:
-      return "nil";
-    case SK_A:
-      return "any";
-    default:
-      return "?";
+    i = end;
   }
 }
 
-// ───────────────────────── Coercions ─────────────────────────
-static int coerce_to_str(struct VL_Context *ctx, const VL_Value *in,
-                         VL_Value *out) {
-  if (in->type == VT_STR) {
-    *out = *in;
-    return 1;
+/* ---------------------------------------------------------------------------
+   Info fichier: taille, type, permissions, mtime
+--------------------------------------------------------------------------- */
+static void print_file_info(const char* path, const uint8_t* p, size_t n) {
+  ftype_t t = detect_type(p, n);
+  printf("path: %s\n", path);
+  printf("size: %zu bytes\n", n);
+  printf("type: %s\n", ftype_name(t));
+#if !defined(_WIN32)
+  struct stat st;
+  if (stat(path, &st) == 0) {
+    char mode[11] = "----------";
+    if (S_ISDIR(st.st_mode)) mode[0] = 'd';
+    if (S_ISLNK(st.st_mode)) mode[0] = 'l';
+    if (st.st_mode & S_IRUSR) mode[1] = 'r';
+    if (st.st_mode & S_IWUSR) mode[2] = 'w';
+    if (st.st_mode & S_IXUSR) mode[3] = 'x';
+    if (st.st_mode & S_IRGRP) mode[4] = 'r';
+    if (st.st_mode & S_IWGRP) mode[5] = 'w';
+    if (st.st_mode & S_IXGRP) mode[6] = 'x';
+    if (st.st_mode & S_IROTH) mode[7] = 'r';
+    if (st.st_mode & S_IWOTH) mode[8] = 'w';
+    if (st.st_mode & S_IXOTH) mode[9] = 'x';
+    printf("mode: %s\n", mode);
+    char ts[64];
+    struct tm tmv;
+    localtime_r(&st.st_mtime, &tmv);
+    strftime(ts, sizeof ts, "%Y-%m-%d %H:%M:%S", &tmv);
+    printf("mtime: %s\n", ts);
+    printf("uid: %u gid: %u\n", (unsigned)st.st_uid, (unsigned)st.st_gid);
   }
-  // stringify via vl_value_to_cstr
-  size_t cap = 128;
-  char *buf = (char *)malloc(cap);
-  if (!buf) return 0;
-  size_t wrote = vl_value_to_cstr(in, buf, cap);
-  if (wrote >= cap - 1) {  // réallouer
-    cap = wrote + 1;
-    char *tmp = (char *)realloc(buf, cap);
-    if (!tmp) {
-      free(buf);
-      return 0;
+#else
+  /* Windows: simple timestamp via GetFileAttributesEx */
+  WIN32_FILE_ATTRIBUTE_DATA fad;
+  if (GetFileAttributesExA(path, GetFileExInfoStandard, &fad)) {
+    ULARGE_INTEGER ui;
+    ui.HighPart = fad.ftLastWriteTime.dwHighDateTime;
+    ui.LowPart = fad.ftLastWriteTime.dwLowDateTime;
+    time_t secs = (time_t)((ui.QuadPart - 116444736000000000ULL) / 10000000ULL);
+    char ts[64];
+    struct tm* tmv = localtime(&secs);
+    if (tmv) {
+      strftime(ts, sizeof ts, "%Y-%m-%d %H:%M:%S", tmv);
+      printf("mtime: %s\n", ts);
     }
-    buf = tmp;
-    vl_value_to_cstr(in, buf, cap);
+    printf("attrs: 0x%08x\n", (unsigned)fad.dwFileAttributes);
   }
-  VL_Value s = vl_make_str(ctx, buf);
-  free(buf);
-  if (s.type != VT_STR) return 0;
-  *out = s;
-  return 1;
+#endif
 }
 
-static int coerce_value(struct VL_Context *ctx, const VL_Value *in,
-                        VL_ScalarK target, VL_Value *out) {
-  if (target == SK_A) {
-    *out = *in;
-    return 1;
+/* ---------------------------------------------------------------------------
+   Slice
+--------------------------------------------------------------------------- */
+static int write_slice(const char* out, const uint8_t* p, size_t off,
+                       size_t len, size_t total) {
+  if (off > total) {
+    D_ERROR("offset > size");
+    return -1;
   }
-  switch (target) {
-    case SK_N:
-      *out = vlv_nil();
-      return 1;
-    case SK_B: {
-      bool b = vl_value_truthy(in);
-      *out = vlv_bool(b);
-      return 1;
-    }
-    case SK_I: {
-      int64_t iv = 0;
-      if (in->type == VT_INT) {
-        *out = *in;
-        return 1;
-      }
-      if (in->type == VT_FLOAT) {
-        *out = vlv_int((int64_t)in->as.f);
-        return 1;
-      }
-      if (in->type == VT_BOOL) {
-        *out = vlv_int(in->as.b ? 1 : 0);
-        return 1;
-      }
-      // tenter parse string
-      if (in->type == VT_STR) {
-        int64_t t;
-        if (vl_parse_i64((const char *)in->as.s->data, &t)) {
-          *out = vlv_int(t);
-          return 1;
-        }
-      }
-      return 0;
-    }
-    case SK_F: {
-      double dv = 0.0;
-      if (in->type == VT_FLOAT) {
-        *out = *in;
-        return 1;
-      }
-      if (in->type == VT_INT) {
-        *out = vlv_float((double)in->as.i);
-        return 1;
-      }
-      if (in->type == VT_BOOL) {
-        *out = vlv_float(in->as.b ? 1.0 : 0.0);
-        return 1;
-      }
-      if (in->type == VT_STR) {
-        double t;
-        if (vl_parse_f64((const char *)in->as.s->data, &t)) {
-          *out = vlv_float(t);
-          return 1;
-        }
-      }
-      return 0;
-    }
-    case SK_S:
-      return coerce_to_str(ctx, in, out);
-    default:
-      return 0;
+  size_t avail = total - off;
+  if (len > avail) len = avail;
+  FILE* f = fopen(out, "wb");
+  if (!f) {
+    D_ERROR("open out failed: %s", strerror(errno));
+    return -1;
   }
-}
-
-// ───────────────────────── Trampoline natif ─────────────────────────
-static VL_Status native_dispatch(struct VL_Context *ctx, VL_Value *args,
-                                 size_t argc, VL_Value *ret, void *user) {
-  VL_FuncWrap *w = (VL_FuncWrap *)user;
-  if (!w) return VL_ERR_RUNTIME;
-  // Vérif arité
-  if (argc < w->sig.argc) return VL_ERR_BAD_ARG;
-  if (!w->sig.vararg && argc != w->sig.argc) return VL_ERR_BAD_ARG;
-  // Convertir les N premiers args
-  VL_Value tmp[32];
-  if (argc > 32) return VL_ERR_BAD_ARG;  // limite raisonnable
-  for (size_t i = 0; i < w->sig.argc; i++) {
-    if (!coerce_value(ctx, &args[i], w->sig.args[i], &tmp[i]))
-      return VL_ERR_BAD_ARG;
+  size_t wr = fwrite(p + off, 1, len, f);
+  fclose(f);
+  if (wr != len) {
+    D_ERROR("write truncated");
+    return -1;
   }
-  // Copier varargs tels quels
-  for (size_t i = w->sig.argc; i < argc; i++) tmp[i] = args[i];
-  // Appel utilisateur
-  VL_Value user_ret = vlv_nil();
-  VL_Status rc = w->user(ctx, tmp, argc, &user_ret, w->user_ud);
-  if (rc != VL_OK) return rc;
-  // Coercer le retour
-  VL_Value outv;
-  if (!coerce_value(ctx, &user_ret, w->sig.ret, &outv)) return VL_ERR_BAD_ARG;
-  if (ret) *ret = outv;
-  return VL_OK;
-}
-
-// ───────────────────────── API: enregistrement avec signature
-// ─────────────────────────
-VL_Status vl_register_native_sig(struct VL_Context *ctx, const char *name,
-                                 const char *sig, VL_NativeFn user_fn,
-                                 void *user_ud) {
-  if (!ctx || !name || !sig || !user_fn) return VL_ERR_BAD_ARG;
-  VL_FuncSig s = {0};
-  if (!parse_sig(sig, &s)) return VL_ERR_BAD_ARG;
-  VL_FuncWrap *w = (VL_FuncWrap *)malloc(sizeof(*w));
-  if (!w) return VL_ERR_OOM;
-  w->sig = s;
-  w->user = user_fn;
-  w->user_ud = user_ud;
-  w->name = name;
-  return vl_register_native(ctx, name, native_dispatch, w);
-}
-
-// ───────────────────────── Mini-stdlib: math ─────────────────────────
-static VL_Status nf_sin(struct VL_Context *ctx, VL_Value *a, size_t n,
-                        VL_Value *r, void *ud) {
-  (void)ud;
-  double x = 0;
-  vl_value_as_float(&a[0], &x);
-  if (r) *r = vlv_float(sin(x));
-  return VL_OK;
-}
-static VL_Status nf_cos(struct VL_Context *ctx, VL_Value *a, size_t n,
-                        VL_Value *r, void *ud) {
-  (void)ud;
-  double x = 0;
-  vl_value_as_float(&a[0], &x);
-  if (r) *r = vlv_float(cos(x));
-  return VL_OK;
-}
-static VL_Status nf_tan(struct VL_Context *ctx, VL_Value *a, size_t n,
-                        VL_Value *r, void *ud) {
-  (void)ud;
-  double x = 0;
-  vl_value_as_float(&a[0], &x);
-  if (r) *r = vlv_float(tan(x));
-  return VL_OK;
-}
-static VL_Status nf_sqrt(struct VL_Context *ctx, VL_Value *a, size_t n,
-                         VL_Value *r, void *ud) {
-  (void)ud;
-  double x = 0;
-  vl_value_as_float(&a[0], &x);
-  if (x < 0) return VL_ERR_RUNTIME;
-  if (r) *r = vlv_float(sqrt(x));
-  return VL_OK;
-}
-static VL_Status nf_pow(struct VL_Context *ctx, VL_Value *a, size_t n,
-                        VL_Value *r, void *ud) {
-  (void)ud;
-  double x = 0, y = 0;
-  vl_value_as_float(&a[0], &x);
-  vl_value_as_float(&a[1], &y);
-  if (r) *r = vlv_float(pow(x, y));
-  return VL_OK;
-}
-static VL_Status nf_abs(struct VL_Context *ctx, VL_Value *a, size_t n,
-                        VL_Value *r, void *ud) {
-  (void)ud;
-  if (a[0].type == VT_INT) {
-    if (r) *r = vlv_int(a[0].as.i < 0 ? -a[0].as.i : a[0].as.i);
-  } else {
-    double x = 0;
-    vl_value_as_float(&a[0], &x);
-    if (r) *r = vlv_float(fabs(x));
-  }
-  return VL_OK;
-}
-static VL_Status nf_min(struct VL_Context *ctx, VL_Value *a, size_t n,
-                        VL_Value *r, void *ud) {
-  (void)ud;
-  double x = 0, y = 0;
-  vl_value_as_float(&a[0], &x);
-  vl_value_as_float(&a[1], &y);
-  if (r) *r = vlv_float(x < y ? x : y);
-  return VL_OK;
-}
-static VL_Status nf_max(struct VL_Context *ctx, VL_Value *a, size_t n,
-                        VL_Value *r, void *ud) {
-  (void)ud;
-  double x = 0, y = 0;
-  vl_value_as_float(&a[0], &x);
-  vl_value_as_float(&a[1], &y);
-  if (r) *r = vlv_float(x > y ? x : y);
-  return VL_OK;
-}
-
-// ───────────────────────── Mini-stdlib: string ─────────────────────────
-static VL_Status nf_strlen(struct VL_Context *ctx, VL_Value *a, size_t n,
-                           VL_Value *r, void *ud) {
-  (void)ud;
-  VL_Value s;
-  if (!coerce_value(ctx, &a[0], SK_S, &s)) return VL_ERR_BAD_ARG;
-  if (r) *r = vlv_int((int64_t)s.as.s->len);
-  return VL_OK;
-}
-static VL_Status nf_concat(struct VL_Context *ctx, VL_Value *a, size_t n,
-                           VL_Value *r, void *ud) {
-  (void)ud;  // support varargs strings
-  // convertir tous les args en string puis concaténer
-  size_t total = 0;
-  VL_Value sv[32];
-  if (n > 32) return VL_ERR_BAD_ARG;
-  for (size_t i = 0; i < n; i++) {
-    if (!coerce_value(ctx, &a[i], SK_S, &sv[i])) return VL_ERR_BAD_ARG;
-    total += sv[i].as.s ? sv[i].as.s->len : 0;
-  }
-  char *buf = (char *)malloc(total + 1);
-  if (!buf) return VL_ERR_OOM;
-  size_t off = 0;
-  for (size_t i = 0; i < n; i++) {
-    if (sv[i].as.s && sv[i].as.s->len) {
-      memcpy(buf + off, sv[i].as.s->data, sv[i].as.s->len);
-      off += sv[i].as.s->len;
-    }
-  }
-  buf[off] = '\0';
-  VL_Value out = vl_make_str(ctx, buf);
-  free(buf);
-  if (r) *r = out;
-  return (out.type == VT_STR) ? VL_OK : VL_ERR_OOM;
-}
-
-// ───────────────────────── API: enregistrement stdlib
-// ─────────────────────────
-#define VLF_STD_MATH 0x01
-#define VLF_STD_STR 0x02
-
-VL_Status vl_register_std_natives(struct VL_Context *ctx, unsigned flags) {
-  if (!ctx) return VL_ERR_BAD_ARG;
-  VL_Status rc = VL_OK;
-  if (flags & VLF_STD_MATH) {
-    rc = vl_register_native_sig(ctx, "math.sin", "f->f", nf_sin, NULL);
-    if (rc != VL_OK) return rc;
-    rc = vl_register_native_sig(ctx, "math.cos", "f->f", nf_cos, NULL);
-    if (rc != VL_OK) return rc;
-    rc = vl_register_native_sig(ctx, "math.tan", "f->f", nf_tan, NULL);
-    if (rc != VL_OK) return rc;
-    rc = vl_register_native_sig(ctx, "math.sqrt", "f->f", nf_sqrt, NULL);
-    if (rc != VL_OK) return rc;
-    rc = vl_register_native_sig(ctx, "math.pow", "f,f->f", nf_pow, NULL);
-    if (rc != VL_OK) return rc;
-    rc = vl_register_native_sig(ctx, "math.abs", "a->a", nf_abs, NULL);
-    if (rc != VL_OK) return rc;  // retourne même genre (int->int sinon float)
-    rc = vl_register_native_sig(ctx, "math.min", "f,f->f", nf_min, NULL);
-    if (rc != VL_OK) return rc;
-    rc = vl_register_native_sig(ctx, "math.max", "f,f->f", nf_max, NULL);
-    if (rc != VL_OK) return rc;
-  }
-  if (flags & VLF_STD_STR) {
-    rc = vl_register_native_sig(ctx, "str.len", "s->i", nf_strlen, NULL);
-    if (rc != VL_OK) return rc;
-    rc = vl_register_native_sig(ctx, "str.concat", "s,*->s", nf_concat, NULL);
-    if (rc != VL_OK) return rc;
-  }
-  return rc;
-}
-
-// ───────────────────────── Test autonome ─────────────────────────
-#ifdef VL_FUNC_TEST_MAIN
-#include "debug.h"
-static void emit_u8(uint8_t **p, uint8_t v) { *(*p)++ = v; }
-static void emit_u32(uint8_t **p, uint32_t v) {
-  memcpy(*p, &v, 4);
-  *p += 4;
-}
-static void emit_u64(uint8_t **p, uint64_t v) {
-  memcpy(*p, &v, 8);
-  *p += 8;
-}
-int main(void) {
-  // Assemble: PUSHI 1; PUSHI 2; CALLN "math.pow" 2; CALLN print 1; HALT
-  uint8_t buf[512];
-  uint8_t *p = buf;
-  emit_u8(&p, 'V');
-  emit_u8(&p, 'L');
-  emit_u8(&p, 'B');
-  emit_u8(&p, 'C');
-  emit_u8(&p, 1);
-  const char *s0 = "math.pow";
-  const char *s1 = "print";
-  uint32_t nstr = 2;
-  emit_u32(&p, nstr);
-  emit_u32(&p, (uint32_t)strlen(s0));
-  memcpy(p, s0, strlen(s0));
-  p += strlen(s0);
-  emit_u32(&p, (uint32_t)strlen(s1));
-  memcpy(p, s1, strlen(s1));
-  p += strlen(s1);
-  uint8_t *code_sz_ptr = p;
-  emit_u32(&p, 0);  // patch later
-  uint8_t *cs = p;
-  emit_u8(&p, 1 /*PUSHI*/);
-  emit_u64(&p, 2);  // base
-  emit_u8(&p, 1 /*PUSHI*/);
-  emit_u64(&p, 10);  // exp
-  emit_u8(&p, 18 /*CALLN*/);
-  emit_u32(&p, 0);
-  emit_u8(&p, 2);
-  emit_u8(&p, 18 /*CALLN*/);
-  emit_u32(&p, 1);
-  emit_u8(&p, 1);
-  emit_u8(&p, 19 /*HALT*/);
-  uint32_t code_sz = (uint32_t)(p - cs);
-  memcpy(code_sz_ptr, &code_sz, 4);
-
-  VL_Context *vm = vl_create_default();
-  if (!vm) {
-    fprintf(stderr, "vm alloc fail\n");
-    return 1;
-  }
-  VL_Status rc = vl_register_std_natives(vm, VLF_STD_MATH);
-  if (rc != VL_OK) {
-    fprintf(stderr, "stdlib rc=%d\n", rc);
-    return 2;
-  }
-  rc = vl_load_program_from_memory(vm, buf, (size_t)(p - buf));
-  if (rc != VL_OK) {
-    fprintf(stderr, "load: %s\n", vl_last_error(vm)->msg);
-    return 3;
-  }
-  rc = vl_run(vm, 0);
-  if (rc != VL_OK) {
-    fprintf(stderr, "run: %s\n", vl_last_error(vm)->msg);
-  }
-  // stack/globals
-  vl_destroy(vm);
+  D_INFO("wrote %zu bytes to %s", len, out);
   return 0;
 }
-#endif
+
+/* ---------------------------------------------------------------------------
+   Usage
+--------------------------------------------------------------------------- */
+static void usage(const char* prog) {
+  fprintf(stderr,
+          "Usage: %s <command> [options]\n"
+          "Commands:\n"
+          "  info <file>\n"
+          "  hexdump <file> [--cols N] [--group N] [--ascii on|off] [--offset "
+          "OFF] [--length LEN]\n"
+          "  strings <file> [--min N] [--utf16]\n"
+          "  hash <file> [--crc32] [--sha256]\n"
+          "  entropy <file> [--window N] [--step N]\n"
+          "  diff <A> <B> [--context N] [--summary]\n"
+          "  slice <file> --offset OFF --length LEN --out PATH\n"
+          "Notes: OFF/LEN accept 0x..., suffixes k/m/g, or percent (e.g., 10%% "
+          "of file).\n",
+          prog);
+}
+
+/* ---------------------------------------------------------------------------
+   main
+--------------------------------------------------------------------------- */
+int main(int argc, char** argv) {
+  if (argc < 3) {
+    usage(argv[0]);
+    return 2;
+  }
+  D_LOG_INIT();
+  crc32_init();
+
+  const char* cmd = argv[1];
+
+  /* ---------------- info ---------------- */
+  if (streq(cmd, "info")) {
+    const char* path = argv[2];
+    map_t m;
+    if (map_file(path, &m) != 0) {
+      D_ERROR("open: %s", strerror(errno));
+      D_LOG_SHUTDOWN();
+      return 1;
+    }
+    print_file_info(path, m.ptr, m.len);
+    unmap_file(&m);
+    D_LOG_SHUTDOWN();
+    return 0;
+  }
+
+  /* ---------------- hexdump ---------------- */
+  if (streq(cmd, "hexdump")) {
+    const char* path = argv[2];
+    int cols = 16, group = 1, ascii = 1;
+    uint64_t off = 0, len = (uint64_t)-1;
+    /* parse options */
+    for (int i = 3; i < argc; i++) {
+      if (streq(argv[i], "--cols") && i + 1 < argc) {
+        int ok;
+        cols = (int)parse_u64(argv[++i], &ok);
+      } else if (streq(argv[i], "--group") && i + 1 < argc) {
+        int ok;
+        group = (int)parse_u64(argv[++i], &ok);
+      } else if (streq(argv[i], "--ascii") && i + 1 < argc) {
+        ascii = strieq(argv[++i], "on") ? 1 : 0;
+      } else if (streq(argv[i], "--offset") && i + 1 < argc) {
+        int ok = 0;
+        off = parse_size_suff(argv[++i], 0, &ok);
+      } else if (streq(argv[i], "--length") && i + 1 < argc) {
+        int ok = 0;
+        len = parse_size_suff(argv[++i], 0, &ok);
+      }
+    }
+    map_t m;
+    if (map_file(path, &m) != 0) {
+      D_ERROR("open: %s", strerror(errno));
+      D_LOG_SHUTDOWN();
+      return 1;
+    }
+    if (off > m.len) {
+      D_ERROR("offset beyond EOF");
+      unmap_file(&m);
+      D_LOG_SHUTDOWN();
+      return 1;
+    }
+    size_t avail = m.len - (size_t)off;
+    size_t take =
+        (len == (uint64_t)-1) ? avail : (size_t)((len > avail) ? avail : len);
+    hexdump(m.ptr + off, take, off, cols, group, ascii);
+    unmap_file(&m);
+    D_LOG_SHUTDOWN();
+    return 0;
+  }
+
+  /* ---------------- strings ---------------- */
+  if (streq(cmd, "strings")) {
+    const char* path = argv[2];
+    size_t minlen = 4;
+    int utf16 = 0;
+    for (int i = 3; i < argc; i++) {
+      if (streq(argv[i], "--min") && i + 1 < argc) {
+        int ok;
+        minlen = (size_t)parse_u64(argv[++i], &ok);
+      } else if (streq(argv[i], "--utf16"))
+        utf16 = 1;
+    }
+    map_t m;
+    if (map_file(path, &m) != 0) {
+      D_ERROR("open: %s", strerror(errno));
+      D_LOG_SHUTDOWN();
+      return 1;
+    }
+    if (utf16)
+      extract_strings_utf16le(m.ptr, m.len, minlen);
+    else
+      extract_strings_ascii(m.ptr, m.len, minlen);
+    unmap_file(&m);
+    D_LOG_SHUTDOWN();
+    return 0;
+  }
+
+  /* ---------------- hash ---------------- */
+  if (streq(cmd, "hash")) {
+    const char* path = argv[2];
+    int want_crc = 0, want_sha = 0;
+    for (int i = 3; i < argc; i++) {
+      if (streq(argv[i], "--crc32"))
+        want_crc = 1;
+      else if (streq(argv[i], "--sha256"))
+        want_sha = 1;
+    }
+    if (!want_crc && !want_sha) {
+      want_crc = 1;
+      want_sha = 1;
+    }
+    map_t m;
+    if (map_file(path, &m) != 0) {
+      D_ERROR("open: %s", strerror(errno));
+      D_LOG_SHUTDOWN();
+      return 1;
+    }
+    if (want_crc) {
+      uint32_t c = crc32_compute(m.ptr, m.len);
+      printf("CRC32: %08x\n", c);
+    }
+    if (want_sha) {
+      sha256_t s;
+      sha256_init(&s);
+      sha256_update(&s, m.ptr, m.len);
+      uint8_t out[32];
+      sha256_final(&s, out);
+      printf("SHA256: ");
+      for (int i = 0; i < 32; i++) printf("%02x", out[i]);
+      putchar('\n');
+    }
+    unmap_file(&m);
+    D_LOG_SHUTDOWN();
+    return 0;
+  }
+
+  /* ---------------- entropy ---------------- */
+  if (streq(cmd, "entropy")) {
+    const char* path = argv[2];
+    size_t win = 0, step = 0;
+    for (int i = 3; i < argc; i++) {
+      if (streq(argv[i], "--window") && i + 1 < argc) {
+        int ok;
+        win = (size_t)parse_u64(argv[++i], &ok);
+      } else if (streq(argv[i], "--step") && i + 1 < argc) {
+        int ok;
+        step = (size_t)parse_u64(argv[++i], &ok);
+      }
+    }
+    map_t m;
+    if (map_file(path, &m) != 0) {
+      D_ERROR("open: %s", strerror(errno));
+      D_LOG_SHUTDOWN();
+      return 1;
+    }
+    if (win == 0) {
+      double H = entropy_shannon(m.ptr, m.len);
+      printf("size=%zu  H=%.6f bits/byte\n", m.len, H);
+    } else {
+      entropy_window(m.ptr, m.len, win, step);
+    }
+    unmap_file(&m);
+    D_LOG_SHUTDOWN();
+    return 0;
+  }
+
+  /* ---------------- diff ---------------- */
+  if (streq(cmd, "diff")) {
+    if (argc < 4) {
+      usage(argv[0]);
+      D_LOG_SHUTDOWN();
+      return 2;
+    }
+    const char *A = argv[2], *B = argv[3];
+    size_t context = 16;
+    int summary = 0;
+    for (int i = 4; i < argc; i++) {
+      if (streq(argv[i], "--context") && i + 1 < argc) {
+        int ok;
+        context = (size_t)parse_u64(argv[++i], &ok);
+      } else if (streq(argv[i], "--summary"))
+        summary = 1;
+    }
+    map_t a, b;
+    if (map_file(A, &a) != 0) {
+      D_ERROR("open A: %s", strerror(errno));
+      D_LOG_SHUTDOWN();
+      return 1;
+    }
+    if (map_file(B, &b) != 0) {
+      D_ERROR("open B: %s", strerror(errno));
+      unmap_file(&a);
+      D_LOG_SHUTDOWN();
+      return 1;
+    }
+    diff_files(a.ptr, a.len, b.ptr, b.len, context, summary);
+    unmap_file(&a);
+    unmap_file(&b);
+    D_LOG_SHUTDOWN();
+    return 0;
+  }
+
+  /* ---------------- slice ---------------- */
+  if (streq(cmd, "slice")) {
+    const char* path = argv[2];
+    const char* out = NULL;
+    uint64_t off = 0, len = 0, have_off = 0, have_len = 0;
+    for (int i = 3; i < argc; i++) {
+      if (streq(argv[i], "--offset") && i + 1 < argc) {
+        int ok;
+        off = parse_size_suff(argv[++i], 0, &ok);
+        have_off = 1;
+      } else if (streq(argv[i], "--length") && i + 1 < argc) {
+        int ok;
+        len = parse_size_suff(argv[++i], 0, &ok);
+        have_len = 1;
+      } else if (streq(argv[i], "--out") && i + 1 < argc) {
+        out = argv[++i];
+      }
+    }
+    if (!out || !have_len) {
+      usage(argv[0]);
+      D_LOG_SHUTDOWN();
+      return 2;
+    }
+    map_t m;
+    if (map_file(path, &m) != 0) {
+      D_ERROR("open: %s", strerror(errno));
+      D_LOG_SHUTDOWN();
+      return 1;
+    }
+    if (!have_off) off = 0;
+    if (write_slice(out, m.ptr, (size_t)off, (size_t)len, m.len) != 0) {
+      unmap_file(&m);
+      D_LOG_SHUTDOWN();
+      return 1;
+    }
+    unmap_file(&m);
+    D_LOG_SHUTDOWN();
+    return 0;
+  }
+
+  usage(argv[0]);
+  D_LOG_SHUTDOWN();
+  return 2;
+}
