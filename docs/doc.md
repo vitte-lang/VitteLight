@@ -1,310 +1,346 @@
-VITTE LIGHT — GUIDE UTILISATEUR (TXT)
-Révision: 2025-09-05
+collecte de cycles automatique.
 
-──────────────────────────────────────────────────────────────────────────────
-0) OBJECTIF
-Vitte Light (VITL) est un langage minimal inspiré de Vitte, même syntaxe de base.
-Cible: programmes CLI rapides, scripts compilés, embeddings C.
-Ce document couvre: structure de projet, CLI, syntaxe, stdlib, FFI, exemples.
+Conséquences --- Les cycles forts (A → B → A) **ne sont pas libérés**
+automatiquement. --- Les performances sont prévisibles (pas de pause
+GC), mais l'architecture doit éviter les cycles.
 
-──────────────────────────────────────────────────────────────────────────────
-1) FICHIERS, EXTENSIONS, ENCODAGE
-- Source: .vitl
-- Encodage: UTF-8 sans BOM
-- Convention modules: noms en snake.case, chemins hiérarchiques
-  Exemple: module std.io correspond à std/io.vitl
+Stratégies de conception Débutant --- Préférer des structures
+arborescentes sans références en arrière. --- Passer des données par
+valeur quand c'est petit et fréquent (i32, f64...).
 
-Arbo simple:
-  /src
-    main.vitl
-  /libs           # libs .c/.a/.so/.dll si FFI
-  /build          # artefacts
+Intermédiaire --- Utiliser **Weak** pour les pointeurs "retour" (parent)
+et **Rc** pour les pointeurs "avant" (enfants). --- Documenter la
+topologie (qui possède quoi). Une seule direction en **fort**, l'autre
+en **faible**.
 
-──────────────────────────────────────────────────────────────────────────────
-2) OUTILS EN LIGNE DE COMMANDE
-Selon distribution, soit binaire unique `vitl`, soit couple `vitlc` (compileur),
-`vitlv` (VM/runner). Les deux formes ci-dessous sont supportées.
+Pro --- Introduire des *zones de vie* et des frontières claires entre
+propriétaires et observateurs. --- Auditer régulièrement (revue de code)
+les graphes d'objets susceptibles de former des cycles. --- Si
+nécessaire, encapsuler un allocateur/arena côté C via FFI pour des
+patterns haute fréquence (pools, slab).
 
-Exécution directe (JIT/VM):
-  vitl run src/main.vitl
-ou:
-  vitlv run src/main.vitl
+Exemple (rupture de cycle) Mauvais (cycle fort): // A::child -\>
+Rc`<B>`{=html}, B::parent -\> Rc`<A>`{=html} (cycle) Correct (parent
+faible): // A::child -\> Rc`<B>`{=html}, B::parent -\> Weak`<A>`{=html}
 
-Compilation → exécutable natif:
-  vitl build -O2 -o build/app src/main.vitl
-ou:
-  vitlc -O2 -o build/app src/main.vitl
+Checklist \[ \] Les relations parents/enfants évitent-elles les cycles
+forts ?\
+\[ \] Les valeurs volumineuses sont-elles partagées via Rc et lues
+majoritairement ?\
+\[ \] Les buffers temporaires élevés en fréquence sont-ils réutilisés
+(éviter l'allocation répétée) ?
 
-Autres:
-  vitl fmt path/                  # formateur
-  vitl check src/                 # analyse statique
-  vitl test                       # lance tests intégrés
-  vitl doc src/ -o build/docs.txt # extrait commentaires ///
+─────────────────────────────────────────────── 11.3 Génériques partiels
+uniquement ────────────────────────────────── Ce que cela signifie ---
+Les types/génériques existent de façon limitée (principalement dans la
+stdlib). --- Moins de métaprogrammation que dans Vitte "complet" ou
+Rust.
 
-Options communes:
-  -O0/-O1/-O2/-O3, -g, --emit-ir, --emit-bytecode, --no-stdlib, -I <dir>, -L <dir>, -l<name>
+Conséquences --- API "générique" parfois moins flexible. --- Possibles
+duplications de code quand les types varient beaucoup.
 
-──────────────────────────────────────────────────────────────────────────────
-3) SYNTAXE ESSENTIELLE (IDENTIQUE À VITTE)
-Lexique:
-  - Ident: [A-Za-z_][A-Za-z0-9_]*
-  - Commentaires: // ligne, /* bloc */
-  - Séparateurs: ; optionnel en fin de ligne si non ambigu
+Stratégies de conception Débutant --- Commencer avec des types concrets
+(i32, f64, String). Éviter d'abstraire trop tôt. --- Favoriser des
+fonctions simples et spécialisées.
 
-Littéraux:
-  - Entiers: 0, 42, 1_000, 0xFF, 0o755, 0b1010
-  - Flottants: 3.14, 1e-9
-  - Bool: true, false
-  - Char: 'a', '\n'
-  - String: "texte", r"brut"
+Intermédiaire --- Factoriser par **interfaces de données** (formats
+texte, lignes, enregistrements) au lieu de viser la généricité
+type-paramétrée. --- Utiliser des adaptateurs minces : convertisseurs
+`to_string()`, `parse()` côté std.str.
 
-Types de base:
-  i8 i16 i32 i64  u8 u16 u32 u64  f32 f64  bool char  str
-  arrays: [T; N]   slices: [T]    tuples: (T1, T2)    option: Option<T>
-  pointeurs bas niveau si activés: *T, *mut T   (mode unsafe)
+Pro --- Déporter la généricité "lourde" dans une lib C/Rust accessible
+via FFI C (sur quelques points chauds seulement). --- Stabiliser vos
+**types de domaine** (DTO) et isoler les conversions aux frontières de
+module. --- Intégrer des tests de non-régression lors des changements de
+type.
 
-Déclarations:
-  module app.main                  // un par fichier
-  import std.io
-  import std.{fs, time}            // import groupé
+Checklist \[ \] Les fonctions publiques ont-elles des signatures
+**stables** et explicites ?\
+\[ \] Les conversions de types sont-elles centralisées et testées ?\
+\[ \] Les points nécessitant de la généricité forte sont-ils délégués à
+FFI si critique ?
 
-  const PI: f64 = 3.1415926535
-  let mut x: i32 = 0
-  let y = 123                      // inférence
+─────────────────────────────────────────────── 11.4 FFI limité au C
+(ABI C) ──────────────────────────── Ce que cela signifie --- Seule
+l'interface binaire C est supportée nativement. --- C++/Rust/Go/etc.
+doivent exposer un **shim C** (`extern "C"`) pour être appelés.
 
-Fonctions:
-  fn add(a: i32, b: i32) -> i32 { return a + b }
-  fn main() -> i32 {
-    std.io::println("Hello");
-    return 0
-  }
+Conséquences --- Pas de passage direct d'objets complexes non-C. ---
+Convention d'appel et représentation mémoire = C.
 
-Contrôle:
-  if cond { ... } else { ... }
-  while cond { ... }
-  for i in 0..10 { ... }           // 0..10 exclusif, 0..=10 inclusif
-  match v {
-    0 => std.io::println("zero"),
-    1 | 2 => std.io::println("small"),
-    _ => {}
-  }
+Stratégies d'intégration Débutant --- S'en tenir aux appels simples :
+fonctions C pures, entrées/sorties primitives, buffers. --- Toujours
+construire les chaînes avec `std.c::CString::from_str` avant de passer
+au C.
 
-Structures et enums:
-  struct Point { x: f64, y: f64 }
-  enum Result<T, E> { Ok(T), Err(E) }
+Intermédiaire --- Écrire un **shim C** propre : API plate, types opaques
+(`void*` + fonctions d'accès), fonctions `create()/destroy()`. ---
+Vérifier les codes retour et convertir vers `Result`.
 
-Méthodes et impl:
-  impl Point {
-    fn norm(&self) -> f64 { return (self.x*self.x + self.y*self.y).sqrt() }
-  }
+Pro --- Définir une **ABI stable** (semver) côté C, tests d'intégration
+croisés (VITL ↔ C). --- Mesurer l'overhead d'appels FFI et grouper les
+opérations pour amortir le coût. --- Gérer explicitement
+l'allocation/désallocation croisée (qui possède le buffer ? qui le
+libère ?).
 
-Erreurs:
-  fn f() -> Result<i32, str> { return Result::Ok(42) }
-  let r = f()
-  match r { Result::Ok(v) => {}, Result::Err(e) => std.io::eprintln(e) }
+Exemple de pattern FFI C (shim): struct Obj; Obj\* obj_create(int cap);
+void obj_destroy(Obj*); int obj_push(Obj*, const char\* s); // 0=OK,
+\<0=err int obj_len(const Obj\*);
 
-Assertions/tests:
-  assert(x == 4)
-  test "sum works" { assert(add(2,2) == 4) }
+VITL: extern "C" { fn obj_create(cap:i32)-\>*mut void fn
+obj_destroy(p:*mut void)-\>void fn obj_push(p:*mut void, s:*const
+char)-\>i32 fn obj_len(p:\*const void)-\>i32 } // Construire CString,
+appeler dans unsafe, vérifier codes retour.
 
-──────────────────────────────────────────────────────────────────────────────
-4) ENTRÉE/SORTIE (STD)
-E/S console:
-  std.io::print("txt")
-  std.io::println("txt")
-  std.io::eprintln("err")
+Checklist \[ \] Le shim expose-t-il uniquement des types C stables (int,
+double, void*, char*) ?\
+\[ \] Les responsabilités d'allocation/libération sont-elles documentées
+?\
+\[ \] Chaque appel renvoie-t-il un code d'erreur testable, converti en
+`Result` côté VITL ?
 
-Fichiers:
-  let data = std.fs::read_to_string("file.txt")?
-  std.fs::write_string("out.txt", "hello")?
+─────────────────────────────────────────────── 11.5 Décider quand
+"sortir" des limites ───────────────────────────────────────────── Règle
+pratique --- Si la fonctionnalité manque et que l'**algorithme** suffit
+à compenser → rester 100% VITL. --- Si les contraintes sont
+structurelles (threads, généricité lourde, GC) → **isoler** la partie
+critique dans une lib C/Rust avec shim C et piloter depuis VITL.
 
-Temps:
-  let now = std.time::now()
+Matrice rapide --- Performance CPU brute → déléguer le cœur à C/Rust
+(FFI).\
+--- I/O intensif séquentiel → VITL convient, optimiser le format et les
+buffers.\
+--- Concurrence massive → multi-processus ou runtime externe via FFI.\
+--- Modèles de données dynamiques et très polymorphes → fixer des DTO
+stables + shims.
 
-Chaînes:
-  let s = "hi " + name
-  let n = std.str::len(s)
-  let parts = std.str::split(s, ' ')
+─────────────────────────────────────────────── 11.6 Contrats de qualité
+autour des limites ──────────────────────────────────────────── ---
+Tests : pour chaque contour, fournir au moins 1 test succès + 1 test
+erreur. --- Logs : enrichir les messages d'erreur avec contexte
+(fichier, taille, chemin). --- Docs : annoter les fonctions "limites"
+avec `///` précisant invariants et coûts. --- Bench : garder un
+micro-benchmark des chemins FFI et des I/O.
 
-Args, exit:
-  let argv = std.cli::args()
-  std.sys::exit(0)
+Fin de la section 11.
 
-`?` propage l’erreur sous forme Result; équivaut à match court.
+──────────────────────────────────────────────
 
-──────────────────────────────────────────────────────────────────────────────
-5) GESTION MÉMOIRE
-- Automatique par comptage de références (Rc) en mode sûr.
-- `unsafe` autorise pointeurs bruts et FFI manuel.
-- Slices vues non propriétaires; strings immuables `str`, mutables via `String`.
+12) CODES DE SORTIE ──────────────────── 0 → succès\
+    1 → erreur générique/panic\
+    2 → erreur d'usage CLI\
+    3 → erreur I/O\
+    4 → erreur FFI
 
-Exemples rapides:
-  let mut v: [i32] = std.vec::with_capacity(16)
-  v.push(1); v.push(2)
-  for x in &v { std.io::println(x.to_string()) }
+────────────────────────────────────────────── 11) DIAGNOSTICS COURANTS
+--- VERSION DÉTAILLÉE ────────────────────────────────────────────
 
-──────────────────────────────────────────────────────────────────────────────
-6) ERREURS ET TRAITEMENT
-Type canonique: Result<T, E>
-- Fonctions std retournent Result avec E=std.err::Error ou str.
-- Opérateur `?` remonte l’erreur.
-- `panic("msg")` pour erreurs irrécupérables; exit code ≠ 0.
+But --- Donner pour chaque code : symptôme, causes probables,
+correctifs, exemples. --- Cible débutants → comprendre le message.
+Intermédiaires → corriger vite. Pros → outillage.
 
-──────────────────────────────────────────────────────────────────────────────
-7) FFI C (OPTIONNEL)
-Déclarer signatures externes:
-  extern "C" {
-    fn puts(msg: *const char) -> i32
-  }
+Outils utiles --- Lint : vitl check src/ --- Build debug : vitl build -g
+-O0 -o build/app src/main.vitl --- IR/BC : vitl build --emit-ir \| vitl
+build --emit-bytecode --- Traces : std.debug::backtrace() \|
+panic("msg") --- Recherche : vitl doc src/ -o build/docs.txt
 
-Appel:
-  let cstr = std.c::CString::from_str("Hello\n")
-  unsafe { _ = puts(cstr.as_ptr()) }
+Notation --- « Mauvais » = exemple fautif. « Correct » = correction
+minimale.
 
-Lien:
-  vitl build -L libs -lc -o build/app src/main.vitl
-  # ou -l<libname> pour lib<name>.so/.dll/.a
+E0001 : symbole inconnu ─────────────────────── Symptôme --- Le
+compilateur ne trouve pas une fonction, un type, un module ou une
+constante.
 
-──────────────────────────────────────────────────────────────────────────────
-8) EXEMPLES CONCIS
+Causes fréquentes --- Import manquant ou chemin de module incorrect. ---
+Typo dans le nom (majuscules/minuscules). --- Déplacement de fichier
+sans mise à jour de `module` en tête. --- API renommée lors d'une
+refactorisation.
 
-8.1 Hello CLI
-  module app.main
-  import std.io
-  fn main() -> i32 { std.io::println("Hello, Vitte Light"); return 0 }
+Correctifs standard --- Ajouter l'import précis ou corriger le chemin.
+--- Vérifier que `module` en tête correspond au chemin disque. ---
+Lancer `vitl fmt` pour regrouper et stabiliser les imports.
 
-8.2 Somme, tests
-  module app.math
-  fn sum(xs: [i32]) -> i32 {
-    let mut s = 0
-    for x in xs { s = s + x }
-    return s
-  }
-  test "sum" { assert(sum([1,2,3]) == 6) }
+Exemples Mauvais: module app.main fn main()-\>i32 {
+std.io::pritnln("hi") // typo return 0 }
 
-8.3 Lecture fichier avec `?`
-  module app.cat
-  import std.{fs, io}
-  fn main() -> i32 {
-    let argv = std.cli::args()
-    if std.len(argv) < 2 { io::eprintln("usage: cat <file>"); return 2 }
-    let txt = fs::read_to_string(argv[1])?
-    io::print(txt)
-    return 0
-  }
+Correct: module app.main import std.io fn main()-\>i32 {
+std.io::println("hi") return 0 }
 
-8.4 Enum et match
-  module app.http
-  enum Code { Ok, NotFound, Other(i32) }
-  fn descr(c: Code) -> str {
-    match c { Code::Ok => "200", Code::NotFound => "404", Code::Other(x) => "X" }
-  }
+Astuce pro --- Préférer `import std.{io, fs}` pour expliciter le
+périmètre. --- `vitl check` pointe la ligne et la colonne exactes.
 
-8.5 Struct + méthodes
-  module app.geo
-  struct Vec2 { x: f64, y: f64 }
-  impl Vec2 { fn dot(&self, o: Vec2) -> f64 { return self.x*o.x + self.y*o.y } }
+E0002 : types incompatibles ─────────────────────────── Symptôme --- Une
+expression du type A est passée là où B est attendu.
 
-──────────────────────────────────────────────────────────────────────────────
-9) FORMATTEUR ET LINT
-- `vitl fmt` aligne imports, retire espaces, normalise accolades.
-- `vitl check` signale variables non utilisées, branches mortes, conversions implicites.
+Causes fréquentes --- Addition mélangeant `i32` et `f64`. --- Appel
+d'API avec paramètre de type attendu différent. --- Comparaison stricte
+entre types non convertibles.
 
-Règles de style abrégées:
-- Module au début de fichier, imports regroupés.
-- Types explicites aux API publiques.
-- snake_case pour fonctions/vars, CamelCase pour types.
+Correctifs standard --- Ajouter un cast explicite `as` quand la perte
+d'info est acceptée. --- Adapter la signature de la fonction ou
+l'appelant pour unifier les types. --- Introduire une conversion
+préalable (ex. `to_string()`).
 
-──────────────────────────────────────────────────────────────────────────────
-10) DIAGNOSTICS COURANTS
-E0001: symbole inconnu
-  → vérifier import ou nom du module
-E0002: types incompatibles
-  → caster explicitement: x as i32
-E0003: variable non initialisée
-E1001: appel FFI non-safe hors bloc unsafe
-E2001: fichier introuvable (std.fs::read_*)
+Exemples Mauvais: let n:i32 = 3 let x:f64 = 0.5 let y = n + x // E0002
 
-──────────────────────────────────────────────────────────────────────────────
-11) BUILD AVANCÉ
-IR/Bytecode:
-  --emit-ir         # imprime IR lisible
-  --emit-bytecode   # écrit .vitbc (VITBC) dans /build
+Correct (1 --- cast local): let n:i32 = 3 let x:f64 = 0.5 let y = (n as
+f64) + x
 
-Optimisations:
-  -O2 par défaut; -O3 active inlining agressif et unroll
-Débogage:
-  -g + std.debug::backtrace() si supporté
+Correct (2 --- normaliser l amont): let n:f64 = 3.0 let x:f64 = 0.5 let
+y = n + x
 
-Cross-build:
-  vitlc --target x86_64-linux-gnu -O2 -o build/app src/main.vitl
+Autres patterns --- Chaînes: std.io::println("n=" + n) // E0002
+std.io::println("n=" + n.to_string()) // OK
 
-──────────────────────────────────────────────────────────────────────────────
-12) MINI GRAMMAIRE (EBNF RÉSUMÉ)
-  Module    = "module", Ident, {".", Ident} ;
-  Import    = "import", Path, [ "{", Ident, {",", Ident}, "}" ] ;
-  Decl      = Const | Let | Fn | Struct | Enum | Impl ;
-  Const     = "const", Ident, ":", Type, "=", Expr ;
-  Let       = "let", ["mut"], Ident, [":", Type], "=", Expr ;
-  Fn        = "fn", Ident, "(", [Params], ")", ["->", Type], Block ;
-  Struct    = "struct", Ident, "{", Fields, "}" ;
-  Enum      = "enum", Ident, "{", Variants, "}" ;
-  Impl      = "impl", Ident, Block ;
-  Block     = "{", {Stmt}, "}" ;
-  Stmt      = Let | Expr | Return | If | While | For | Match | ";"
-  Return    = "return", [Expr] ;
-  If        = "if", Expr, Block, ["else", Block] ;
-  While     = "while", Expr, Block ;
-  For       = "for", Ident, "in", Expr, Block ;
-  Match     = "match", Expr, "{", Arms, "}" ;
+Astuce pro --- Stabiliser les types aux frontières d'API publiques
+(types explicites). --- `vitl check` repère aussi les conversions
+implicites dangereuses.
 
-──────────────────────────────────────────────────────────────────────────────
-13) STDLIB (SURVOL MINIMAL)
-  std.io    : print, println, eprint, eprintln
-  std.fs    : read_to_string, read, write_string, write, exists
-  std.str   : len, split, find, replace, to_int, to_float
-  std.math  : abs, sqrt, sin, cos, pow
-  std.time  : now, sleep_ms
-  std.cli   : args, env, exit
-  std.vec   : with_capacity, push, pop, len, get
-  std.err   : Error, display
-  std.debug : assert, dump, backtrace
-  std.c     : CString, malloc/free (unsafe)
+E0003 : variable non initialisée ────────────────────────────────
+Symptôme --- Utilisation d'une variable qui n'a pas reçu de valeur sur
+tous les chemins.
 
-──────────────────────────────────────────────────────────────────────────────
-14) CONVENTIONS D’EXIT
-  0  succès
-  1  erreur générique/panic
-  2  erreur d’usage CLI
-  3  I/O
-  4  FFI/chargement lib
+Causes fréquentes --- Déclaration séparée de l'initialisation. ---
+Chemin `if/else` non exhaustif. --- Retour prématuré avant affectation.
 
-──────────────────────────────────────────────────────────────────────────────
-15) RECETTES RAPIDES
+Correctifs standard --- Initialiser à la déclaration. --- Rendre les
+branches exhaustives. --- Restructurer en `match` pour couvrir tous les
+cas.
 
-Lecture JSON en texte brut (sans parser dédié):
-  let raw = std.fs::read_to_string("cfg.json")?
-  if std.str::find(raw, "\"enabled\": true") >= 0 { std.io::println("on") }
+Exemples Mauvais: let mut acc:i32 if cond { acc = 1 } // cond=false →
+acc non assignée std.io::println(acc.to_string()) // E0003
 
-Mesure de durée:
-  let t0 = std.time::now()
-  heavy()
-  std.io::println((std.time::now() - t0).to_string() + " ms")
+Correct: let mut acc:i32 = 0 if cond { acc = 1 }
+std.io::println(acc.to_string())
 
-──────────────────────────────────────────────────────────────────────────────
-16) LIMITES ACTUELLES (MODE LIGHT)
-  - Pas de threads natifs.
-  - GC absent; modèle Rc + scopes.
-  - Génériques limités aux containers std (selon build).
-  - FFI stable C uniquement.
+Autre: let x:i32 if a { x = 1 } else { x = 2 } // ici OK car exhaustif
 
-──────────────────────────────────────────────────────────────────────────────
-17) CHECKLIST PROJET
-  [ ] module app.main défini
-  [ ] main() -> i32 présent
-  [ ] imports minimaux
-  [ ] build avec -O2 ou -g suivant cible
-  [ ] tests passent: vitl test
-  [ ] binaire dans /build
+Astuce pro --- Éviter les « variables sentinelles »; préférer un `match`
+retournant une valeur.
 
-FIN.
+E1001 : appel FFI non-safe hors bloc unsafe
+──────────────────────────────────────────── Symptôme --- Appel d'une
+fonction C ou manipulation de pointeurs bruts sans `unsafe`.
+
+Causes fréquentes --- Oubli du bloc `unsafe { ... }`. --- Conversion de
+chaîne en `CString` non vérifiée. --- Passage d'un pointeur invalide à
+une API C.
+
+Correctifs standard --- Envelopper *uniquement* l'appel risqué dans
+`unsafe`. --- Construire les `CString` via `std.c::CString::from_str`.
+--- Assurer la durée de vie des buffers passés au C.
+
+Exemples Mauvais: extern "C" { fn puts(msg:\*const char)-\>i32 } fn
+main()-\>i32 { let s = std.c::CString::from_str("Hi`\n`{=tex}")
+puts(s.as_ptr()) // E1001 return 0 }
+
+Correct: extern "C" { fn puts(msg:\*const char)-\>i32 } fn main()-\>i32
+{ let s = std.c::CString::from_str("Hi`\n`{=tex}") unsafe { \_ =
+puts(s.as_ptr()) } return 0 }
+
+Astuce pro --- Réduire la surface `unsafe` au strict minimum. ---
+Valider les tailles et null-terminators côté VITL avant l'appel.
+
+E2001 : fichier introuvable (I/O) ─────────────────────────────────
+Symptôme --- Échec d'ouverture/lecture d'un fichier par la stdlib
+(erreur au runtime).
+
+Causes fréquentes --- Chemin relatif interprété depuis un répertoire
+inattendu. --- Fichier non copié ou supprimé. --- Droits insuffisants,
+montage absent.
+
+Correctifs standard --- Tester l'existence avant lecture. --- Utiliser
+des chemins absolus pour les ressources système. --- Gérer l'erreur avec
+`Result` et message contextuel.
+
+Exemples Mauvais: let txt = std.fs::read_to_string("data/config.txt")?
+// E2001
+
+Correct: let path = "data/config.txt" if !std.fs::exists(path) {
+std.io::eprintln("config manquante:" + path) return 3 } let txt =
+std.fs::read_to_string(path)?
+
+Annexe A --- Diagnostics supplémentaires courants
+─────────────────────────────────────────────── E0100 : variable non
+utilisée --- Contexte: le code compile mais une variable n est jamais
+lue. --- Correction: supprimer la variable, ou prefixer `_var` pour
+marquer volontaire.
+
+E0101 : code inatteignable --- Contexte: instructions après `return` ou
+après un `match` exhaustif. --- Correction: retirer la portion morte ou
+factoriser les branches.
+
+E0201 : division par zéro détectable --- Contexte: `x / 0` littéral
+connu au compile-time. --- Correction: vérifier dénominateur, valider en
+amont.
+
+E0301 : dépassement d'index (runtime) --- Contexte: `v[i]` hors bornes.
+--- Correction: tester `i < v.len()`, ou utiliser `get(i)` qui retourne
+`Option`.
+
+E0401 : pattern `match` non exhaustif --- Contexte: manque un cas,
+surtout avec `enum`. --- Correction: ajouter `_ => {...}` ou toutes les
+variantes.
+
+E0501 : conflit mutabilité simple --- Contexte: tentative d'écrire dans
+une donnée non `mut`. --- Correction: déclarer `let mut x` ou
+cloner/retourner une nouvelle valeur.
+
+E0601 : format de chaîne invalide --- Contexte: concat de types
+non-string sans `to_string()`. --- Correction: convertir avant
+concaténation.
+
+E0701 : échec FFI (résultat négatif) --- Contexte: fonction C renvoie
+code erreur. --- Correction: vérifier le code retour, convertir en
+`Result::Err(...)` côté VITL.
+
+E0801 : UTF-8 invalide lors d une lecture texte --- Contexte: contenu
+binaire lu via `read_to_string`. --- Correction: utiliser `std.fs::read`
+(bytes) puis décoder conditionnellement.
+
+Annexe B --- Stratégie de triage (checklist rapide)
+────────────────────────────────────────────────── 1) Lire le message
+complet et la ligne ciblée. 2) Lancer `vitl check` pour lints
+supplémentaires. 3) Si import/symbole: vérifier `module` et `import`. 4)
+Si types: normaliser les types en amont, cast explicite si nécessaire.
+5) Si non initialisé: initialiser à la déclaration ou rendre les
+branches exhaustives. 6) Si FFI: entourer par `unsafe`, valider les
+pointeurs et durées de vie. 7) Si I/O: controler `std.fs::exists`,
+chemins absolus, droits. 8) Recompiler avec `-g` et activer
+`std.debug::backtrace()` en cas de crash. 9) Ajouter des `test` minimaux
+pour reproduire le bug. 10) Documenter la cause et le correctif en
+commentaire `///` si API publique.
+
+Annexe C --- Exemples de messages enrichis côté application
+────────────────────────────────────────────────────────── --- I/O
+robuste: let path = argv\[1\] if !std.fs::exists(path) {
+std.io::eprintln("E2001: fichier introuvable →" + path)
+std.io::eprintln("Astuce: lancer depuis la racine du projet ou passer un
+chemin absolu.") return 3 }
+
+--- FFI robuste: let msg = std.c::CString::from_str("ok`\n`{=tex}") if
+msg.is_err() { return Result::Err("E0601: CString invalide (caractère
+nul)") } unsafe { \_ = puts(msg.unwrap().as_ptr()) }
+
+Annexe D --- Bonnes pratiques pour éviter les diagnostics
+──────────────────────────────────────────────────────── --- Imports
+précis et groupés; `vitl fmt` après chaque session. --- Types explicites
+aux frontières d'API (fonctions `pub`). --- Tests unitaires pour chaque
+module; couvrir les erreurs attendues. --- Logs de contexte avec codes
+d'erreur stables (E-codes ci-dessus). --- Limiter `unsafe` et l'isoler;
+documenter les invariants attendus. --- Préférer `Option`/`Result` aux
+valeurs sentinelles magiques. --- Valider l'entrée utilisateur tôt; fail
+fast avec message clair.
+
+Fin de la section 10.
+
+14) CHECKLIST AVANT DE LIVRER ───────────────────────────── \[ \] module
+    app.main défini\
+    \[ \] fn main()-\>i32 présent\
+    \[ \] imports réduits au nécessaire\
+    \[ \] vitl test passe avec succès\
+    \[ \] build/app généré dans /build
+
+──────────────────────────────────────────────
+
+FIN DU GUIDE ─────────────────────────────────────────────
