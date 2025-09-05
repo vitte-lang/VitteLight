@@ -1,66 +1,136 @@
-// vitte-light/core/table.h
-// Table de hachage générique (Robin Hood + backshift). Clés/valeurs opaques.
-// Implémentation: core/table.c
+/* ============================================================================
+   table.h — Hash table générique (C17), robin-hood open addressing.
+   - Clés = octets arbitraires (ptr + taille). Valeurs = void*.
+   - Callbacks configurables: hash, égalité, free(key), free(val).
+   - Copy-on-insert optionnel des clés (copy_keys=1) ou adoption.
+   - Effacement par backward-shift. Rehash auto. Itération simple.
+   - Thread-safety: non incluse.
+   Lier avec table.c. Licence: MIT.
+   ============================================================================
+ */
+#ifndef VT_TABLE_H
+#define VT_TABLE_H
+#pragma once
 
-#ifndef VITTE_LIGHT_CORE_TABLE_H
-#define VITTE_LIGHT_CORE_TABLE_H
+#include <stdbool.h> /* bool */
+#include <stddef.h>  /* size_t */
+#include <stdint.h>  /* uint64_t */
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#include <stddef.h>
-#include <stdint.h>
-#if defined(_WIN32)
-#if !defined(ssize_t)
-#include <BaseTsd.h>
-typedef SSIZE_T ssize_t;
-#endif
-#else
-#include <sys/types.h>
+/* ----------------------------------------------------------------------------
+   Export
+---------------------------------------------------------------------------- */
+#ifndef VT_TABLE_API
+#define VT_TABLE_API extern
 #endif
 
-// ───────────────────── Signatures de hooks ─────────────────────
-typedef uint32_t (*VL_HashFn)(const void *key, void *udata);
-typedef int (*VL_EqualFn)(const void *a, const void *b, void *udata);
-typedef void *(*VL_RetainFn)(
-    void *ptr, void *udata);  // peut copier/retain, peut retourner ptr
-typedef void (*VL_ReleaseFn)(void *ptr, void *udata);  // free/release
+/* ----------------------------------------------------------------------------
+   Types publics
+---------------------------------------------------------------------------- */
+typedef struct vt_table vt_table; /* opaque */
 
-// ───────────────────── Type opaque ─────────────────────
-typedef struct VL_Table VL_Table;  // contenu privé à table.c
+/* Itérateur simple (stateful). Initialiser avec vt_table_iter_init(). */
+typedef struct vt_table_iter {
+  size_t idx; /* interne */
+} vt_table_iter;
 
-// ───────────────────── API principale ─────────────────────
-void vl_tab_init(VL_Table *t, size_t initial_cap, VL_HashFn hf, VL_EqualFn eq,
-                 VL_RetainFn kret, VL_ReleaseFn kfree, VL_RetainFn vret,
-                 VL_ReleaseFn vfree, void *udata);
-void vl_tab_release(VL_Table *t);
+/* Callbacks utilisateur */
+typedef uint64_t (*vt_hash_fn)(const void* key, size_t klen, void* udata);
+/* doit retourner !=0 seulement si a==b, 0 sinon */
+typedef int (*vt_keyeq_fn)(const void* a, size_t alen, const void* b,
+                           size_t blen, void* udata);
+typedef void (*vt_free_fn)(void* p, void* udata);
 
-size_t vl_tab_len(const VL_Table *t);
-size_t vl_tab_cap(const VL_Table *t);
-int vl_tab_reserve(VL_Table *t, size_t min_cap);
+/* Configuration de la table */
+typedef struct vt_table_config {
+  vt_hash_fn hash;     /* défaut: FNV-1a 64 + avalanche */
+  vt_keyeq_fn eq;      /* défaut: memcmp + taille */
+  vt_free_fn free_key; /* appelé sur clé lors de destroy/erase si pertinent */
+  vt_free_fn
+      free_val; /* appelé sur valeur lors de destroy/erase/remplacement */
+  void* udata;  /* opaque pour callbacks */
 
-// put remplace si la clé existe déjà. Retourne 1 si succès, 0 sinon.
-int vl_tab_put(VL_Table *t, const void *key, const void *val);
-int vl_tab_get(const VL_Table *t, const void *key, void **out_val);
-int vl_tab_del(VL_Table *t, const void *key);
+  float max_load;     /* 0→0.85f par défaut. Ex: 0.90f */
+  size_t initial_cap; /* puissance de 2 recommandée. 0→16 */
 
-// Itération: passer i=-1 au premier appel. Retourne l’index ou -1 si fini.
-ssize_t vl_tab_next(const VL_Table *t, ssize_t i, void **out_key,
-                    void **out_val);
+  int copy_keys;       /* 1: table duplique la clé à l’insertion. 0: adopte le
+                          pointeur */
+  int free_key_always; /* 1: toujours free_key(k) à la suppression même si
+                          copy_keys=0 */
+} vt_table_config;
 
-// ───────────────────── Helpers C-string ─────────────────────
-uint32_t vl_hash_cstr(const void *k, void *udata);
-int vl_eq_cstr(const void *a, const void *b, void *udata);
+/* ----------------------------------------------------------------------------
+   Cycle de vie
+---------------------------------------------------------------------------- */
+VT_TABLE_API int vt_table_init(vt_table* t, const vt_table_config* cfg);
+VT_TABLE_API void vt_table_free(vt_table* t);
+VT_TABLE_API void vt_table_clear(vt_table* t);
+VT_TABLE_API void vt_table_reserve(vt_table* t, size_t n);
+VT_TABLE_API size_t vt_table_len(const vt_table* t);
 
-// Init pratique: hash/eq configurés pour char*, clé dupliquée automatiquement.
-void vl_tab_init_cstr(VL_Table *t, size_t initial_cap);
-int vl_tab_put_cstr(VL_Table *t, const char *key, const void *val);
-int vl_tab_get_cstr(const VL_Table *t, const char *key, void **out_val);
-int vl_tab_del_cstr(VL_Table *t, const char *key);
+/* Contrôle stratégie des clés (copy/adopt) après init (non thread-safe). */
+VT_TABLE_API void vt_table_set_copy_keys(vt_table* t, bool copy);
+
+/* ----------------------------------------------------------------------------
+   Accès
+   - key = pointeur vers la clé, klen = taille en octets.
+   - val = pointeur valeur stockée tel quel (void*).
+---------------------------------------------------------------------------- */
+/* Insert/replace: si clé existante → remplace valeur et renvoie ancienne via
+ * old_val_out. */
+VT_TABLE_API bool vt_table_put(vt_table* t, const void* key, size_t klen,
+                               void* val, void** old_val_out);
+
+/* Récupère la valeur. Renvoie false si absent. */
+VT_TABLE_API bool vt_table_get(const vt_table* t, const void* key, size_t klen,
+                               void** val_out);
+
+/* Version commodité: renvoie directement le pointeur valeur ou NULL si absent.
+ */
+VT_TABLE_API void* vt_table_getptr(const vt_table* t, const void* key,
+                                   size_t klen);
+
+/* Supprime l’entrée. Optionnel: récupère l’ancienne valeur. */
+VT_TABLE_API bool vt_table_del(vt_table* t, const void* key, size_t klen,
+                               void** old_val_out);
+
+/* Remplace la valeur uniquement si la clé existe. */
+VT_TABLE_API bool vt_table_replace(vt_table* t, const void* key, size_t klen,
+                                   void* val, void** old_val_out);
+
+/* Test existence. */
+VT_TABLE_API bool vt_table_has(const vt_table* t, const void* key, size_t klen);
+
+/* ----------------------------------------------------------------------------
+   Itération
+   Exemple:
+       vt_table_iter it; vt_table_iter_init(&it);
+       const void* k; size_t kl; void* v;
+       while (vt_table_next(&tab, &it, &k, &kl, &v)) { ... }
+---------------------------------------------------------------------------- */
+VT_TABLE_API void vt_table_iter_init(vt_table_iter* it);
+VT_TABLE_API bool vt_table_next(vt_table* t, vt_table_iter* it,
+                                const void** kptr, size_t* klen, void** vptr);
+
+/* ----------------------------------------------------------------------------
+   Hash utils (par défauts compatibles config.hash / eq)
+---------------------------------------------------------------------------- */
+VT_TABLE_API uint64_t vt_hash_bytes(const void* p, size_t n);
+VT_TABLE_API uint64_t vt_hash_cstr(const char* z); /* strlen(z) si z != NULL */
+VT_TABLE_API int vt_keyeq_bytes(const void* a, size_t alen, const void* b,
+                                size_t blen);
+
+/* ----------------------------------------------------------------------------
+   Debug interne (optionnel)
+---------------------------------------------------------------------------- */
+#ifndef NDEBUG
+VT_TABLE_API void vt_table__self_check(const vt_table* t);
+#endif
 
 #ifdef __cplusplus
-}  // extern "C"
+} /* extern "C" */
 #endif
-
-#endif  // VITTE_LIGHT_CORE_TABLE_H
+#endif /* VT_TABLE_H */

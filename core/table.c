@@ -1,384 +1,496 @@
-// vitte-light/core/table.c
-// Table de hachage générique ultra-complète (Robin Hood + backshift deletion)
-// Clés et valeurs = pointeurs opaques. Hooks optionnels pour retain/free.
-// Itération stable par index croissant. Sans dépendance au runtime VL.
-//
-// API minimale (si vous voulez un header, demandez `table.h`):
-//   typedef uint32_t (*VL_HashFn)(const void *key, void *udata);
-//   typedef int      (*VL_EqualFn)(const void *a, const void *b, void *udata);
-//   typedef void *   (*VL_RetainFn)(void *ptr, void *udata); // peut retourner
-//   une copie typedef void     (*VL_ReleaseFn)(void *ptr, void *udata);
-//
-//   typedef struct VL_Table VL_Table;
-//   void     vl_tab_init (VL_Table *t, size_t initial_cap,
-//                         VL_HashFn hf, VL_EqualFn eq,
-//                         VL_RetainFn kret, VL_ReleaseFn kfree,
-//                         VL_RetainFn vret, VL_ReleaseFn vfree,
-//                         void *udata);
-//   void     vl_tab_release(VL_Table *t);
-//   size_t   vl_tab_len  (const VL_Table *t);
-//   size_t   vl_tab_cap  (const VL_Table *t);
-//   int      vl_tab_reserve(VL_Table *t, size_t min_cap);
-//   int      vl_tab_put  (VL_Table *t, const void *key, const void *val); //
-//   replace si existe int      vl_tab_get  (const VL_Table *t, const void *key,
-//   void **out_val); int      vl_tab_del  (VL_Table *t, const void *key);
-//   ssize_t  vl_tab_next (const VL_Table *t, ssize_t i, void **out_key, void
-//   **out_val);
-//
-// Helpers C-string:
-//   uint32_t vl_hash_cstr(const void *k, void *udata);
-//   int      vl_eq_cstr  (const void *a, const void *b, void *udata);
-//   void     vl_tab_init_cstr(VL_Table *t, size_t initial_cap); // hash/eq
-//   préconfigurés + dup/free int      vl_tab_put_cstr(VL_Table *t, const char
-//   *key, const void *val); int      vl_tab_get_cstr(const VL_Table *t, const
-//   char *key, void **out_val); int      vl_tab_del_cstr(VL_Table *t, const
-//   char *key);
-//
-// Build: cc -std=c99 -O2 -Wall -Wextra -pedantic -c core/table.c
+/* ============================================================================
+   table.c — Hash table générique (C17), robin-hood open addressing.
+   - Clés = octets arbitraires (void*, size_t). Valeurs = void*.
+   - Callbacks configurables: hash, égalité, free(key), free(val).
+   - Copy-on-insert optionnel des clés (copy_keys=1) ou adoption de pointeurs.
+   - Effacement par backward-shift (pas de tombstones). Rehash auto.
+   - Iteration stable via vt_table_next.
+   - Thread-safety non incluse par design.
+   Licence: MIT.
+   ============================================================================
+ */
+#include "table.h"
 
+#include <assert.h>
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#ifdef _WIN32
-#include <BaseTsd.h>
-typedef SSIZE_T ssize_t;
+
+/* ----------------------------------------------------------------------------
+   Helpers
+---------------------------------------------------------------------------- */
+#ifndef VT_LIKELY
+#if defined(__GNUC__) || defined(__clang__)
+#define VT_LIKELY(x) __builtin_expect(!!(x), 1)
+#define VT_UNLIKELY(x) __builtin_expect(!!(x), 0)
 #else
-#include <sys/types.h>
+#define VT_LIKELY(x) (x)
+#define VT_UNLIKELY(x) (x)
+#endif
 #endif
 
-// ───────────────────────── Signatures publiques ─────────────────────────
-typedef uint32_t (*VL_HashFn)(const void *key, void *udata);
-typedef int (*VL_EqualFn)(const void *a, const void *b, void *udata);
-typedef void *(*VL_RetainFn)(void *ptr, void *udata);
-typedef void (*VL_ReleaseFn)(void *ptr, void *udata);
+static inline uint64_t vt__rotl64(uint64_t x, unsigned r) {
+  return (x << r) | (x >> (64 - r));
+}
 
-// ───────────────────────── Implémentation ─────────────────────────
+static uint64_t vt__fnv1a64(const void* p, size_t n, void* u) {
+  (void)u;
+  const uint8_t* b = (const uint8_t*)p;
+  uint64_t h = 1469598103934665603ull; /* FNV offset basis */
+  for (size_t i = 0; i < n; i++) {
+    h ^= b[i];
+    h *= 1099511628211ull; /* FNV prime */
+  }
+  /* légère avalanche */
+  h ^= h >> 33;
+  h *= 0xff51afd7ed558ccdULL;
+  h ^= h >> 33;
+  h *= 0xc4ceb9fe1a85ec53ULL;
+  h ^= h >> 33;
+  return h;
+}
 
-typedef struct VL_TableEntry {
-  void *k;
-  void *v;
-  uint32_t h;
-  uint32_t dib;
-} VL_TableEntry;
+static int vt__bytes_eq(const void* a, size_t alen, const void* b, size_t blen,
+                        void* u) {
+  (void)u;
+  return (alen == blen) && (memcmp(a, b, alen) == 0);
+}
 
-typedef struct VL_Table {
-  VL_TableEntry *ent;
-  size_t cap;  // puissance de 2 (>=8)
-  size_t len;  // # éléments vivants
-  VL_HashFn hash;
-  VL_EqualFn eq;
-  VL_RetainFn kret;
-  VL_ReleaseFn kfree;
-  VL_RetainFn vret;
-  VL_ReleaseFn vfree;
-  void *udata;
-} VL_Table;
-
-// ───────────────────────── Utils ─────────────────────────
-static inline size_t round_pow2(size_t x) {
-  if (x < 8) return 8;
+static size_t vt__next_pow2(size_t x) {
+  if (x < 4) return 4;
   x--;
-  for (size_t i = 1; i < sizeof(size_t) * 8; i <<= 1) x |= x >> i;
+  x |= x >> 1;
+  x |= x >> 2;
+  x |= x >> 4;
+  x |= x >> 8;
+  x |= x >> 16;
+  x |= x >> 32;
   return x + 1;
 }
-static inline size_t idx_mask(const VL_Table *t) { return t->cap - 1; }
-static inline uint32_t fnv1a32(const void *p, size_t n) {
-  const unsigned char *s = (const unsigned char *)p;
-  uint32_t h = 2166136261u;
-  for (size_t i = 0; i < n; i++) {
-    h ^= s[i];
-    h *= 16777619u;
+
+/* ----------------------------------------------------------------------------
+   Structures internes
+---------------------------------------------------------------------------- */
+typedef struct vt_entry {
+  uint64_t hash; /* 0 = vide */
+  uint32_t dib;  /* distance to initial bucket (1..), 0 si vide */
+  size_t klen;
+  void* kptr; /* possiblement allouée si copy_keys=1 */
+  void* vptr;
+} vt_entry;
+
+struct vt_table {
+  vt_table_config cfg;
+  vt_entry* slots;
+  size_t cap;     /* taille du tableau (toujours puissance de 2) */
+  size_t len;     /* nb d’entrées occupées */
+  size_t grow_at; /* seuil de redimensionnement */
+  bool copy_keys; /* si 1 → duplique les clés à l’insertion */
+};
+
+/* ----------------------------------------------------------------------------
+   Allocation
+---------------------------------------------------------------------------- */
+#ifndef VT_MALLOC
+#define VT_MALLOC(sz) malloc(sz)
+#define VT_FREE(p) free(p)
+#define VT_REALLOC(p, sz) realloc(p, sz)
+#endif
+
+static void vt__free_key_val(const vt_table* t, vt_entry* e) {
+  if (e->hash == 0) return;
+  if (t->cfg.free_key && (t->copy_keys || t->cfg.free_key_always)) {
+    t->cfg.free_key(e->kptr, t->cfg.udata);
   }
-  return h ? h : 1u;
-}
-
-// ───────────────────────── API ─────────────────────────
-void vl_tab_init(VL_Table *t, size_t initial_cap, VL_HashFn hf, VL_EqualFn eq,
-                 VL_RetainFn kret, VL_ReleaseFn kfree, VL_RetainFn vret,
-                 VL_ReleaseFn vfree, void *udata) {
-  memset(t, 0, sizeof(*t));
-  t->cap = round_pow2(initial_cap ? initial_cap : 8);
-  t->ent = (VL_TableEntry *)calloc(t->cap, sizeof(VL_TableEntry));
-  t->hash = hf;
-  t->eq = eq;
-  t->kret = kret;
-  t->kfree = kfree;
-  t->vret = vret;
-  t->vfree = vfree;
-  t->udata = udata;
-}
-
-void vl_tab_release(VL_Table *t) {
-  if (!t) return;
-  if (t->ent) {
-    for (size_t i = 0; i < t->cap; i++) {
-      if (t->ent[i].k) {
-        if (t->kfree) t->kfree(t->ent[i].k, t->udata);
-        if (t->vfree && t->ent[i].v) t->vfree(t->ent[i].v, t->udata);
-      }
-    }
-    free(t->ent);
-  }
-  memset(t, 0, sizeof(*t));
-}
-
-size_t vl_tab_len(const VL_Table *t) { return t ? t->len : 0; }
-size_t vl_tab_cap(const VL_Table *t) { return t ? t->cap : 0; }
-
-static int vl__tab_reinsert(VL_Table *t, void *k, void *v, uint32_t h) {
-  size_t mask = idx_mask(t);
-  size_t i = (size_t)h & mask;
-  VL_TableEntry cur = {k, v, h, 0};
-  for (;;) {
-    VL_TableEntry *e = &t->ent[i];
-    if (!e->k) {
-      *e = cur;
-      t->len++;
-      return 1;
-    }
-    if (e->h == cur.h && t->eq &&
-        t->eq(e->k, cur.k,
-              t->udata)) {  // replace (rehash phase ne devrait pas arriver)
-      if (t->vfree && e->v) t->vfree(e->v, t->udata);
-      e->v = cur.v;
-      return 1;
-    }
-    if (e->dib < cur.dib) {
-      VL_TableEntry tmp = *e;
-      *e = cur;
-      cur = tmp;
-    }
-    cur.dib++;
-    i = (i + 1) & mask;
+  if (t->cfg.free_val) {
+    t->cfg.free_val(e->vptr, t->cfg.udata);
   }
 }
 
-static int vl__tab_grow(VL_Table *t, size_t ncap) {
-  VL_TableEntry *old = t->ent;
-  size_t ocap = t->cap;
-  t->cap = round_pow2(ncap);
-  t->ent = (VL_TableEntry *)calloc(t->cap, sizeof(VL_TableEntry));
-  if (!t->ent) {
-    t->ent = old;
-    t->cap = ocap;
-    return 0;
+/* ----------------------------------------------------------------------------
+   Core robin-hood
+---------------------------------------------------------------------------- */
+static inline size_t vt__mask(const vt_table* t) { return t->cap - 1; }
+
+static void vt__set_capacity(vt_table* t, size_t new_cap) {
+  vt_entry* old = t->slots;
+  size_t old_cap = t->cap;
+
+  vt_entry* slots = (vt_entry*)VT_MALLOC(new_cap * sizeof(vt_entry));
+  assert(slots && "allocation failed");
+  for (size_t i = 0; i < new_cap; i++) {
+    slots[i].hash = 0;
+    slots[i].dib = 0;
+    slots[i].klen = 0;
+    slots[i].kptr = NULL;
+    slots[i].vptr = NULL;
   }
-  size_t olen = t->len;
+
+  t->slots = slots;
+  t->cap = new_cap;
   t->len = 0;
-  for (size_t i = 0; i < ocap; i++) {
-    if (old[i].k) {
-      vl__tab_reinsert(t, old[i].k, old[i].v, old[i].h);
+  t->grow_at =
+      (size_t)(t->cap * (t->cfg.max_load <= 0.0f ? 0.85f : t->cfg.max_load));
+
+  if (!old) return;
+
+  /* réinsertion des vieux éléments */
+  for (size_t i = 0; i < old_cap; i++) {
+    vt_entry e = old[i];
+    if (e.hash == 0) continue;
+
+    /* insertion robin-hood */
+    size_t idx = e.hash & vt__mask(t);
+    e.dib = 1;
+    for (;;) {
+      vt_entry* cur = &t->slots[idx];
+      if (cur->hash == 0) {
+        *cur = e;
+        t->len++;
+        break;
+      }
+      if (cur->dib < e.dib) {
+        vt_entry tmp = *cur;
+        *cur = e;
+        e = tmp;
+      }
+      idx = (idx + 1) & vt__mask(t);
+      e.dib++;
     }
   }
-  free(old);
-  t->len = olen;
-  return 1;
+
+  VT_FREE(old);
 }
 
-int vl_tab_reserve(VL_Table *t, size_t min_cap) {
-  if (!t) return 0;
-  if (t->cap >= min_cap) return 1;
-  return vl__tab_grow(t, min_cap);
-}
+/* Trouve le slot et remplit out_idx si trouvé */
+static vt_entry* vt__find(const vt_table* t, const void* key, size_t klen,
+                          uint64_t h, size_t* out_idx) {
+  if (t->cap == 0) return NULL;
+  size_t idx = h & vt__mask(t);
+  uint32_t dib = 1;
 
-int vl_tab_put(VL_Table *t, const void *key, const void *val) {
-  if (!t || !key) return 0;
-  if (!t->hash || !t->eq) return 0;
-  if ((t->len + 1) * 100 >= t->cap * 85) {
-    if (!vl__tab_grow(t, t->cap * 2)) return 0;
-  }
-  void *K = (void *)key;
-  void *V = (void *)val;
-  if (t->kret) K = t->kret((void *)key, t->udata);
-  if (t->vret) V = t->vret((void *)val, t->udata);
-  uint32_t h = t->hash(key, t->udata);
-  size_t mask = idx_mask(t);
-  size_t i = (size_t)h & mask;
-  VL_TableEntry cur = {K, V, h, 0};
   for (;;) {
-    VL_TableEntry *e = &t->ent[i];
-    if (!e->k) {
-      *e = cur;
-      t->len++;
-      return 1;
+    vt_entry* cur = &t->slots[idx];
+    if (cur->hash == 0) return NULL; /* chaîne stoppée */
+    if (cur->dib < dib) return NULL; /* robin-hood invariant */
+    if (cur->hash == h &&
+        t->cfg.eq(cur->kptr, cur->klen, key, klen, t->cfg.udata)) {
+      if (out_idx) *out_idx = idx;
+      return cur;
     }
-    if (e->h == cur.h && t->eq(e->k, key, t->udata)) {
-      // replace
-      if (t->kfree) t->kfree(K, t->udata);  // clé retenue inutile
-      if (t->vfree && e->v) t->vfree(e->v, t->udata);
-      e->v = V;
-      return 1;
-    }
-    if (e->dib < cur.dib) {
-      VL_TableEntry tmp = *e;
-      *e = cur;
-      cur = tmp;
-    }
-    cur.dib++;
-    i = (i + 1) & mask;
-  }
-}
-
-int vl_tab_get(const VL_Table *t, const void *key, void **out_val) {
-  if (!t || !key) return 0;
-  size_t mask = idx_mask(t);
-  uint32_t h = t->hash(key, t->udata);
-  size_t i = (size_t)h & mask;
-  uint32_t dib = 0;
-  for (;;) {
-    const VL_TableEntry *e = &t->ent[i];
-    if (!e->k) return 0;
-    if (e->dib < dib) return 0;
-    if (e->h == h && t->eq(e->k, key, t->udata)) {
-      if (out_val) *out_val = e->v;
-      return 1;
-    }
+    idx = (idx + 1) & vt__mask(t);
     dib++;
-    i = (i + 1) & mask;
   }
 }
 
-static void vl__tab_delete_at(VL_Table *t, size_t i) {
-  size_t mask = idx_mask(t);
-  // free entrée i
-  if (t->kfree && t->ent[i].k) t->kfree(t->ent[i].k, t->udata);
-  if (t->vfree && t->ent[i].v) t->vfree(t->ent[i].v, t->udata);
-  // backshift deletion
-  for (size_t j = i;;) {
-    size_t k = (j + 1) & mask;
-    VL_TableEntry e = t->ent[k];
-    if (!e.k || e.dib == 0) {
-      t->ent[j].k = NULL;
-      t->ent[j].v = NULL;
-      t->ent[j].h = 0;
-      t->ent[j].dib = 0;
+/* Insertion ou remplacement. Renvoie pointeur vers slot final. */
+static vt_entry* vt__insert(vt_table* t, const void* key, size_t klen,
+                            void* val, uint64_t h, bool* replaced,
+                            void** old_val) {
+  if (t->cap == 0 || VT_UNLIKELY(t->len + 1 > t->grow_at)) {
+    size_t nc = vt__next_pow2(
+        t->cap ? t->cap * 2 : (t->cfg.initial_cap ? t->cfg.initial_cap : 16));
+    vt__set_capacity(t, nc);
+  }
+
+  size_t idx = h & vt__mask(t);
+  vt_entry e;
+  e.hash = h;
+  e.dib = 1;
+  e.klen = klen;
+  e.vptr = val;
+
+  /* gestion clé */
+  if (t->copy_keys) {
+    void* dup = VT_MALLOC(klen);
+    assert(dup && "alloc key");
+    memcpy(dup, key, klen);
+    e.kptr = dup;
+  } else {
+    e.kptr = (void*)key; /* adoption */
+  }
+
+  for (;;) {
+    vt_entry* cur = &t->slots[idx];
+    if (cur->hash == 0) {
+      *cur = e;
+      t->len++;
+      if (replaced) *replaced = false;
+      if (old_val) *old_val = NULL;
+      return cur;
+    }
+    if (cur->hash == h &&
+        t->cfg.eq(cur->kptr, cur->klen, key, klen, t->cfg.udata)) {
+      /* remplacement valeur */
+      void* prev = cur->vptr;
+      cur->vptr = val;
+      if (t->copy_keys) {
+        /* On a alloué e.kptr, mais la clé existait déjà → libérer duplicat */
+        VT_FREE(e.kptr);
+      }
+      if (replaced) *replaced = true;
+      if (old_val) *old_val = prev;
+      return cur;
+    }
+    if (cur->dib < e.dib) {
+      vt_entry tmp = *cur;
+      *cur = e;
+      e = tmp; /* continue avec l’ancien élément à réinsérer */
+    }
+    idx = (idx + 1) & vt__mask(t);
+    e.dib++;
+  }
+}
+
+/* Suppression par backward-shift à partir de idx */
+static void vt__erase_at(vt_table* t, size_t idx) {
+  vt_entry* slots = t->slots;
+  size_t mask = vt__mask(t);
+  size_t i = idx;
+
+  /* libérer clé/val */
+  vt__free_key_val(t, &slots[i]);
+
+  for (;;) {
+    size_t j = (i + 1) & mask;
+    if (slots[j].hash == 0 || slots[j].dib == 1) {
+      /* fin de cluster: vider i et stop */
+      slots[i].hash = 0;
+      slots[i].dib = 0;
+      slots[i].klen = 0;
+      slots[i].kptr = NULL;
+      slots[i].vptr = NULL;
       break;
     }
-    t->ent[j] = e;
-    t->ent[j].dib--;
-    j = k;
+    /* shift left */
+    slots[i] = slots[j];
+    slots[i].dib--;
+    i = j;
   }
+
+  t->len--;
 }
 
-int vl_tab_del(VL_Table *t, const void *key) {
-  if (!t || !key) return 0;
-  size_t mask = idx_mask(t);
-  uint32_t h = t->hash(key, t->udata);
-  size_t i = (size_t)h & mask;
-  uint32_t dib = 0;
-  for (;;) {
-    VL_TableEntry *e = &t->ent[i];
-    if (!e->k) return 0;
-    if (e->dib < dib) return 0;
-    if (e->h == h && t->eq(e->k, key, t->udata)) {
-      vl__tab_delete_at(t, i);
-      t->len--;
-      return 1;
-    }
-    dib++;
-    i = (i + 1) & mask;
-  }
-}
+/* ----------------------------------------------------------------------------
+   API
+---------------------------------------------------------------------------- */
+int vt_table_init(vt_table* t, const vt_table_config* cfg) {
+  if (!t) return -1;
+  memset(t, 0, sizeof(*t));
 
-ssize_t vl_tab_next(const VL_Table *t, ssize_t i, void **out_key,
-                    void **out_val) {
-  if (!t || !t->ent) return -1;
-  size_t k = (i < 0) ? 0 : (size_t)i + 1;
-  for (; k < t->cap; k++) {
-    if (t->ent[k].k) {
-      if (out_key) *out_key = t->ent[k].k;
-      if (out_val) *out_val = t->ent[k].v;
-      return (ssize_t)k;
-    }
-  }
-  return -1;
-}
+  t->cfg.hash = cfg && cfg->hash ? cfg->hash : vt__fnv1a64;
+  t->cfg.eq = cfg && cfg->eq ? cfg->eq : vt__bytes_eq;
+  t->cfg.free_key = cfg ? cfg->free_key : NULL;
+  t->cfg.free_val = cfg ? cfg->free_val : NULL;
+  t->cfg.udata = cfg ? cfg->udata : NULL;
+  t->cfg.max_load = cfg && cfg->max_load > 0.f ? cfg->max_load : 0.85f;
+  t->cfg.initial_cap = cfg && cfg->initial_cap ? cfg->initial_cap : 16;
+  t->cfg.free_key_always = cfg ? cfg->free_key_always : 0;
 
-// ───────────────────────── Helpers C-string ─────────────────────────
-static void *cstr_retain(void *p, void *ud) {
-  (void)ud;
-  if (!p) return NULL;
-  size_t n = strlen((const char *)p) + 1;
-  char *q = (char *)malloc(n);
-  if (q) memcpy(q, p, n);
-  return q;
-}
-static void cstr_free(void *p, void *ud) {
-  (void)ud;
-  free(p);
-}
+  t->copy_keys = cfg ? cfg->copy_keys : true;
 
-uint32_t vl_hash_cstr(const void *k, void *udata) {
-  (void)udata;
-  const char *s = (const char *)k;
-  return s ? fnv1a32(s, strlen(s)) : 2166136261u;
-}
-int vl_eq_cstr(const void *a, const void *b, void *udata) {
-  (void)udata;
-  const char *sa = (const char *)a, *sb = (const char *)b;
-  if (sa == sb) return 1;
-  if (!sa || !sb) return 0;
-  return strcmp(sa, sb) == 0;
-}
+  t->slots = NULL;
+  t->cap = 0;
+  t->len = 0;
+  t->grow_at = 0;
 
-void vl_tab_init_cstr(VL_Table *t, size_t initial_cap) {
-  vl_tab_init(t, initial_cap, vl_hash_cstr, vl_eq_cstr, cstr_retain, cstr_free,
-              NULL, NULL, NULL);
-}
-int vl_tab_put_cstr(VL_Table *t, const char *key, const void *val) {
-  return vl_tab_put(t, key, val);
-}
-int vl_tab_get_cstr(const VL_Table *t, const char *key, void **out_val) {
-  return vl_tab_get(t, key, out_val);
-}
-int vl_tab_del_cstr(VL_Table *t, const char *key) { return vl_tab_del(t, key); }
-
-// ───────────────────────── Tests ─────────────────────────
-#ifdef VL_TABLE_TEST_MAIN
-#include <assert.h>
-static void t_basic(void) {
-  VL_Table t;
-  vl_tab_init_cstr(&t, 8);
-  for (int i = 0; i < 10000; i++) {
-    char k[32];
-    snprintf(k, sizeof(k), "k%d", i);
-    int *pv = (int *)malloc(sizeof(int));
-    *pv = i;
-    int ok = vl_tab_put_cstr(&t, k, pv);
-    assert(ok);
-  }
-  assert(vl_tab_len(&t) == 10000);
-  for (int i = 0; i < 10000; i++) {
-    char k[32];
-    snprintf(k, sizeof(k), "k%d", i);
-    void *v = NULL;
-    int ok = vl_tab_get_cstr(&t, k, &v);
-    assert(ok && v);
-    assert(*(int *)v == i);
-  }
-  for (int i = 0; i < 5000; i++) {
-    char k[32];
-    snprintf(k, sizeof(k), "k%d", i);
-    int ok = vl_tab_del_cstr(&t, k);
-    assert(ok);
-  }
-  assert(vl_tab_len(&t) == 5000);
-  // itération
-  ssize_t it = -1;
-  size_t count = 0;
-  void *K, *V;
-  while ((it = vl_tab_next(&t, it, &K, &V)) >= 0) {
-    (void)K;
-    free(V);
-    count++;
-  }
-  assert(count == vl_tab_len(&t));
-  vl_tab_release(&t);
-}
-int main(void) {
-  t_basic();
-  puts("ok");
+  vt__set_capacity(t, vt__next_pow2(t->cfg.initial_cap));
   return 0;
+}
+
+void vt_table_free(vt_table* t) {
+  if (!t || !t->slots) return;
+  for (size_t i = 0; i < t->cap; i++) {
+    vt__free_key_val(t, &t->slots[i]);
+  }
+  VT_FREE(t->slots);
+  t->slots = NULL;
+  t->cap = t->len = t->grow_at = 0;
+}
+
+void vt_table_clear(vt_table* t) {
+  if (!t || !t->slots) return;
+  for (size_t i = 0; i < t->cap; i++) {
+    vt__free_key_val(t, &t->slots[i]);
+    t->slots[i].hash = 0;
+    t->slots[i].dib = 0;
+    t->slots[i].klen = 0;
+    t->slots[i].kptr = NULL;
+    t->slots[i].vptr = NULL;
+  }
+  t->len = 0;
+}
+
+size_t vt_table_len(const vt_table* t) { return t ? t->len : 0; }
+
+bool vt_table_put(vt_table* t, const void* key, size_t klen, void* val,
+                  void** old_val_out) {
+  if (!t || !key) return false;
+  uint64_t h = t->cfg.hash(key, klen, t->cfg.udata);
+  bool replaced = false;
+  void* oldv = NULL;
+  vt__insert(t, key, klen, val, h, &replaced, &oldv);
+  if (old_val_out)
+    *old_val_out = oldv;
+  else if (replaced && t->cfg.free_val)
+    t->cfg.free_val(oldv, t->cfg.udata);
+  return true;
+}
+
+bool vt_table_get(const vt_table* t, const void* key, size_t klen,
+                  void** val_out) {
+  if (!t || !key) return false;
+  uint64_t h = t->cfg.hash(key, klen, t->cfg.udata);
+  vt_entry* e = vt__find(t, key, klen, h, NULL);
+  if (!e) return false;
+  if (val_out) *val_out = e->vptr;
+  return true;
+}
+
+bool vt_table_del(vt_table* t, const void* key, size_t klen,
+                  void** old_val_out) {
+  if (!t || !key) return false;
+  size_t idx = 0;
+  uint64_t h = t->cfg.hash(key, klen, t->cfg.udata);
+  vt_entry* e = vt__find(t, key, klen, h, &idx);
+  if (!e) return false;
+
+  /* si on veut renvoyer la valeur, la sauver avant free_val */
+  void* saved_val = e->vptr;
+  void* saved_key = e->kptr;
+  size_t saved_klen = e->klen;
+
+  /* neutraliser free_val si l’appelant veut récupérer old_val_out */
+  if (old_val_out && t->cfg.free_val) {
+    /* on va contourner vt__free_key_val pour la valeur */
+    e->vptr = NULL;
+  }
+  vt__erase_at(t, idx);
+
+  if (old_val_out)
+    *old_val_out = saved_val;
+  else if (t->cfg.free_val)
+    t->cfg.free_val(saved_val, t->cfg.udata);
+
+  /* si la clé était copiée et que free_key n’est pas défini, la libérer
+   * nous-mêmes */
+  if (t->copy_keys && !t->cfg.free_key) {
+    VT_FREE(saved_key);
+  } else if (t->copy_keys && t->cfg.free_key && t->cfg.free_key_always == 0) {
+    /* déjà libérée par vt__free_key_val */
+    (void)saved_key;
+    (void)saved_klen;
+  }
+  return true;
+}
+
+bool vt_table_has(const vt_table* t, const void* key, size_t klen) {
+  if (!t || !key) return false;
+  uint64_t h = t->cfg.hash(key, klen, t->cfg.udata);
+  return vt__find(t, key, klen, h, NULL) != NULL;
+}
+
+void* vt_table_getptr(const vt_table* t, const void* key, size_t klen) {
+  void* v = NULL;
+  if (vt_table_get(t, key, klen, &v)) return v;
+  return NULL;
+}
+
+/* Remplace in-place la valeur à un slot existant. Renvoie false si absent. */
+bool vt_table_replace(vt_table* t, const void* key, size_t klen, void* val,
+                      void** old_val_out) {
+  if (!t || !key) return false;
+  uint64_t h = t->cfg.hash(key, klen, t->cfg.udata);
+  vt_entry* e = vt__find(t, key, klen, h, NULL);
+  if (!e) return false;
+  void* prev = e->vptr;
+  e->vptr = val;
+  if (old_val_out)
+    *old_val_out = prev;
+  else if (t->cfg.free_val)
+    t->cfg.free_val(prev, t->cfg.udata);
+  return true;
+}
+
+/* Réserve pour n éléments au load factor courant. */
+void vt_table_reserve(vt_table* t, size_t n) {
+  if (!t) return;
+  size_t need =
+      (size_t)((double)n /
+               (double)(t->cfg.max_load <= 0.f ? 0.85f : t->cfg.max_load)) +
+      1;
+  need = vt__next_pow2(need < 16 ? 16 : need);
+  if (need > t->cap) vt__set_capacity(t, need);
+}
+
+/* Changement de stratégie de clés: copy/adopt. Non thread-safe. */
+void vt_table_set_copy_keys(vt_table* t, bool copy) {
+  if (!t) return;
+  t->copy_keys = copy;
+}
+
+/* ----------------------------------------------------------------------------
+   Itération
+---------------------------------------------------------------------------- */
+void vt_table_iter_init(vt_table_iter* it) {
+  if (!it) return;
+  it->idx = SIZE_MAX;
+}
+
+bool vt_table_next(vt_table* t, vt_table_iter* it, const void** kptr,
+                   size_t* klen, void** vptr) {
+  if (!t || !it) return false;
+  size_t i = (it->idx == SIZE_MAX) ? 0 : (it->idx + 1);
+  for (; i < t->cap; i++) {
+    vt_entry* e = &t->slots[i];
+    if (e->hash != 0) {
+      if (kptr) *kptr = e->kptr;
+      if (klen) *klen = e->klen;
+      if (vptr) *vptr = e->vptr;
+      it->idx = i;
+      return true;
+    }
+  }
+  return false;
+}
+
+/* ----------------------------------------------------------------------------
+   Utilitaires standards de hachage (exposés par table.h)
+---------------------------------------------------------------------------- */
+uint64_t vt_hash_bytes(const void* p, size_t n) {
+  return vt__fnv1a64(p, n, NULL);
+}
+
+uint64_t vt_hash_cstr(const char* z) {
+  return vt__fnv1a64(z, z ? strlen(z) : 0, NULL);
+}
+
+int vt_keyeq_bytes(const void* a, size_t alen, const void* b, size_t blen) {
+  return vt__bytes_eq(a, alen, b, blen, NULL);
+}
+
+/* ----------------------------------------------------------------------------
+   Debug/asserts basiques (optionnel)
+---------------------------------------------------------------------------- */
+#ifndef NDEBUG
+static int vt__is_power_of_two(size_t x) { return x && !(x & (x - 1)); }
+void vt_table__self_check(const vt_table* t) {
+  assert(t);
+  assert(vt__is_power_of_two(t->cap));
+  size_t seen = 0;
+  for (size_t i = 0; i < t->cap; i++) {
+    const vt_entry* e = &t->slots[i];
+    if (e->hash == 0) {
+      assert(e->dib == 0);
+      continue;
+    }
+    seen++;
+    size_t home = e->hash & vt__mask(t);
+    size_t dist = (i + t->cap - home) & vt__mask(t);
+    assert(dist + 1 == e->dib);
+  }
+  assert(seen == t->len);
 }
 #endif
