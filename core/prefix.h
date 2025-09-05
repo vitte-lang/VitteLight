@@ -238,3 +238,4 @@ static VL_ALWAYS_INLINE uint64_t vl_be64(uint64_t x) {
 #endif
 
 #endif  // VITTE_LIGHT_CORE_PREFIX_H
+
