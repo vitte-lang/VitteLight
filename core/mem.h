@@ -1,109 +1,149 @@
-// vitte-light/core/mem.h
-// API mémoire utilitaire: allocations sûres, arène, pool fixe, buffer
-// dynamique. Implémentation: core/mem.c
+/* ============================================================================
+   mem.h — Allocation & utilitaires mémoire (C17) — API ultra complète
+   - Wrappers sûrs (vt_malloc/calloc/realloc/free) avec statistiques atomiques
+   - Aligned alloc cross-platform
+   - Pages OS (mmap/VirtualAlloc)
+   - Arena allocator (grow, mark/reset, align)
+   - Pool d’objets fixes (free-list)
+   - Buffer dynamique (vt_buf) + printf-like
+   - Duplication (mem/str), fill/zero/swap
+   - Leak tracking optionnel (VT_MEM_LEAK_TRACK)
+   Licence: MIT.
+   ============================================================================
+ */
+#ifndef VT_MEM_H
+#define VT_MEM_H
+#pragma once
 
-#ifndef VITTE_LIGHT_CORE_MEM_H
-#define VITTE_LIGHT_CORE_MEM_H
+#include <stddef.h> /* size_t */
+#include <stdint.h> /* uintptr_t */
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#include <stdarg.h>  // va_list
-#include <stddef.h>
-#include <stdint.h>
-
-#ifndef VL_DEFAULT_ALIGN
-#define VL_DEFAULT_ALIGN ((size_t)(sizeof(void *) * 2u))
+/* ----------------------------------------------------------------------------
+   Export / annotations
+---------------------------------------------------------------------------- */
+#ifndef VT_MEM_API
+#define VT_MEM_API extern
 #endif
 
-// ───────────────────── OOM & stats ─────────────────────
+#if defined(__GNUC__) || defined(__clang__)
+#define VT_PRINTF(fmt_idx, va_idx) \
+  __attribute__((format(printf, fmt_idx, va_idx)))
+#else
+#define VT_PRINTF(fmt_idx, va_idx)
+#endif
 
-typedef void (*VL_OOM_Handler)(size_t bytes);
-void vl_mem_set_oom_handler(VL_OOM_Handler fn);
-void vl_mem_stats(size_t *allocd, size_t *freed, size_t *live);
+/* ----------------------------------------------------------------------------
+   Configuration compile-time (optionnelle)
+   - VT_MEM_LEAK_TRACK       : active le suivi de fuites (coût modéré)
+   - VT_MEM_DEFAULT_ABORT_ON_OOM=1 : abort sur OOM dans vt_*alloc (par défaut 1)
+---------------------------------------------------------------------------- */
+#ifndef VT_MEM_DEFAULT_ABORT_ON_OOM
+#define VT_MEM_DEFAULT_ABORT_ON_OOM 1
+#endif
 
-// ───────────────────── Wrappers d'allocation ─────────────────────
-// suffixe _s: retourne NULL en cas d'échec. suffixe _x: abort via handler OOM.
-void *vl_malloc_s(size_t n);
-void *vl_calloc_s(size_t c, size_t n);
-void *vl_realloc_s(void *p, size_t n);
-void vl_free(void *p, size_t n_hint);
+/* ----------------------------------------------------------------------------
+   Statistiques globales
+---------------------------------------------------------------------------- */
+typedef struct vt_mem_stats {
+  size_t cur_bytes;    /* octets actuellement alloués */
+  size_t peak_bytes;   /* pic observé */
+  size_t total_allocs; /* nombre total d’allocations */
+  size_t total_frees;  /* nombre total de free */
+} vt_mem_stats;
 
-void *vl_malloc_x(size_t n);
-void *vl_calloc_x(size_t c, size_t n);
-void *vl_realloc_x(void *p, size_t n);
+/* ----------------------------------------------------------------------------
+   API de base (wrappers sûrs)
+---------------------------------------------------------------------------- */
+VT_MEM_API void vt_mem_init(void);
+VT_MEM_API void vt_mem_shutdown(void);
+VT_MEM_API void vt_mem_get_stats(vt_mem_stats* out);
+VT_MEM_API void vt_mem_set_abort_on_oom(int on); /* 0=retourne NULL, 1=abort */
 
-// ───────────────────── Allocation alignée ─────────────────────
-void *vl_aligned_alloc(size_t align, size_t n);
-void vl_aligned_free(void *p);
+VT_MEM_API void* vt_malloc(size_t n);
+VT_MEM_API void* vt_calloc(size_t nmemb, size_t size);
+VT_MEM_API void* vt_realloc(void* p, size_t n);
+VT_MEM_API void vt_free(void* p);
 
-// ───────────────────── Arène (bump allocator) ─────────────────────
+VT_MEM_API void* vt_aligned_alloc(size_t alignment, size_t size);
+VT_MEM_API void vt_aligned_free(void* p);
 
-typedef struct VL_ArenaChunk VL_ArenaChunk;  // opaque pour l'utilisateur
+VT_MEM_API void* vt_memdup(const void* src, size_t n);
+VT_MEM_API char* vt_strndup(const char* s, size_t n);
 
-typedef struct VL_Arena {
-  VL_ArenaChunk *head;
-  size_t chunk_size;
-  size_t align;
-  size_t total_bytes;  // stats cumulées
-  size_t peak_used;    // plus gros "used" dans la tête
-  size_t n_chunks;
-} VL_Arena;
+VT_MEM_API void vt_mem_zero(void* p, size_t n);
+VT_MEM_API void vt_mem_fill(void* p, int byte, size_t n);
+VT_MEM_API void vt_mem_swap(void* a, void* b, size_t n);
 
-typedef struct {
-  VL_ArenaChunk *chunk;
-  size_t used;
-} VL_ArenaMark;
+/* ----------------------------------------------------------------------------
+   Pages OS (grands buffers page-alignés)
+---------------------------------------------------------------------------- */
+VT_MEM_API void* vt_page_alloc(size_t size);        /* size arrondi à la page */
+VT_MEM_API void vt_page_free(void* p, size_t size); /* size identique à alloc */
 
-void vl_arena_init(VL_Arena *A, size_t chunk_size, size_t align);
-void vl_arena_release(VL_Arena *A);
-void *vl_arena_alloc(VL_Arena *A, size_t n);
-void *vl_arena_alloc_aligned(VL_Arena *A, size_t n, size_t align);
-char *vl_arena_strdup(VL_Arena *A, const char *s);
-char *vl_arena_strndup(VL_Arena *A, const char *s, size_t n);
-VL_ArenaMark vl_arena_mark(const VL_Arena *A);
-void vl_arena_reset_to(VL_Arena *A, VL_ArenaMark m);
+/* ----------------------------------------------------------------------------
+   Arena allocator
+   - vt_arena : opaque côté utilisateur
+   - Mark/reset pour rollback O(1)
+---------------------------------------------------------------------------- */
+typedef struct vt_arena vt_arena;
 
-// ───────────────────── Pool fixe (slab allocator) ─────────────────────
+typedef struct vt_arena_mark {
+  void* _chunk;  /* opaque */
+  size_t _len;   /* offset sauvegardé */
+  size_t _total; /* total bytes dans l’arena au moment du mark */
+} vt_arena_mark;
 
-typedef struct VL_PoolSlab VL_PoolSlab;  // opaque
+/* Crée la première chunk (taille suggérée). Si 0 → ~64 KiB par défaut. */
+VT_MEM_API void vt_arena_init(vt_arena* a, size_t first_chunk_bytes);
+VT_MEM_API void vt_arena_dispose(vt_arena* a);
 
-typedef struct VL_Pool {
-  VL_PoolSlab *slabs;
-  void *free_list;        // single-linked via tête de bloc
-  size_t item_size;       // arrondi à VL_DEFAULT_ALIGN
-  size_t items_per_slab;  // éléments par slab
-  size_t slab_bytes;      // taille réelle par slab
-  size_t n_items;         // objets vivants
-} VL_Pool;
+/* Alloue n octets, alignés sur `align` (puissance de 2 ; 0 → align par défaut).
+ */
+VT_MEM_API void* vt_arena_alloc(vt_arena* a, size_t n, size_t align);
 
-void vl_pool_init(VL_Pool *P, size_t item_size, size_t items_per_slab);
-void *vl_pool_alloc(VL_Pool *P);
-void vl_pool_free(VL_Pool *P, void *ptr);
-void vl_pool_release(VL_Pool *P);
+/* Remet l’arena à zéro mais conserve la première chunk. */
+VT_MEM_API void vt_arena_reset(vt_arena* a);
 
-// ───────────────────── Buffer dynamique (byte builder) ─────────────────────
+/* Sauvegarde et restaure une position logique de l’arena. */
+VT_MEM_API vt_arena_mark vt_arena_mark_get(vt_arena* a);
+VT_MEM_API void vt_arena_mark_reset(vt_arena* a, vt_arena_mark m);
 
-typedef struct VL_Buffer {
-  uint8_t *d;
-  size_t n, cap;
-} VL_Buffer;
+/* ----------------------------------------------------------------------------
+   Pool d’objets fixes (free-list)
+   - vt_pool : opaque
+---------------------------------------------------------------------------- */
+typedef struct vt_pool vt_pool;
 
-void vl_buf_init(VL_Buffer *b);
-void vl_buf_free(VL_Buffer *b);
-int vl_buf_reserve(VL_Buffer *b, size_t need);
-int vl_buf_append(VL_Buffer *b, const void *src, size_t n);
-int vl_buf_putc(VL_Buffer *b, int c);
-int vl_buf_vprintf(VL_Buffer *b, const char *fmt, va_list ap);
-int vl_buf_printf(VL_Buffer *b, const char *fmt, ...);
-char *vl_buf_take_cstr(VL_Buffer *b);  // retourne et remet le buffer à zéro
+/* obj_align puissance de 2 (0 → align défaut). objs_per_block=0 → 64. */
+VT_MEM_API int vt_pool_init(vt_pool* p, size_t obj_size, size_t obj_align,
+                            size_t objs_per_block);
+VT_MEM_API void vt_pool_dispose(vt_pool* p);
+VT_MEM_API void* vt_pool_alloc(vt_pool* p);
+VT_MEM_API void vt_pool_free(vt_pool* p, void* obj);
 
-// ───────────────────── Fichiers ─────────────────────
-int vl_write_file(const char *path, const void *data, size_t n);
+/* ----------------------------------------------------------------------------
+   Buffer dynamique (octets) avec helpers printf-like
+---------------------------------------------------------------------------- */
+typedef struct vt_buf {
+  unsigned char* data;
+  size_t len;
+  size_t cap;
+} vt_buf;
+
+VT_MEM_API void vt_buf_init(vt_buf* b);
+VT_MEM_API void vt_buf_dispose(vt_buf* b);
+VT_MEM_API int vt_buf_reserve(vt_buf* b, size_t need_cap);
+VT_MEM_API int vt_buf_append(vt_buf* b, const void* data, size_t n);
+VT_MEM_API int vt_buf_append_cstr(vt_buf* b, const char* s);
+VT_MEM_API int vt_buf_printf(vt_buf* b, const char* fmt, ...) VT_PRINTF(2, 3);
+/* Détache le buffer (ownership transféré). Remet b à vide. */
+VT_MEM_API unsigned char* vt_buf_detach(vt_buf* b, size_t* out_len);
 
 #ifdef __cplusplus
-}  // extern "C"
+} /* extern "C" */
 #endif
-
-#endif  // VITTE_LIGHT_CORE_MEM_H
+#endif /* VT_MEM_H */
