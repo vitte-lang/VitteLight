@@ -29,6 +29,32 @@
   const fabToc    = document.getElementById("fabToc");
   const content   = document.getElementById("content");
 
+  // crée/garantit la box de suggestions + styles de secours
+  function ensureSuggBox(){
+    let box = document.getElementById("suggestions");
+    if (srchRoot && getComputedStyle(srchRoot).position === "static") {
+      srchRoot.style.position = "relative";
+    }
+    if(!box){
+      box = document.createElement("div");
+      box.id = "suggestions";
+      (srchRoot || document.body).appendChild(box);
+    }
+    box.style.position = "absolute";
+    box.style.left = "0";
+    box.style.top = "100%";
+    box.style.marginTop = ".25rem";
+    box.style.zIndex = "9999";
+    box.style.background = "var(--card, #0f141b)";
+    box.style.border = "1px solid var(--line, #202938)";
+    box.style.borderRadius = "8px";
+    box.style.maxHeight = "50vh";
+    box.style.overflow = "auto";
+    box.style.width = "min(48rem, 95vw)";
+    box.style.padding = "6px";
+    return box;
+  }
+
   // Theme
   const modeBtn = document.getElementById("modeBtn");
   const THEMES = ["auto","light","dark"]; const THEME_KEY="vl.theme";
@@ -360,7 +386,6 @@
       else groups.text.push(item);
     });
 
-    // ✅ corrections de tri
     groups.heading.sort((a,b)=> b.score - a.score);
     groups.code.sort((a,b)=> b.score - a.score);
     groups.text.sort((a,b)=> b.score - a.score);
@@ -421,10 +446,21 @@
 
   /* ========== SUGGESTIONS UI ==========\ */
   let selIndex=-1;
-  function hideSugg(){ if(!suggBox) return; suggBox.setAttribute("hidden",""); suggBox.innerHTML=""; srchRoot?.setAttribute("aria-expanded","false"); selIndex=-1; }
+  function hideSugg(){
+    const box = document.getElementById("suggestions");
+    if(!box) return;
+    box.setAttribute("hidden","");
+    box.innerHTML="";
+    srchRoot?.setAttribute("aria-expanded","false");
+    selIndex=-1;
+  }
   function famTag(text, emph=false){ const s=document.createElement("span"); s.className="tag"+(emph?" emph":""); s.textContent=text; return s; }
   function pill(label, pressed, cb){ const p=document.createElement("button"); p.type="button"; p.className="pill"; p.textContent=label; p.setAttribute("aria-pressed", pressed?"true":"false"); p.addEventListener("click", cb); return p; }
-  function addGroupHeader(label, addons){ const h=document.createElement("div"); h.className="group-h"; h.textContent=label; if(addons){ const box=document.createElement("div"); box.className="filters"; addons.forEach(x=>box.appendChild(x)); h.appendChild(box); } suggBox.appendChild(h); }
+  function addGroupHeader(label, addons){
+    const h=document.createElement("div"); h.className="group-h"; h.textContent=label;
+    if(addons){ const box=document.createElement("div"); box.className="filters"; addons.forEach(x=>box.appendChild(x)); h.appendChild(box); }
+    ensureSuggBox().appendChild(h);
+  }
 
   function addItemToSugg(item){
     const { d } = item;
@@ -451,13 +487,15 @@
         location.href = d.url + anchor;
       }
     });
-    suggBox.appendChild(btn);
+    ensureSuggBox().appendChild(btn);
   }
 
   function renderSuggestions(query){
-    if(!suggBox) return;
+    const box = ensureSuggBox();
+    box.removeAttribute("hidden");
+    srchRoot?.setAttribute("aria-expanded","true");
     const res=matchAndScore(query ?? "");
-    suggBox.innerHTML="";
+    box.innerHTML="";
 
     const filePills=[pill("Toutes les pages", true, ()=>{
       if(!q) return; q.value=q.value.replace(/\bfile:[^\s]+/i,"").trim(); renderSuggestions(q.value);
@@ -487,16 +525,16 @@
     if(res.keyword.length || res.word.length || res.char.length){
       addGroupHeader("Suggestions de requêtes");
       res.keyword.slice(0,6).forEach(tok=>{
-        const btn=document.createElement("button"); btn.type="button"; btn.className="sugg-item";
-        btn.innerHTML=`<div class="sugg-left"><strong>${tok.label}</strong><small>Mot-clé</small></div><div class="sugg-right">${famTag("Keyword",true).outerHTML}</div>`;
-        btn.addEventListener("click", ()=>{ if(!q) return; q.value=tok.label.replace(/^"|"$/g,""); doSearch(q.value); });
-        suggBox.appendChild(btn);
+        const b=document.createElement("button"); b.type="button"; b.className="sugg-item";
+        b.innerHTML=`<div class="sugg-left"><strong>${tok.label}</strong><small>Mot-clé</small></div><div class="sugg-right">${famTag("Keyword",true).outerHTML}</div>`;
+        b.addEventListener("click", ()=>{ if(!q) return; q.value=tok.label.replace(/^"|"$/g,""); doSearch(q.value); });
+        box.appendChild(b);
       });
       res.word.slice(0,6).forEach(tok=>{
-        const btn=document.createElement("button"); btn.type="button"; btn.className="sugg-item";
-        btn.innerHTML=`<div class="sugg-left"><strong>${tok.label}</strong><small>Terme</small></div><div class="sugg-right">${famTag("Word",true).outerHTML}</div>`;
-        btn.addEventListener("click", ()=>{ if(!q) return; q.value=tok.label; doSearch(q.value); });
-        suggBox.appendChild(btn);
+        const b=document.createElement("button"); b.type="button"; b.className="sugg-item";
+        b.innerHTML=`<div class="sugg-left"><strong>${tok.label}</strong><small>Terme</small></div><div class="sugg-right">${famTag("Word",true).outerHTML}</div>`;
+        b.addEventListener("click", ()=>{ if(!q) return; q.value=tok.label; doSearch(q.value); });
+        box.appendChild(b);
       });
     }else if(!(query ?? "").trim() && SITE_INDEX){
       addGroupHeader("Mots-clés fréquents");
@@ -506,7 +544,7 @@
         c.addEventListener("click", ()=>{ if(!q) return; q.value=k; doSearch(k); });
         bar.appendChild(c);
       });
-      suggBox.appendChild(bar);
+      box.appendChild(bar);
     }
 
     if(res.heading.length){ addGroupHeader("Titres & sous-titres"); res.heading.slice(0,8).forEach(it=>addItemToSugg(it)); }
@@ -514,11 +552,9 @@
     if(res.code.length){ addGroupHeader("Blocs de code"); res.code.slice(0,8).forEach(it=>addItemToSugg(it)); }
 
     if(!res.summary.total && (query ?? "").trim()){
-      const e=document.createElement("div"); e.className="sugg-item"; e.innerHTML="<small>Aucun résultat</small>"; suggBox.appendChild(e);
+      const e=document.createElement("div"); e.className="sugg-item"; e.innerHTML="<small>Aucun résultat</small>"; box.appendChild(e);
     }
 
-    suggBox.removeAttribute("hidden");
-    srchRoot?.setAttribute("aria-expanded","true");
     updateToolbarH();
 
     const parts=[];
@@ -547,7 +583,8 @@
   if(q){
     q.addEventListener("input", ()=>{ if(q._t) clearTimeout(q._t); q._t=setTimeout(()=>renderSuggestions(q.value||""),140); });
     q.addEventListener("keydown", (e)=>{
-      const items=[...(suggBox?.querySelectorAll(".sugg-item")||[])];
+      const box = document.getElementById("suggestions");
+      const items=[...(box?.querySelectorAll(".sugg-item")||[])];
       if(e.key==="Enter"){
         if(items.length && selIndex>=0){ e.preventDefault(); items[selIndex]?.click(); return; }
         e.preventDefault(); doSearch(q.value||""); return;
