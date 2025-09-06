@@ -1,236 +1,125 @@
 <!doctype html>
-<html lang="fr">
-
+<html lang="fr" data-theme="auto">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>VITTE LIGHT — Guide utilisateur complet (Révision 2025-09-05)</title>
   <meta name="color-scheme" content="light dark" />
+  <title>VITTE LIGHT — Guide utilisateur complet (Révision 2025-09-05)</title>
+  <meta name="description" content="Guide Vitte Light : installation, CLI, structure de projet, FFI, CI, bonnes pratiques." />
+
   <style>
-    :root {
-      --bg: #ffffff;
-      --fg: #0f172a;
-      --muted: #64748b;
-      --card: #f8fafc;
-      --border: #e2e8f0;
-      --accent: #2563eb;
-      --code: #111827;
+    /* ——— Thème ——— */
+    :root{
+      --bg:#ffffff; --fg:#0f172a; --muted:#64748b; --card:#f8fafc;
+      --border:#e2e8f0; --accent:#2563eb; --code:#111827;
+      --btnbg:#111827; --btnfg:#ffffff; --shadow:0 2px 10px rgba(0,0,0,.05);
+      --wrap:1040px; --radius:12px; --focus:#94a3b8;
+      --codebg:#0b1020; --codefg:#e6edf3;
     }
-
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --bg: #0b1020;
-        --fg: #e8eef6;
-        --muted: #9aa7bd;
-        --card: #0f152a;
-        --border: #1f2a44;
-        --accent: #60a5fa;
-        --code: #e6edf3;
+    @media (prefers-color-scheme: dark){
+      :root{
+        --bg:#0b1020; --fg:#e8eef6; --muted:#9aa7bd; --card:#0f152a;
+        --border:#1f2a44; --accent:#60a5fa; --code:#e6edf3;
+        --btnbg:#e6edf3; --btnfg:#0b1020; --shadow:0 2px 10px rgba(0,0,0,.3);
+        --codebg:#0b1325; --codefg:#e6edf3;
       }
     }
+    [data-theme="light"]{ color-scheme:light }
+    [data-theme="dark"]{  color-scheme:dark  }
 
-    * {
-      box-sizing: border-box
+    /* ——— Reset/typo ——— */
+    *{box-sizing:border-box}
+    html{font-size:16px}
+    body{
+      margin:0; background:var(--bg); color:var(--fg);
+      font:16px/1.7 system-ui,-apple-system,"Segoe UI",Roboto,Inter,Arial,"Noto Sans";
     }
+    a{color:var(--accent); text-decoration:none}
+    a:hover{text-decoration:underline}
+    .wrap{max-width:var(--wrap); margin:0 auto; padding:0 16px}
+    .skip{position:absolute; left:-9999px; top:auto}
+    .skip:focus{left:16px; top:12px; background:var(--card); padding:.5rem .75rem; border:1px solid var(--border); border-radius:.5rem}
 
-    body {
-      margin: 0;
-      background: var(--bg);
-      color: var(--fg);
-      font: 16px/1.7 system-ui, -apple-system, Segoe UI, Roboto, Inter, Arial, "Noto Sans";
+    /* ——— Toolbar ——— */
+    .toolbar{position:sticky; top:0; z-index:50; background:var(--bg); border-bottom:1px solid var(--border)}
+    .toolbar .wrap{display:flex; align-items:center; gap:.5rem; height:56px}
+    .brand{font-weight:700}
+    .srch{margin-left:auto; display:flex; align-items:center; gap:.5rem}
+    .srch input{
+      width:280px; max-width:45vw; padding:.5rem .65rem; border:1px solid var(--border);
+      background:var(--card); color:var(--fg); border-radius:.5rem; outline:none;
     }
+    .srch input:focus{box-shadow:0 0 0 3px var(--focus)}
+    .mini{font-size:.875rem; color:var(--muted)}
+    .split{width:1px; height:24px; background:var(--border); margin:0 .25rem}
+    .btn{
+      border:1px solid var(--border); background:var(--btnbg); color:var(--btnfg);
+      padding:.45rem .7rem; border-radius:.5rem; cursor:pointer; box-shadow:var(--shadow)
+    }
+    .btn-ghost{background:transparent; color:var(--fg)}
+    .btn:focus{outline:none; box-shadow:0 0 0 3px var(--focus)}
 
-    a {
-      color: var(--accent);
-      text-decoration: none
-    }
+    /* ——— Header ——— */
+    header{padding:24px; border-bottom:1px solid var(--border); background:linear-gradient(180deg, rgba(99,102,241,.08), transparent)}
+    .container{max-width:var(--wrap); margin:0 auto; padding:0 16px}
+    .intro{display:flex; gap:18px; align-items:flex-end; flex-wrap:wrap}
+    h1{margin:0; font-size:clamp(24px,3vw,36px); letter-spacing:.2px}
+    .rev{color:var(--muted)}
 
-    a:hover {
-      text-decoration: underline
-    }
+    /* ——— Corps ——— */
+    main{padding:24px 0}
+    nav.toc{background:var(--card); border:1px solid var(--border); border-radius:12px; padding:14px 16px; margin:20px 0 8px}
+    nav.toc strong{font-size:13px; color:var(--muted); text-transform:uppercase; letter-spacing:.08em}
+    nav.toc ul{margin:8px 0 0; padding:0 0 0 16px}
+    section{margin:28px 0}
+    h2{margin:0 0 10px; padding-top:10px; border-top:1px solid var(--border)}
+    h3{margin:18px 0 8px}
+    p{margin:.6rem 0}
+    ul,ol{margin:.4rem 0 .8rem 1.25rem}
+    .card{background:var(--card); border:1px solid var(--border); border-radius:12px; padding:16px}
+    code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,Monaco,monospace; background:color-mix(in srgb, var(--card) 85%, transparent); color:var(--code); padding:.15em .35em; border-radius:6px; border:1px solid var(--border)}
+    pre{margin:.75rem 0; padding:14px 16px; border-radius:12px; background:var(--codebg); color:var(--codefg); border:1px solid var(--border); overflow:auto}
+    pre code{background:transparent; border:0; padding:0; color:var(--codefg)}
+    hr{border:0; border-top:1px dashed var(--border); margin:16px 0}
+    .note{color:var(--muted); font-size:.95rem}
+    mark{background:#fde68a; color:#111827; padding:0 .15em; border-radius:.2em}
 
-    header {
-      padding: 24px;
-      border-bottom: 1px solid var(--border);
-      background: linear-gradient(180deg, rgba(99, 102, 241, .08), transparent);
+    /* ——— FAB Sommaire ——— */
+    .toc-fab{
+      position:fixed; right:clamp(16px,2vw,24px);
+      bottom:calc(max(16px, env(safe-area-inset-bottom)) + 8px);
+      z-index:40; display:inline-flex; align-items:center; gap:.5rem;
+      padding:.65rem .9rem; border-radius:9999px; border:1px solid var(--border);
+      background:var(--accent); color:#fff; box-shadow:0 6px 18px rgba(0,0,0,.22);
+      font-weight:600; font-size:.95rem; cursor:pointer; opacity:.95; transform:translateY(8px);
+      transition:opacity .15s, transform .15s;
     }
-
-    .container {
-      max-width: 1000px;
-      margin: 0 auto;
-      padding: 24px
-    }
-
-    .intro {
-      display: flex;
-      gap: 18px;
-      align-items: flex-end;
-      flex-wrap: wrap
-    }
-
-    h1 {
-      margin: 0;
-      font-size: clamp(24px, 3vw, 36px);
-      letter-spacing: .2px
-    }
-
-    .rev {
-      color: var(--muted)
-    }
-
-    nav.toc {
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 14px 16px;
-      margin: 20px 0 8px 0;
-    }
-
-    nav.toc strong {
-      font-size: 13px;
-      color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: .08em
-    }
-
-    nav.toc ul {
-      margin: 8px 0 0 0;
-      padding: 0 0 0 16px
-    }
-
-    section {
-      margin: 28px 0
-    }
-
-    h2 {
-      margin: 0 0 10px 0;
-      padding-top: 10px;
-      border-top: 1px solid var(--border)
-    }
-
-    h3 {
-      margin: 18px 0 8px 0
-    }
-
-    p {
-      margin: .6rem 0
-    }
-
-    ul,
-    ol {
-      margin: .4rem 0 .8rem 1.25rem
-    }
-
-    .card {
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 16px;
-    }
-
-    code {
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, Monaco, monospace;
-      background: color-mix(in srgb, var(--card) 85%, transparent);
-      color: var(--code);
-      padding: .15em .35em;
-      border-radius: 6px;
-      border: 1px solid var(--border)
-    }
-
-    pre {
-      margin: .75rem 0;
-      padding: 14px 16px;
-      border-radius: 12px;
-      background: var(--card);
-      border: 1px solid var(--border);
-      overflow: auto
-    }
-
-    pre code {
-      background: transparent;
-      border: 0;
-      padding: 0;
-      color: var(--code)
-    }
-
-    hr {
-      border: 0;
-      border-top: 1px dashed var(--border);
-      margin: 16px 0
-    }
-
-    .note {
-      color: var(--muted);
-      font-size: .95rem
-    }
-
-    /* Bouton flottant "Sommaire" */
-    .toc-fab {
-      position: fixed;
-      right: clamp(16px, 2vw, 24px);
-      bottom: calc(max(16px, env(safe-area-inset-bottom)) + 8px);
-      z-index: 9999;
-      display: inline-flex;
-      align-items: center;
-      gap: .5rem;
-      padding: .65rem .9rem;
-      border-radius: 9999px;
-      border: 1px solid var(--border);
-      background: var(--accent);
-      color: #fff;
-      box-shadow: 0 6px 18px rgba(0, 0, 0, .22);
-      font-weight: 600;
-      font-size: .95rem;
-      cursor: pointer;
-      opacity: .95;
-      transform: translateY(8px);
-      transition: opacity .15s, transform .15s;
-    }
-
-    .toc-fab:hover {
-      opacity: 1;
-      transform: translateY(0)
-    }
-
-    .toc-fab:focus-visible {
-      outline: 3px solid color-mix(in srgb, var(--accent) 35%, transparent);
-      outline-offset: 2px
-    }
-
-    .toc-fab[hidden] {
-      display: none !important
-    }
-
-    @media (prefers-reduced-motion: reduce) {
-      .toc-fab {
-        transition: none;
-        transform: none
-      }
-    }
-
-    @media print {
-      .toc-fab {
-        display: none
-      }
-    }
+    .toc-fab:hover{opacity:1; transform:translateY(0)}
+    .toc-fab[hidden]{display:none!important}
+    @media (prefers-reduced-motion: reduce){ .toc-fab{transition:none; transform:none} }
+    @media print{ .toc-fab{display:none} }
   </style>
 </head>
 
 <body>
+  <a class="skip" href="#content">Aller au contenu</a>
+
   <!-- ===== Toolbar ===== -->
   <div class="toolbar" role="navigation" aria-label="Barre d’outils">
     <div class="wrap">
       <span class="brand">Vitte Light • Guide</span>
+
       <div class="srch" role="search">
         <input id="q" type="search" placeholder="Rechercher (Ctrl+K)" aria-label="Rechercher dans le guide" />
         <span class="mini" id="hits" aria-live="polite"></span>
       </div>
-      <button class="btn btn-ghost" id="modeBtn" title="Basculer clair/sombre" aria-pressed="false">Thème</button>
+
+      <button class="btn btn-ghost" id="modeBtn" title="Basculer clair/sombre/auto" aria-pressed="false" aria-label="Basculer le thème">Thème</button>
       <div class="split" aria-hidden="true"></div>
-      <button class="btn btn-ghost" id="zoomOut" title="Réduire le texte">A−</button>
-      <button class="btn btn-ghost" id="zoomIn" title="Agrandir le texte">A+</button>
+      <button class="btn btn-ghost" id="zoomOut" title="Réduire le texte (Ctrl -)" aria-label="Réduire le texte">A−</button>
+      <button class="btn btn-ghost" id="zoomIn"  title="Agrandir le texte (Ctrl +)" aria-label="Agrandir le texte">A+</button>
       <div class="split" aria-hidden="true"></div>
-      <button class="btn" id="printBtn" title="Imprimer / PDF">Imprimer</button>
+      <button class="btn" id="printBtn" title="Imprimer / PDF (Ctrl P)" aria-label="Imprimer">Imprimer</button>
     </div>
   </div>
 
@@ -241,6 +130,191 @@
       <span class="rev">Révision&nbsp;: 2025-09-05</span>
     </div>
   </header>
+
+  <!-- ===== Contenu ===== -->
+  <main id="content" class="wrap" tabindex="-1">
+    <nav class="toc" aria-label="Sommaire">
+      <strong>Sommaire</strong>
+      <ul>
+        <li><a href="#installation">1. Installation</a></li>
+        <li><a href="#usage">2. Utilisation</a></li>
+        <li><a href="#structure">3. Structure de projet</a></li>
+      </ul>
+      <small>Astuce&nbsp;: <kbd>Ctrl</kbd>+<kbd>K</kbd> pour chercher.</small>
+    </nav>
+
+    <section id="installation">
+      <h2>1) Installation</h2>
+      <ul>
+        <li>Télécharger le binaire.</li>
+        <li>Ajouter le dossier au <code>PATH</code>.</li>
+      </ul>
+    </section>
+
+    <section id="usage">
+      <h2>2) Utilisation</h2>
+      <pre><code>app --help</code></pre>
+    </section>
+
+    <!-- Exemple de section volumineuse pour tester la recherche -->
+    <section id="structure">
+      <h2>3) Structure de projet — Guide complet</h2>
+      <div class="card"><p>Placez le code VITL dans <code>/src</code>, les shims C/FFI dans <code>/libs</code> et les artefacts dans <code>/build</code>. Voir la documentation détaillée plus bas.</p></div>
+      <h3>3.1 Arborescence</h3>
+      <pre><code>mon_projet/
+  src/main.vitl
+  libs/foo.c
+  build/</code></pre>
+      <p>Utilisez des noms de modules stables, des tests intégrés et une CI minimale.</p>
+    </section>
+
+    <button class="toc-fab" id="tocFab" type="button" aria-controls="content" aria-label="Aller au sommaire">☰ Sommaire</button>
+  </main>
+
+  <script>
+    (function(){
+      /* ========= Persistence utils ========= */
+      const storage = {
+        get(key, fallback=null){ try{ const v = localStorage.getItem(key); return v===null ? fallback : JSON.parse(v) }catch{ return fallback } },
+        set(key, val){ try{ localStorage.setItem(key, JSON.stringify(val)) }catch{} }
+      };
+
+      /* ========= Theme: auto/light/dark ========= */
+      const html = document.documentElement;
+      const modeBtn = document.getElementById('modeBtn');
+      const THEME_KEY = 'vl.theme';
+      const THEMES = ['auto','light','dark'];
+      function applyTheme(mode){
+        html.setAttribute('data-theme', mode);
+        modeBtn.setAttribute('aria-pressed', mode !== 'auto'); // pressed when forced
+        modeBtn.textContent = mode === 'auto' ? 'Thème: Auto' : (mode === 'light' ? 'Thème: Clair' : 'Thème: Sombre');
+      }
+      let theme = storage.get(THEME_KEY, 'auto');
+      applyTheme(theme);
+      modeBtn.addEventListener('click', () => {
+        const idx = (THEMES.indexOf(theme) + 1) % THEMES.length;
+        theme = THEMES[idx];
+        storage.set(THEME_KEY, theme);
+        applyTheme(theme);
+      });
+
+      /* ========= Zoom (root font-size) ========= */
+      const ZOOM_KEY = 'vl.zoom';
+      const zoomIn  = document.getElementById('zoomIn');
+      const zoomOut = document.getElementById('zoomOut');
+      function getZoom(){ return storage.get(ZOOM_KEY, 16) }
+      function setZoom(px){
+        const clamped = Math.max(12, Math.min(22, px|0));
+        document.documentElement.style.fontSize = clamped + 'px';
+        storage.set(ZOOM_KEY, clamped);
+      }
+      setZoom(getZoom());
+      zoomIn.addEventListener('click',  () => setZoom(getZoom()+1));
+      zoomOut.addEventListener('click', () => setZoom(getZoom()-1));
+
+      /* ========= Print ========= */
+      const printBtn = document.getElementById('printBtn');
+      printBtn.addEventListener('click', () => window.print());
+
+      /* ========= Keyboard shortcuts =========
+         Ctrl+K: focus search
+         Ctrl+'=' or Ctrl+'+': zoom in
+         Ctrl+'-': zoom out
+         Ctrl+0: reset zoom
+         Ctrl+P: print
+      */
+      const q = document.getElementById('q');
+      window.addEventListener('keydown', (e) => {
+        const ctrl = e.ctrlKey || e.metaKey;
+        if (ctrl && e.key.toLowerCase() === 'k'){ e.preventDefault(); q.focus(); q.select(); }
+        if (ctrl && (e.key === '=' || e.key === '+')){ e.preventDefault(); setZoom(getZoom()+1) }
+        if (ctrl && e.key === '-'){ e.preventDefault(); setZoom(getZoom()-1) }
+        if (ctrl && e.key === '0'){ e.preventDefault(); setZoom(16) }
+        if (ctrl && e.key.toLowerCase() === 'p'){ /* allow default */ }
+      });
+
+      /* ========= Simple client-side search with highlighting ========= */
+      const hits = document.getElementById('hits');
+      let lastMarks = [];
+      function clearMarks(){
+        lastMarks.forEach(m => {
+          const parent = m.parentNode;
+          if (!parent) return;
+          parent.replaceChild(document.createTextNode(m.textContent), m);
+          parent.normalize();
+        });
+        lastMarks = [];
+      }
+      function highlight(node, regex){
+        if (node.nodeType === 3){ // text
+          const text = node.nodeValue;
+          const match = regex.exec(text);
+          if (match){
+            const mark = document.createElement('mark');
+            const start = match.index;
+            const end = start + match[0].length;
+            const before = document.createTextNode(text.slice(0,start));
+            const after  = document.createTextNode(text.slice(end));
+            mark.textContent = text.slice(start,end);
+            const frag = document.createDocumentFragment();
+            frag.appendChild(before); frag.appendChild(mark); frag.appendChild(after);
+            node.parentNode.replaceChild(frag, node);
+            lastMarks.push(mark);
+            return 1;
+          }
+          return 0;
+        } else if (node.nodeType === 1 && !['SCRIPT','STYLE'].includes(node.tagName)){
+          let count = 0;
+          for (let i=0;i<node.childNodes.length;i++){
+            count += highlight(node.childNodes[i], regex);
+          }
+          return count;
+        }
+        return 0;
+      }
+      function search(qs){
+        clearMarks();
+        if (!qs || qs.length < 2){ hits.textContent = ''; return }
+        const rx = new RegExp(qs.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'), 'i');
+        const content = document.getElementById('content');
+        let total = 0;
+        // Try to mark at most one occurrence per block for performance
+        content.querySelectorAll('section, p, li, pre').forEach(el => {
+          total += highlight(el, rx);
+        });
+        hits.textContent = total ? `${total} résultat(s)` : 'Aucun résultat';
+        if (lastMarks[0]){ lastMarks[0].scrollIntoView({behavior:'smooth', block:'center'}) }
+      }
+      q.addEventListener('input', e => search(e.target.value.trim()));
+
+      /* ========= TOC Floating button ========= */
+      const tocFab = document.getElementById('tocFab');
+      tocFab.addEventListener('click', () => {
+        document.querySelector('nav.toc')?.scrollIntoView({behavior:'smooth', block:'start'});
+      });
+
+      /* ========= Progressive enhancement: show FAB after scroll ========= */
+      let shown = true;
+      function onScroll(){
+        const y = window.scrollY || document.documentElement.scrollTop;
+        const show = y > 240;
+        if (show !== shown){
+          tocFab.toggleAttribute('hidden', !show);
+          shown = show;
+        }
+      }
+      tocFab.setAttribute('hidden','');
+      document.addEventListener('scroll', onScroll, {passive:true});
+      onScroll();
+
+      /* ========= Accessibility niceties ========= */
+      // Announce count changes even when identical text repeats
+      const announce = (text) => { hits.textContent = ''; requestAnimationFrame(()=> hits.textContent = text) };
+      const oldSearch = search;
+      search = function(qs){ oldSearch(qs); if(qs.length>=2){ announce(hits.textContent) } };
+    })();
+  </script>
+
 
   <!-- ===== Main ===== -->
   <main class="container" id="main">
@@ -598,28 +672,24 @@ vitl doc src/ -o build/docs.txt
 
 
     <!-- 1) STRUCTURE -->
-    <section id="structure">
-      <h2>1) Structure de projet — Guide complet</h2>
+<section id="structure">
+  <h2>1) Structure de projet — Guide complet</h2>
 
-      <div class="callout info">
-        <h4>En clair</h4>
-        <p>Trois dossiers suffisent : <code>/src</code> (code VITL), <code>/libs</code> (C/FFI), <code>/build</code>
-          (artefacts). Cette séparation garde les sources propres, facilite les revues et les pipelines CI.</p>
-      </div>
+  <div class="callout info">
+    <h4>En clair</h4>
+    <p>Trois dossiers suffisent&nbsp;: <code>/src</code> (code VITL), <code>/libs</code> (C/FFI), <code>/build</code> (artefacts). Cette séparation garde les sources propres, facilite les revues et les pipelines CI.</p>
+  </div>
 
-      <p>
-        Une structure claire évite des heures perdues : on sait où créer un fichier, où trouver une fonctionnalité, où
-        tombent les binaires.
-        Cette section propose une arborescence <em>de base</em> puis des variantes (simple → complexe), des conventions
-        de nommage, des
-        exemples <em>copier/coller</em> (<code>.gitignore</code>, tâches build, CI), et des intégrations C
-        (CMake/Meson).
-      </p>
+  <p>
+    Une structure claire évite des heures perdues&nbsp;: on sait où créer un fichier, où trouver une fonctionnalité, où tombent les binaires.
+    Cette section propose une arborescence <em>de base</em> puis des variantes (simple → complexe), des conventions de nommage,
+    des exemples <em>copier/coller</em> (<code>.gitignore</code>, tâches build, CI), et des intégrations C (CMake/Meson).
+  </p>
 
-      <h3>1.1 Arborescence type minimale</h3>
-      <pre><code>/src   → code source principal (.vitl)
- /libs → bibliothèques natives C/FFI (.c, .so, .dll, .a)
- /build→ binaires, artefacts intermédiaires, bytecode (.vitbc)
+  <h3>1.1 Arborescence type minimale</h3>
+  <pre><code>/src   → code source principal (.vitl)
+/libs  → bibliothèques natives C/FFI (.c, .so, .dll, .a)
+/build → binaires, artefacts intermédiaires, bytecode (.vitbc)
 
 mon_projet/
   src/
@@ -633,41 +703,39 @@ mon_projet/
     app.vitbc  (bytecode)
 </code></pre>
 
-      <h3>1.2 Convention des modules</h3>
-      <ul>
-        <li>Un fichier = un module.</li>
-        <li>Chemin disque = nom de module (lisible et prédictible).</li>
-        <li>Noms en <code>snake.case</code> pour modules/fichiers, <code>CamelCase</code> pour types.</li>
-      </ul>
-      <pre><code>Fichier : src/std/io.vitl
+  <h3>1.2 Convention des modules</h3>
+  <ul>
+    <li>Un fichier = un module.</li>
+    <li>Chemin disque = nom de module (lisible et prédictible).</li>
+    <li>Noms en <code>snake.case</code> pour modules/fichiers, <code>CamelCase</code> pour types.</li>
+  </ul>
+  <pre><code>Fichier : src/std/io.vitl
 Contenu : module std.io
 
 Fichier : src/app/http/client.vitl
 Contenu : module app.http.client
 </code></pre>
-      <p>Imports clairs : <code>import std.io</code>, <code>import util.str</code>. Évite les conflits, favorise la
-        réutilisation.</p>
+  <p>Imports clairs&nbsp;: <code>import std.io</code>, <code>import util.str</code>. Évite les conflits, favorise la réutilisation.</p>
 
-      <div class="callout ok">
-        <h4>Raison pratique</h4>
-        <p>Quand le chemin et le module correspondent, on sait toujours <em>où</em> vit une fonction. C’est plus simple
-          pour les revues, la navigation IDE, et la CI.</p>
-      </div>
+  <div class="callout ok">
+    <h4>Raison pratique</h4>
+    <p>Quand le chemin et le module correspondent, on sait toujours <em>où</em> vit une fonction. Plus simple pour les revues, la navigation IDE et la CI.</p>
+  </div>
 
-      <h3>1.3 Variantes d’organisation (selon la taille)</h3>
-      <div class="grid-2">
-        <div class="card">
-          <strong>Projet simple</strong>
-          <pre><code>mon_projet/
+  <h3>1.3 Variantes d’organisation (selon la taille)</h3>
+  <div class="grid-2">
+    <div class="card">
+      <strong>Projet simple</strong>
+      <pre><code>mon_projet/
   src/main.vitl
   src/util/print.vitl
   build/
 </code></pre>
-          <p>Objectif : aller vite. Tests intégrés au bas des fichiers.</p>
-        </div>
-        <div class="card">
-          <strong>Projet moyen</strong>
-          <pre><code>mon_projet/
+      <p>Objectif&nbsp;: aller vite. Tests intégrés au bas des fichiers.</p>
+    </div>
+    <div class="card">
+      <strong>Projet moyen</strong>
+      <pre><code>mon_projet/
   src/app/main.vitl
   src/app/cli/args.vitl
   src/std/extra/time.vitl
@@ -675,15 +743,13 @@ Contenu : module app.http.client
   libs/fast.c
   build/{debug,release,docs}
 </code></pre>
-          <p>On sépare <code>app/</code>, <code>util/</code>, <code>std/</code> locale. Dossiers <code>debug/</code> et
-            <code>release/</code> dans <code>build/</code>.
-          </p>
-        </div>
-      </div>
+      <p>On sépare <code>app/</code>, <code>util/</code>, <code>std/</code> local. Dossiers <code>debug/</code> et <code>release/</code> dans <code>build/</code>.</p>
+    </div>
+  </div>
 
-      <div class="card">
-        <strong>Projet complexe (modulaire)</strong>
-        <pre><code>mon_projet/
+  <div class="card">
+    <strong>Projet complexe (modulaire)</strong>
+    <pre><code>mon_projet/
   src/
     app/main.vitl
     app/sub/feature.vitl
@@ -709,45 +775,40 @@ Contenu : module app.http.client
     README.md
     CHANGELOG.md
 </code></pre>
-        <p>Tests isolés dans <code>/tests</code>, scripts utilitaires dans <code>/scripts</code>, documentation dédiée
-          dans <code>/docs</code>.</p>
-      </div>
+    <p>Tests isolés dans <code>/tests</code>, scripts utilitaires dans <code>/scripts</code>, documentation dédiée dans <code>/docs</code>.</p>
+  </div>
 
-      <h3>1.4 Rôles des dossiers (rappel express)</h3>
-      <ul>
-        <li><code>/src</code> : le code VITL uniquement (modules, types, fonctions, tests intégrés).</li>
-        <li><code>/libs</code> : code C/C++ <em>enveloppé</em> côté C (shim) pour exposer une API stable C à VITL.</li>
-        <li><code>/build</code> : rien de versionné ; binaires, <code>.vitbc</code>, docs générées, artefacts
-          temporaires.</li>
-        <li><code>/tests</code> (optionnel) : scénarios et jeux de données de test plus volumineux.</li>
-        <li><code>/scripts</code> (optionnel) : tâches build/release reproductibles.</li>
-        <li><code>/docs</code> (optionnel) : guides, captures, changelog, spécifications.</li>
-      </ul>
+  <h3>1.4 Rôles des dossiers (rappel express)</h3>
+  <ul>
+    <li><code>/src</code>&nbsp;: code VITL uniquement (modules, types, fonctions, tests intégrés).</li>
+    <li><code>/libs</code>&nbsp;: code C/C++ <em>enveloppé</em> côté C (shim) pour exposer une API C stable.</li>
+    <li><code>/build</code>&nbsp;: non versionné&nbsp;; binaires, <code>.vitbc</code>, docs générées, artefacts temporaires.</li>
+    <li><code>/tests</code> (optionnel)&nbsp;: scénarios et jeux de données.</li>
+    <li><code>/scripts</code> (optionnel)&nbsp;: tâches build/release reproductibles.</li>
+    <li><code>/docs</code> (optionnel)&nbsp;: guides, captures, changelog, spécifications.</li>
+  </ul>
 
-      <h3>1.5 Conventions de nommage</h3>
-      <ul>
-        <li>Modules/fichiers : <code>snake.case</code> (<code>net/http.vitl</code> → <code>module net.http</code>).</li>
-        <li>Types : <code>CamelCase</code> (<code>struct HttpClient</code>).</li>
-        <li>Fonctions/variables : <code>snake_case</code> (<code>fn read_config()</code>).</li>
-        <li>Tests : <code>test "nom explicite du comportement"</code>.</li>
-      </ul>
+  <h3>1.5 Conventions de nommage</h3>
+  <ul>
+    <li>Modules/fichiers&nbsp;: <code>snake.case</code> (<code>net/http.vitl</code> → <code>module net.http</code>).</li>
+    <li>Types&nbsp;: <code>CamelCase</code> (<code>struct HttpClient</code>).</li>
+    <li>Fonctions/variables&nbsp;: <code>snake_case</code> (<code>fn read_config()</code>).</li>
+    <li>Tests&nbsp;: <code>test "nom explicite du comportement"</code>.</li>
+  </ul>
 
-      <h3>1.6 Chemins &amp; portabilité (Linux/macOS/Windows)</h3>
-      <ul>
-        <li>Utilisez des chemins relatifs au projet (évite les surprises en CI).</li>
-        <li>Évitez de coder en dur <code>\\</code> (Windows) ou <code>/</code> : regroupez la logique de chemins dans
-          une petite fonction utilitaire si nécessaire.</li>
-        <li>Stockez les fichiers de test dans <code>tests/data/</code> et adressez-les via <code>std.fs</code> à partir
-          de la racine.</li>
-      </ul>
+  <h3>1.6 Chemins &amp; portabilité (Linux/macOS/Windows)</h3>
+  <ul>
+    <li>Utilisez des chemins relatifs au projet (évite les surprises en CI).</li>
+    <li>Évitez de coder en dur <code>\\</code> ou <code>/</code>&nbsp;: centralisez la logique de chemins si nécessaire.</li>
+    <li>Stockez les fichiers de test dans <code>tests/data/</code> et adressez-les via <code>std.fs</code> depuis la racine.</li>
+  </ul>
 
-      <h3>1.7 Tests : où les placer ?</h3>
-      <ul>
-        <li><strong>Petit projet</strong> : tests à la fin de chaque fichier (rapide et lisible).</li>
-        <li><strong>Projet moyen/complexe</strong> : combiner tests intégrés + scénarios dans <code>/tests</code>
-          (fichiers dédiés, données de test).</li>
-      </ul>
-      <pre><code>src/core/math.vitl
+  <h3>1.7 Tests&nbsp;: où les placer&nbsp;?</h3>
+  <ul>
+    <li><strong>Petit projet</strong>&nbsp;: tests à la fin de chaque fichier.</li>
+    <li><strong>Projet moyen/complexe</strong>&nbsp;: combiner tests intégrés + scénarios dans <code>/tests</code>.</li>
+  </ul>
+  <pre><code>src/core/math.vitl
   ... code ...
   test "somme de base" { assert(add(1,2) == 3) }
 
@@ -755,21 +816,19 @@ tests/test_math.vitl
   ... scénarios plus riches, I/O, golden files ...
 </code></pre>
 
-      <h3>1.8 Documentation générée</h3>
-      <p>Documentez vos APIs avec <code>///</code> en tête d’éléments publics, puis générez avec
-        <code>vitl doc src/ -o build/docs.txt</code>. Conservez les docs “métier” plus longues dans <code>/docs</code>.
-      </p>
+  <h3>1.8 Documentation générée</h3>
+  <p>Documentez vos APIs avec <code>///</code> en tête d’éléments publics, puis générez avec <code>vitl doc src/ -o build/docs.txt</code>. Conservez les docs “métier” plus longues dans <code>/docs</code>.</p>
 
-      <h3>1.9 Sorties de build (organisation)</h3>
-      <pre><code>/build/
+  <h3>1.9 Sorties de build (organisation)</h3>
+  <pre><code>/build/
   debug/     → binaires -O0 -g (débogage)
   release/   → binaires -O3 (livraison)
   docs/      → doc générée (ex. docs.txt)
   *.vitbc    → bytecode (exécution VM)
 </code></pre>
 
-      <h3>1.10 Fichier .gitignore (copier/coller)</h3>
-      <pre><code># VITL
+  <h3>1.10 Fichier .gitignore (copier/coller)</h3>
+  <pre><code># VITL
 /build/
 *.vitbc
 
@@ -788,11 +847,11 @@ Thumbs.db
 .cache/
 </code></pre>
 
-      <h3>1.11 Tâches build pratiques</h3>
-      <div class="grid-2">
-        <div class="card">
-          <strong>bash (Linux/macOS)</strong>
-          <pre><code># scripts/build.sh
+  <h3>1.11 Tâches build pratiques</h3>
+  <div class="grid-2">
+    <div class="card">
+      <strong>bash (Linux/macOS)</strong>
+      <pre><code># scripts/build.sh
 set -euo pipefail
 mkdir -p build/release
 vitl fmt src/
@@ -800,10 +859,10 @@ vitl check src/
 vitl build -O3 -o build/release/app src/app/main.vitl
 echo "OK → build/release/app"
 </code></pre>
-        </div>
-        <div class="card">
-          <strong>PowerShell (Windows)</strong>
-          <pre><code># scripts/build.ps1
+    </div>
+    <div class="card">
+      <strong>PowerShell (Windows)</strong>
+      <pre><code># scripts/build.ps1
 $ErrorActionPreference = "Stop"
 New-Item -ItemType Directory -Force -Path build/release | Out-Null
 vitl fmt src/
@@ -811,11 +870,11 @@ vitl check src/
 vitl build -O3 -o build/release/app.exe src/app/main.vitl
 Write-Host "OK → build/release/app.exe"
 </code></pre>
-        </div>
-      </div>
+    </div>
+  </div>
 
-      <h3>1.12 Intégration CI (GitHub Actions minimal)</h3>
-      <pre><code># .github/workflows/ci.yml
+  <h3>1.12 Intégration CI (GitHub Actions minimal)</h3>
+  <pre><code># .github/workflows/ci.yml
 name: CI
 on: [push, pull_request]
 jobs:
@@ -843,16 +902,16 @@ jobs:
           name: app-linux
           path: build/release/app
 </code></pre>
-      <p class="note">Adaptez l’étape “Install VITL” à votre source de binaire (URL/paquet interne).</p>
+  <p class="note">Adaptez l’étape “Install VITL” à votre source de binaire (URL/paquet interne).</p>
 
-      <h3>1.13 Intégration d’une lib C (FFI) — CMake</h3>
-      <pre><code># libs/CMakeLists.txt
+  <h3>1.13 Intégration d’une lib C (FFI) — CMake</h3>
+  <pre><code># libs/CMakeLists.txt
 cmake_minimum_required(VERSION 3.16)
 project(vitl_ffi C)
 add_library(foo STATIC foo.c)
 target_include_directories(foo PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 </code></pre>
-      <pre><code># Construire la lib puis lier côté VITL
+  <pre><code># Construire la lib puis lier côté VITL
 mkdir -p libs/build &amp;&amp; cd libs/build
 cmake ..
 cmake --build . --config Release
@@ -860,47 +919,66 @@ cmake --build . --config Release
 vitl build -O2 -L libs/build -lfoo -o build/app src/main.vitl
 </code></pre>
 
-      <h3>1.14 Intégration d’une lib C (FFI) — Meson</h3>
-      <pre><code># libs/meson.build
+  <h3>1.14 Intégration d’une lib C (FFI) — Meson</h3>
+  <pre><code># libs/meson.build
 project('vitl_ffi', 'c')
 libfoo = static_library('foo', 'foo.c', include_directories: include_directories('.'))
 </code></pre>
-      <pre><code># Build Meson/Ninja
+  <pre><code># Build Meson/Ninja
 meson setup libs/build libs
 meson compile -C libs/build
-# Puis lier lors du build VITL:
+# Puis lier lors du build VITL :
 vitl build -O2 -L libs/build -lfoo -o build/app src/main.vitl
 </code></pre>
 
-      <h3>1.15 Packaging &amp; release</h3>
-      <ul>
-        <li>Générez le binaire <code>release/</code> (<code>-O3</code>) pour chaque OS visé.</li>
-        <li>Ajoutez un README court par plateforme : commande, options, exemples.</li>
-        <li>Incluez <code>LICENSE</code>, <code>CHANGELOG.md</code>, et un hash (SHA256) des binaires.</li>
-        <li>Option : archivez <code>app</code> + fichiers d’exemple (<code>examples/</code>).</li>
-      </ul>
+  <h3>1.15 Packaging &amp; release</h3>
+  <ul>
+    <li>Générez le binaire <code>release/</code> (<code>-O3</code>) pour chaque OS visé.</li>
+    <li>Ajoutez un README court par plateforme&nbsp;: commande, options, exemples.</li>
+    <li>Incluez <code>LICENSE</code>, <code>CHANGELOG.md</code> et un hash (SHA256) des binaires.</li>
+    <li>Option&nbsp;: archivez <code>app</code> + fichiers d’exemple (<code>examples/</code>).</li>
+  </ul>
 
-      <h3>1.16 Versionning &amp; docs projet</h3>
-      <ul>
-        <li><code>CHANGELOG.md</code> (format Keep a Changelog, sémantique “Added/Changed/Fixed/Removed”).</li>
-        <li><code>README.md</code> : but, installation, quick start, table des commandes.</li>
-        <li>Balisez vos versions (tags Git) ; automatisez un brouillon de release en CI.</li>
-      </ul>
+  <h3>1.16 Versionning &amp; docs projet</h3>
+  <ul>
+    <li><code>CHANGELOG.md</code> (Keep a Changelog&nbsp;: Added/Changed/Fixed/Removed).</li>
+    <li><code>README.md</code>&nbsp;: but, installation, quick start, table des commandes.</li>
+    <li>Tagguez vos versions (tags Git)&nbsp;; automatisez un brouillon de release en CI.</li>
+  </ul>
 
-      <h3>1.17 Fichiers de configuration (exemples)</h3>
-      <div class="grid-2">
-        <div class="card">
-          <strong>README.md (squelette)</strong>
-          <pre><code># Mon Outil VITL
-But en une phrase.
+  <h3>1.17 Fichiers de configuration (exemples)</h3>
+  <div class="grid-2">
+    <div class="card">
+      <strong>README.md (squelette)</strong>
+      <pre><code># Mon Projet VITL
+But&nbsp;: une ligne claire ici.
 
 ## Installation
 - Télécharger le binaire.
 - Ajouter au PATH.
 
 ## Utilisation
-```sh
-app --help
+\`\`\`sh
+vitl --help
+\`\`\`
+</code></pre>
+    </div>
+    <div class="card">
+      <strong>.editorconfig</strong>
+      <pre><code>root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+indent_style = space
+indent_size = 2
+trim_trailing_whitespace = true
+</code></pre>
+    </div>
+  </div>
+</section>
+
 
 
 <!-- 2) CLI -->
@@ -4297,3 +4375,4 @@ vitl build -O3 -o build/app src/main.vitl
 </body>
 
 </html>
+
