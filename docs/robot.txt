@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://vitte-lang.github.io/VitteLight/sitemap.xml
