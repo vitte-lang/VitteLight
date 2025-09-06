@@ -7,14 +7,41 @@
   <title>VITTE LIGHT — Guide utilisateur complet (Révision 2025-09-05)</title>
   <meta name="description" content="Guide Vitte Light : installation, CLI, structure de projet, FFI, CI, bonnes pratiques." />
 
+  <!-- Thème anti-flash + préférence utilisateur -->
+  <script>
+  (function () {
+    try {
+      var KEY = 'vl.theme';
+      var url = new URL(window.location.href);
+      var fromQuery = (url.searchParams.get('theme') || '').toLowerCase();
+      if (!fromQuery && /theme=(light|dark|auto|system)/i.test(location.hash)) fromQuery = RegExp.$1.toLowerCase();
+      if (fromQuery === 'system') fromQuery = 'auto';
+      if (!['light','dark','auto'].includes(fromQuery)) fromQuery = null;
+      if (fromQuery) localStorage.setItem(KEY, JSON.stringify(fromQuery));
+      var stored = null; try { stored = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch {}
+      var pref = stored || 'auto';
+      var mq = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
+      var eff = pref === 'auto' ? (mq && mq.matches ? 'dark' : 'light') : pref;
+      var html = document.documentElement; html.setAttribute('data-theme', eff); html.style.colorScheme = eff;
+    } catch {}
+  })();
+  </script>
+
   <style>
-    /* ——— Thème ——— */
     :root{
       --bg:#ffffff; --fg:#0f172a; --muted:#64748b; --card:#f8fafc;
       --border:#e2e8f0; --accent:#2563eb; --code:#111827;
       --btnbg:#111827; --btnfg:#ffffff; --shadow:0 2px 10px rgba(0,0,0,.05);
       --wrap:1040px; --radius:12px; --focus:#94a3b8;
       --codebg:#0b1020; --codefg:#e6edf3;
+      --font-family:"Inter","SF Pro Text",system-ui,-apple-system,"Segoe UI",Roboto,Ubuntu,Arial,"Noto Sans";
+      --lh:1.7; --code-mono:ui-monospace,SFMono-Regular,Menlo,Consolas,Monaco,monospace;
+    }
+    :root[data-theme="dark"]{
+      --bg:#0b1020; --fg:#e8eef6; --muted:#9aa7bd; --card:#0f152a;
+      --border:#1f2a44; --accent:#60a5fa; --code:#e6edf3;
+      --btnbg:#e6edf3; --btnfg:#0b1020; --shadow:0 2px 10px rgba(0,0,0,.3);
+      --codebg:#0b1325; --codefg:#e6edf3;
     }
     @media (prefers-color-scheme: dark){
       :root{
@@ -24,106 +51,102 @@
         --codebg:#0b1325; --codefg:#e6edf3;
       }
     }
-    [data-theme="light"]{ color-scheme:light }
-    [data-theme="dark"]{  color-scheme:dark  }
 
-    /* ——— Reset/typo ——— */
     *{box-sizing:border-box}
     html{font-size:16px}
-    body{
-      margin:0; background:var(--bg); color:var(--fg);
-      font:16px/1.7 system-ui,-apple-system,"Segoe UI",Roboto,Inter,Arial,"Noto Sans";
-    }
-    a{color:var(--accent); text-decoration:none}
-    a:hover{text-decoration:underline}
+    body{margin:0; background:var(--bg); color:var(--fg); font:1rem/var(--lh) var(--font-family); -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility}
+    a{color:var(--accent); text-decoration:none} a:hover{text-decoration:underline}
     .wrap{max-width:var(--wrap); margin:0 auto; padding:0 16px}
-    .skip{position:absolute; left:-9999px; top:auto}
+    .skip{position:absolute; left:-9999px}
     .skip:focus{left:16px; top:12px; background:var(--card); padding:.5rem .75rem; border:1px solid var(--border); border-radius:.5rem}
 
-    /* ——— Toolbar ——— */
+    /* Toolbar */
     .toolbar{position:sticky; top:0; z-index:50; background:var(--bg); border-bottom:1px solid var(--border)}
     .toolbar .wrap{display:flex; align-items:center; gap:.5rem; height:56px}
-    .brand{font-weight:700}
-    .srch{margin-left:auto; display:flex; align-items:center; gap:.5rem}
-    .srch input{
-      width:280px; max-width:45vw; padding:.5rem .65rem; border:1px solid var(--border);
-      background:var(--card); color:var(--fg); border-radius:.5rem; outline:none;
-    }
+    .brand{font-weight:700; font-size:1rem}
+    .srch{margin-left:auto; display:flex; align-items:center; gap:.5rem; position:relative}
+    .srch input{width:380px; max-width:50vw; padding:.55rem .7rem; border:1px solid var(--border); background:var(--card); color:var(--fg); border-radius:.65rem; outline:none; font-size:1rem}
     .srch input:focus{box-shadow:0 0 0 3px var(--focus)}
     .mini{font-size:.875rem; color:var(--muted)}
     .split{width:1px; height:24px; background:var(--border); margin:0 .25rem}
-    .btn{
-      border:1px solid var(--border); background:var(--btnbg); color:var(--btnfg);
-      padding:.45rem .7rem; border-radius:.5rem; cursor:pointer; box-shadow:var(--shadow)
-    }
+    .btn{border:1px solid var(--border); background:var(--btnbg); color:var(--btnfg); padding:.45rem .7rem; border-radius:.5rem; cursor:pointer; box-shadow:var(--shadow); font-size:1rem}
     .btn-ghost{background:transparent; color:var(--fg)}
     .btn:focus{outline:none; box-shadow:0 0 0 3px var(--focus)}
+    .btn-invert{ background: var(--fg); color: var(--bg); }
 
-    /* ——— Header ——— */
+    /* Suggestions + regroupements avancés */
+    .sugg{position:absolute; left:0; right:0; top:110%; background:var(--card); border:1px solid var(--border); border-radius:.85rem; box-shadow:var(--shadow); overflow:hidden; max-height:70vh; overflow-y:auto}
+    .sugg[hidden]{display:none}
+    .group-h{display:flex; align-items:center; justify-content:space-between; gap:.75rem; margin:.35rem .5rem; padding:.35rem .6rem; font-weight:700; font-size:.85rem; color:var(--muted)}
+    .filters{display:flex; gap:.4rem; flex-wrap:wrap}
+    .pill{border:1px solid var(--border); background:color-mix(in srgb, var(--card) 85%, transparent); padding:.2rem .5rem; border-radius:999px; font-size:.8rem; cursor:pointer; white-space:nowrap}
+    .pill[aria-pressed="true"]{background:color-mix(in srgb, var(--accent) 18%, transparent); color:var(--fg)}
+    .sugg-item{display:flex; align-items:center; justify-content:space-between; width:100%; text-align:left; gap:.75rem; padding:.65rem .8rem; border:0; background:transparent; color:var(--fg); cursor:pointer; font-size:.95rem}
+    .sugg-item:hover, .sugg-item[aria-selected="true"]{background:color-mix(in srgb, var(--accent) 12%, transparent)}
+    .sugg-left{min-width:0}
+    .sugg-left strong{display:block; font-weight:700}
+    .sugg-left small{display:block; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+    .sugg-right{display:flex; align-items:center; gap:.4rem; flex-wrap:wrap; justify-content:flex-end; margin-left:.5rem}
+    .tag{border:1px solid var(--border); padding:.15rem .45rem; border-radius:999px; font-size:.75rem; white-space:nowrap}
+    .tag.emph{border-color:var(--accent)}
+    .chipbar{display:flex; flex-wrap:wrap; gap:.4rem; padding:.5rem .6rem .7rem}
+    .chip{border:1px solid var(--border); background:color-mix(in srgb, var(--card) 85%, transparent); padding:.25rem .5rem; border-radius:999px; font-size:.85rem; cursor:pointer}
+    .chip:hover{background:color-mix(in srgb, var(--accent) 12%, transparent)}
+
+    /* Header/Body */
     header{padding:24px; border-bottom:1px solid var(--border); background:linear-gradient(180deg, rgba(99,102,241,.08), transparent)}
     .container{max-width:var(--wrap); margin:0 auto; padding:0 16px}
     .intro{display:flex; gap:18px; align-items:flex-end; flex-wrap:wrap}
-    h1{margin:0; font-size:clamp(24px,3vw,36px); letter-spacing:.2px}
-    .rev{color:var(--muted)}
-
-    /* ——— Corps ——— */
+    h1{margin:0; font-size:clamp(1.5rem, 3vw, 2.25rem); letter-spacing:.2px}
+    .rev{color:var(--muted); font-size:0.95rem}
     main{padding:24px 0}
-    nav.toc{background:var(--card); border:1px solid var(--border); border-radius:12px; padding:14px 16px; margin:20px 0 8px}
-    nav.toc strong{font-size:13px; color:var(--muted); text-transform:uppercase; letter-spacing:.08em}
-    nav.toc ul{margin:8px 0 0; padding:0 0 0 16px}
+    .index{background:var(--card); border:1px solid var(--border); border-radius:12px; padding:14px 16px; margin:20px 0 8px}
+    .index ol{margin:.25rem 0 .25rem 1.25rem}
+    .hint{color:var(--muted); font-size:.95rem}
     section{margin:28px 0}
-    h2{margin:0 0 10px; padding-top:10px; border-top:1px solid var(--border)}
-    h3{margin:18px 0 8px}
-    p{margin:.6rem 0}
-    ul,ol{margin:.4rem 0 .8rem 1.25rem}
+    h2{margin:0 0 10px; padding-top:10px; border-top:1px solid var(--border); font-size:1.25rem}
+    h3{margin:18px 0 8px; font-size:1.1rem}
     .card{background:var(--card); border:1px solid var(--border); border-radius:12px; padding:16px}
-    code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,Monaco,monospace; background:color-mix(in srgb, var(--card) 85%, transparent); color:var(--code); padding:.15em .35em; border-radius:6px; border:1px solid var(--border)}
+    code{font-family:var(--code-mono); background:color-mix(in srgb, var(--card) 85%, transparent); color:var(--code); padding:.15em .35em; border-radius:6px; border:1px solid var(--border)}
     pre{margin:.75rem 0; padding:14px 16px; border-radius:12px; background:var(--codebg); color:var(--codefg); border:1px solid var(--border); overflow:auto}
     pre code{background:transparent; border:0; padding:0; color:var(--codefg)}
-    hr{border:0; border-top:1px dashed var(--border); margin:16px 0}
-    .note{color:var(--muted); font-size:.95rem}
-    mark{background:#fde68a; color:#111827; padding:0 .15em; border-radius:.2em}
 
-    /* ——— FAB Sommaire ——— */
-    .toc-fab{
-      position:fixed; right:clamp(16px,2vw,24px);
-      bottom:calc(max(16px, env(safe-area-inset-bottom)) + 8px);
-      z-index:40; display:inline-flex; align-items:center; gap:.5rem;
-      padding:.65rem .9rem; border-radius:9999px; border:1px solid var(--border);
-      background:var(--accent); color:#fff; box-shadow:0 6px 18px rgba(0,0,0,.22);
-      font-weight:600; font-size:.95rem; cursor:pointer; opacity:.95; transform:translateY(8px);
-      transition:opacity .15s, transform .15s;
-    }
-    .toc-fab:hover{opacity:1; transform:translateY(0)}
-    .toc-fab[hidden]{display:none!important}
-    @media (prefers-reduced-motion: reduce){ .toc-fab{transition:none; transform:none} }
-    @media print{ .toc-fab{display:none} }
+    hr{border:0; border-top:1px dashed var(--border); margin:16px 0}
+    mark[data-hl]{background:#fde68a; color:#111827; padding:0 .15em; border-radius:.2em}
+    mark[data-cur]{background:#f59e0b; color:#111827}
+
+    /* Sommaire flottant */
+    .fab{position:fixed; right:clamp(16px,2vw,24px); bottom:calc(max(16px, env(safe-area-inset-bottom)) + 8px); z-index:60; display:inline-flex; align-items:center; justify-content:center; padding:.65rem .9rem; border-radius:9999px; border:1px solid var(--border); box-shadow:0 6px 18px rgba(0,0,0,.22); cursor:pointer; font-size:1rem; font-weight:600}
+    .fab[hidden]{display:none}
+    @media print{ .fab,.sugg{display:none} }
   </style>
 </head>
 
 <body>
   <a class="skip" href="#content">Aller au contenu</a>
 
-  <!-- ===== Toolbar ===== -->
+  <!-- Toolbar -->
   <div class="toolbar" role="navigation" aria-label="Barre d’outils">
     <div class="wrap">
       <span class="brand">Vitte Light • Guide</span>
 
-      <div class="srch" role="search">
-        <input id="q" type="search" placeholder="Rechercher (Ctrl+K)" aria-label="Rechercher dans le guide" />
+      <div class="srch" role="search" aria-haspopup="listbox" aria-expanded="false">
+        <input id="q" type="search" placeholder="Rechercher (Ctrl+K, guillemets, -, *, file:*, type:*, page:*)" aria-label="Rechercher dans le guide" />
+        <button class="btn btn-ghost" id="searchBtn" aria-label="Lancer la recherche">Rechercher</button>
         <span class="mini" id="hits" aria-live="polite"></span>
+        <div class="sugg" id="suggestions" role="listbox" aria-label="Suggestions" hidden></div>
       </div>
 
       <button class="btn btn-ghost" id="modeBtn" title="Basculer clair/sombre/auto" aria-pressed="false" aria-label="Basculer le thème">Thème</button>
       <div class="split" aria-hidden="true"></div>
       <button class="btn btn-ghost" id="zoomOut" title="Réduire le texte (Ctrl -)" aria-label="Réduire le texte">A−</button>
-      <button class="btn btn-ghost" id="zoomIn"  title="Agrandir le texte (Ctrl +)" aria-label="Agrandir le texte">A+</button>
+      <button class="btn btn-ghost" id="zoomIn" title="Agrandir le texte (Ctrl +)" aria-label="Agrandir le texte">A+</button>
       <div class="split" aria-hidden="true"></div>
       <button class="btn" id="printBtn" title="Imprimer / PDF (Ctrl P)" aria-label="Imprimer">Imprimer</button>
     </div>
   </div>
 
-  <!-- ===== Header ===== -->
+  <!-- Header -->
   <header>
     <div class="container intro">
       <h1>VITTE LIGHT — Guide utilisateur complet</h1>
@@ -131,19 +154,18 @@
     </div>
   </header>
 
-  <!-- ===== Contenu ===== -->
-  <main id="content" class="wrap" tabindex="-1">
-    <nav class="toc" aria-label="Sommaire">
-      <strong>Sommaire</strong>
-      <ul>
-        <li><a href="#installation">1. Installation</a></li>
-        <li><a href="#usage">2. Utilisation</a></li>
-        <li><a href="#structure">3. Structure de projet</a></li>
-      </ul>
-      <small>Astuce&nbsp;: <kbd>Ctrl</kbd>+<kbd>K</kbd> pour chercher.</small>
-    </nav>
+  <!-- Contenu -->
+  <main id="content" class="wrap" tabindex="-1" data-file="main">
+    <div class="index" id="sommaire" aria-label="Index des sections" data-page="1" data-file="main">
+      <ol>
+        <li><a href="#installation">Installation</a></li>
+        <li><a href="#usage">Utilisation</a></li>
+        <li><a href="#structure">Structure de projet</a></li>
+      </ol>
+      <p class="hint">Astuce&nbsp;: <kbd>Ctrl</kbd>+<kbd>K</kbd> • "phrase exacte" • <code>-mot</code> exclure • <code>prefix*</code> joker • <code>file:*</code>/<code>type:*</code>/<code>page:*</code> • <kbd>F3</kbd>/<kbd>Shift</kbd>+<kbd>F3</kbd>.</p>
+    </div>
 
-    <section id="installation">
+    <section id="installation" data-file="main">
       <h2>1) Installation</h2>
       <ul>
         <li>Télécharger le binaire.</li>
@@ -151,15 +173,16 @@
       </ul>
     </section>
 
-    <section id="usage">
+    <section id="usage" data-file="main">
       <h2>2) Utilisation</h2>
       <pre><code>app --help</code></pre>
     </section>
 
-    <!-- Exemple de section volumineuse pour tester la recherche -->
-    <section id="structure">
+    <section id="structure" data-file="main">
       <h2>3) Structure de projet — Guide complet</h2>
-      <div class="card"><p>Placez le code VITL dans <code>/src</code>, les shims C/FFI dans <code>/libs</code> et les artefacts dans <code>/build</code>. Voir la documentation détaillée plus bas.</p></div>
+      <div class="card">
+        <p>Placez le code VITL dans <code>/src</code>, les shims C/FFI dans <code>/libs</code> et les artefacts dans <code>/build</code>.</p>
+      </div>
       <h3>3.1 Arborescence</h3>
       <pre><code>mon_projet/
   src/main.vitl
@@ -167,152 +190,487 @@
   build/</code></pre>
       <p>Utilisez des noms de modules stables, des tests intégrés et une CI minimale.</p>
     </section>
-
-    <button class="toc-fab" id="tocFab" type="button" aria-controls="content" aria-label="Aller au sommaire">☰ Sommaire</button>
   </main>
 
+  <!-- Sommaire flottant -->
+  <button class="fab btn-invert" id="fabToc" type="button" title="Revenir au sommaire" hidden>Sommaire ↑</button>
+
+  <!-- (Optionnel) Déclarez des groupes de fichiers ici -->
+  <!--
+  <script type="application/json" id="file-groups">
+  {"files":[{"id":"main","label":"Main"},{"id":"appendix","label":"Appendix"}]}
+  </script>
+  -->
+
   <script>
-    (function(){
-      /* ========= Persistence utils ========= */
-      const storage = {
-        get(key, fallback=null){ try{ const v = localStorage.getItem(key); return v===null ? fallback : JSON.parse(v) }catch{ return fallback } },
-        set(key, val){ try{ localStorage.setItem(key, JSON.stringify(val)) }catch{} }
+  (function(){
+    /* ===================== VARS & HELPERS ===================== */
+    // Réglez pour forcer un nombre de pages virtuelles (ex: 78)
+    const FORCE_PAGES = 78;            // nombre de pages virtuelles souhaité
+    const PAGE_MODEL  = 'virtual';     // 'virtual' calcule, 'data' lit data-page si présent
+    const PAGE_SIZE_CH = 1800;         // granularité (~caractères) si virtual
+
+    const storage = {
+      get(k, d=null){ try{ const v = localStorage.getItem(k); return v===null?d:JSON.parse(v) }catch{ return d } },
+      set(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)) }catch{} }
+    };
+
+    /* ===== Thème ===== */
+    const html = document.documentElement;
+    const modeBtn = document.getElementById('modeBtn');
+    const THEMES = ['auto','light','dark']; const THEME_KEY = 'vl.theme';
+    const mq = matchMedia('(prefers-color-scheme: dark)');
+    function eff(mode){ return mode==='auto' ? (mq.matches?'dark':'light') : mode }
+    function applyTheme(mode){
+      const e = eff(mode); html.setAttribute('data-theme', e); html.style.colorScheme = e;
+      const label = mode==='auto'?'Thème: Auto':(e==='dark'?'Thème: Sombre':'Thème: Clair');
+      modeBtn.textContent = label; modeBtn.setAttribute('aria-pressed', mode!=='auto'); storage.set(THEME_KEY, mode);
+    }
+    applyTheme(storage.get(THEME_KEY,'auto'));
+    modeBtn.addEventListener('click', ()=>{ const cur=storage.get(THEME_KEY,'auto'); applyTheme(THEMES[(THEMES.indexOf(cur)+1)%THEMES.length]) });
+    mq.addEventListener('change', ()=>{ if (storage.get(THEME_KEY,'auto')==='auto') applyTheme('auto') });
+
+    /* ===== Zoom ===== */
+    const ZOOM_KEY='vl.zoom', zoomIn=document.getElementById('zoomIn'), zoomOut=document.getElementById('zoomOut');
+    const getZoom=()=> storage.get(ZOOM_KEY,16);
+    const setZoom=px=>{ const z=Math.max(12,Math.min(22,px|0)); document.documentElement.style.fontSize=z+'px'; storage.set(ZOOM_KEY,z); };
+    setZoom(getZoom()); zoomIn.addEventListener('click', ()=> setZoom(getZoom()+1)); zoomOut.addEventListener('click', ()=> setZoom(getZoom()-1));
+    document.getElementById('printBtn').addEventListener('click', ()=> window.print());
+
+    /* ===== Sommaire flottant ===== */
+    const fabToc=document.getElementById('fabToc'), sommaire=document.getElementById('sommaire');
+    function thresholdY(){ const s= sommaire? (sommaire.offsetTop + sommaire.offsetHeight):0; return Math.min(innerHeight, s||innerHeight) }
+    function onScroll(){ const y=scrollY||document.documentElement.scrollTop||0; fabToc.toggleAttribute('hidden', !(y>thresholdY())); }
+    onScroll(); addEventListener('scroll', onScroll, {passive:true}); addEventListener('resize', onScroll);
+    fabToc.addEventListener('click', ()=> (sommaire||document.body).scrollIntoView({behavior:'smooth', block:'start'}));
+
+    /* ===== Raccourcis ===== */
+    const q = document.getElementById('q');
+    const hitsEl = document.getElementById('hits');
+    addEventListener('keydown', (e)=>{
+      const ctrl = e.ctrlKey||e.metaKey;
+      if (ctrl && e.key.toLowerCase()==='k'){ e.preventDefault(); q.focus(); q.select(); }
+      if (ctrl && (e.key==='='||e.key==='+')){ e.preventDefault(); setZoom(getZoom()+1) }
+      if (ctrl && e.key==='-'){ e.preventDefault(); setZoom(getZoom()-1) }
+      if (ctrl && e.key==='0'){ e.preventDefault(); setZoom(16) }
+      if (e.key==='F3'){ e.preventDefault(); e.shiftKey ? gotoPrev() : gotoNext(); }
+    });
+
+    /* ===================== INDEXATION PRO ===================== */
+    const content = document.getElementById('content');
+    const norm = s => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+    const rxToken = /[a-z0-9_]+/gi;
+    const STOP = new Set(['le','la','les','de','des','du','un','une','et','ou','au','aux','auxquels','auxquelles','a','à','en','dans','pour','par','avec','sans','sur','sous','chez','est','sont','être','été','avoir','que','qui','quoi','dont','où','ne','pas','plus','moins','ce','cet','cette','ces','se','sa','son','ses','nos','vos','leurs','il','elle','on','nous','vous','ils','elles','d','l','n']);
+
+    // Lire groupes de fichiers éventuels
+    let FILES = [{id:'main', label:'Main'}];
+    try{
+      const fg = document.getElementById('file-groups');
+      if (fg){ const parsed = JSON.parse(fg.textContent); if (parsed && Array.isArray(parsed.files) && parsed.files.length) FILES = parsed.files; }
+    }catch{}
+
+    const sectionTitles = new Map(); // section -> "H2 › H3"
+    document.querySelectorAll('section').forEach(sec=>{
+      const h2 = sec.querySelector('h2'); const h3 = sec.querySelector('h3');
+      sectionTitles.set(sec, [h2?.textContent||'', h3?.textContent||''].filter(Boolean).join(' › '));
+    });
+
+    // Collecter noeuds + typage fin (Title/Subtitle/Code/Content)
+    const nodes = [];
+    // Headings
+    document.querySelectorAll('h1,h2,h3').forEach(el=>{
+      const txt = (el.textContent||'').trim();
+      const numMatch = txt.match(/^(\d+(?:\.\d+)+|\d+)/); // ex "1.1", "2"
+      const level = el.tagName==='H1'?1:(el.tagName==='H2'?2:3);
+      const fam = level===1?'Title':'Subtitle';
+      nodes.push({
+        el, type:'heading', fam, headingLevel:level, headingNo:numMatch?numMatch[1]:'', weight: level===1?4:(level===2?3:2),
+        title: txt, sec: el.closest('section')||null, file: (el.closest('[data-file]')?.getAttribute('data-file')) || 'main'
+      });
+    });
+    // Text
+    document.querySelectorAll('p, li').forEach(el=>{
+      nodes.push({
+        el, type:'text', fam:'Content', weight:1, title: sectionTitles.get(el.closest('section')) || '',
+        sec: el.closest('section')||null, file: (el.closest('[data-file]')?.getAttribute('data-file')) || 'main'
+      });
+    });
+    // Code blocks
+    document.querySelectorAll('pre code').forEach(el=>{
+      nodes.push({
+        el, type:'code-block', fam:'Code Block', weight:2, title: (sectionTitles.get(el.closest('section')) || 'Code block'),
+        sec: el.closest('section')||null, file: (el.closest('[data-file]')?.getAttribute('data-file')) || 'main'
+      });
+    });
+    // Inline code
+    document.querySelectorAll('code:not(pre code)').forEach(el=>{
+      nodes.push({
+        el, type:'code-inline', fam:'Inline Code', weight:1.5, title: (sectionTitles.get(el.closest('section')) || 'Code'),
+        sec: el.closest('section')||null, file: (el.closest('[data-file]')?.getAttribute('data-file')) || 'main'
+      });
+    });
+
+    // Pagination virtuelle: attribution d'une page (1..FORCE_PAGES) à chaque node
+    const totalChars = nodes.reduce((s,n)=> s + ((n.el.innerText||'').length||0), 0);
+    const pages = Math.max(FORCE_PAGES||1, Math.ceil(totalChars / PAGE_SIZE_CH));
+    let acc=0, pageCursor=1;
+    nodes.forEach(n=>{
+      const explicit = n.el.closest('[data-page]')?.getAttribute('data-page');
+      if (PAGE_MODEL==='data' && explicit){ n.page = Math.max(1, parseInt(explicit,10)||1); }
+      else {
+        const len = (n.el.innerText||'').length||0;
+        const target = Math.floor((acc / Math.max(1,totalChars)) * (FORCE_PAGES||pages)) + 1;
+        n.page = Math.min(FORCE_PAGES||pages, target);
+        acc += len;
+      }
+    });
+
+    // Index inversé
+    const postings = new Map();
+    const docs = nodes.map((n,i)=>{
+      const text = (n.el.innerText||'').trim();
+      const textNorm = norm(text);
+      const tokens = (textNorm.match(rxToken)||[]).filter(t => !STOP.has(t));
+      const tf = new Map();
+      tokens.forEach(t=> tf.set(t, (tf.get(t)||0)+1));
+      tf.forEach((f,t)=>{
+        if (!postings.has(t)) postings.set(t,new Map());
+        postings.get(t).set(i, (postings.get(t).get(i)||0) + f * n.weight);
+      });
+      return { id:i, ...n, text, textNorm, tf, tokenCount: tokens.length };
+    });
+
+    // TF-IDF global => keywords importants
+    const N = docs.length;
+    const df = new Map(); postings.forEach((map, tok)=> df.set(tok, map.size));
+    const globalTF = new Map(); postings.forEach((map, tok)=> { let s=0; map.forEach(v=> s+=v); globalTF.set(tok, s); });
+    const titleBonus = new Map();
+    docs.filter(d=> d.type==='heading').forEach(d=> d.tf.forEach((f,t)=> titleBonus.set(t, (titleBonus.get(t)||0) + f*1.5)));
+    const keyScores = [];
+    df.forEach((dF, tok)=>{
+      if (tok.length<3) return;
+      const score = (globalTF.get(tok)||0) * Math.log(1 + N/(1+dF)) + (titleBonus.get(tok)||0);
+      keyScores.push([tok, score]);
+    });
+    keyScores.sort((a,b)=> b[1]-a[1]);
+    const TOP_KEYWORDS = keyScores.slice(0,40).map(([t])=>t);
+    const freqList = Array.from(globalTF.entries()).sort((a,b)=> b[1]-a[1]).slice(0,40).map(([t])=>t);
+
+    /* ===================== PARSE QUERY (pro) ===================== */
+    // Syntaxe: "phrase exacte" tokens -neg prefix* file:<id> type:<heading|text|code> page:12
+    function parseQuery(qStr){
+      const raw = qStr || '';
+      const filters = { file:null, type:null, page:null };
+      // extraire filtres
+      raw.replace(/\b(file|type|page):([^\s]+)/gi, (_,k,v)=>{
+        const key = k.toLowerCase();
+        if (key==='page'){ const p = parseInt(v,10); if (!isNaN(p)) filters.page = p; }
+        else if (key==='file'){ filters.file = v.toLowerCase(); }
+        else if (key==='type'){ filters.type = v.toLowerCase(); }
+        return '';
+      });
+
+      const nQ = norm(raw.replace(/\b(file|type|page):([^\s]+)/gi,' ')).trim();
+      const phrases = [];
+      let rest = nQ.replace(/"([^"]+)"/g, (_,p)=>{ if(p.trim()) phrases.push(p.trim()); return ' ' });
+      const parts = rest.split(/\s+/).map(s=>s.trim()).filter(Boolean);
+      const pos=[], neg=[], wild=[], chars=[];
+      for (let t of parts){
+        let isNeg = t.startsWith('-'); if (isNeg) t=t.slice(1);
+        let isWild = t.endsWith('*'); if (isWild) t=t.slice(0,-1);
+        if (!t) continue;
+        if (t.length===1 && !STOP.has(t)) { if (isNeg) neg.push(t); else chars.push(t); continue; }
+        if (STOP.has(t)) continue;
+        if (isNeg) neg.push(t); else if (isWild) wild.push(t); else pos.push(t);
+      }
+      return {phrases, pos, neg, wild, chars, filters, raw};
+    }
+
+    /* ===================== MATCH + SCORE ===================== */
+    function matchAndScore(query){
+      const {phrases,pos,neg,wild,chars,filters} = parseQuery(query);
+      const groups = {heading:[], code:[], text:[], keyword:[], word:[], char:[]};
+
+      // Familles "Keyword/Word/Character" pour suggestions
+      if (!query.trim()){
+        groups.keyword = TOP_KEYWORDS.map(k=>({label:k, fam:'Keyword'}));
+        groups.word = freqList.map(k=>({label:k, fam:'Word'}));
+      } else {
+        pos.forEach(w => groups.word.push({label:w, fam:'Word'}));
+        wild.forEach(w => groups.word.push({label:w+'*', fam:'Word'}));
+        phrases.forEach(p => groups.keyword.push({label:'"'+p+'"', fam:'Keyword'}));
+        chars.forEach(c => groups.char.push({label:c, fam:'Character'}));
+      }
+
+      // candidats par tokens
+      const required = pos;
+      const candSet = new Set();
+      function addCands(tok){ const m = postings.get(tok); if (!m) return; m.forEach((_,id)=> candSet.add(id)); }
+      required.forEach(addCands);
+      wild.forEach(w=> postings.forEach((_, tok)=>{ if (tok.startsWith(w)) addCands(tok); }));
+      if (!required.length && !wild.length && (phrases.length||chars.length)) docs.forEach(d=> candSet.add(d.id));
+      if (!phrases.length && !required.length && !wild.length && !chars.length) docs.forEach(d=> candSet.add(d.id));
+
+      const typeFilter = filters.type && /head|title/.test(filters.type) ? 'heading'
+                        : filters.type && /code/.test(filters.type) ? 'code'
+                        : filters.type && /text|content/.test(filters.type) ? 'text' : null;
+
+      candSet.forEach(id=>{
+        const d = docs[id];
+        if (filters.file && d.file.toLowerCase()!==filters.file) return;
+        if (filters.page && d.page !== filters.page) return;
+        if (typeFilter){
+          if (typeFilter==='heading' && d.type!=='heading') return;
+          if (typeFilter==='code' && !d.type.startsWith('code')) return;
+          if (typeFilter==='text' && d.type!=='text') return;
+        }
+        const tnorm = d.textNorm;
+        for (const n of neg){ if (tnorm.includes(n)) return; }
+        for (const p of phrases){ if (!tnorm.includes(p)) return; }
+        for (const r of required){ if (!d.tf.has(r)) return; }
+        for (const w of wild){
+          let ok=false; d.tf.forEach((_, tok)=>{ if (!ok && tok.startsWith(w)) ok=true; }); if (!ok) return;
+        }
+        for (const c of chars){ if (!tnorm.includes(c)) return; }
+
+        let score = 0;
+        required.forEach(t=>{ const f = d.tf.get(t)||0; score += Math.log(1+f) * d.weight * 2; });
+        wild.forEach(w=>{ let f=0; d.tf.forEach((v,tok)=>{ if (tok.startsWith(w)) f+=v; }); score += Math.log(1+f) * d.weight * 1.5; });
+        phrases.forEach(p=>{ if (tnorm.includes(p)) score += 3 * d.weight; });
+        chars.forEach(c=>{ const count = (tnorm.split(c).length-1)||0; score += Math.min(2, count*0.2); });
+        if (d.type==='heading') score += 2;
+        if (d.type.startsWith('code')) score += 0.5;
+
+        const item = {id, score, d};
+        if (d.type==='heading') groups.heading.push(item);
+        else if (d.type.startsWith('code')) groups.code.push(item);
+        else groups.text.push(item);
+      });
+
+      groups.heading.sort((a,b)=> b.score-a.score);
+      groups.code.sort((a,b)=> b.score-a.score);
+      groups.text.sort((a,b)=> b.score-a.score);
+
+      const summary = {
+        heading: groups.heading.length,
+        code: groups.code.length,
+        text: groups.text.length,
+        total: groups.heading.length + groups.code.length + groups.text.length
       };
+      return { ...groups, summary };
+    }
 
-      /* ========= Theme: auto/light/dark ========= */
-      const html = document.documentElement;
-      const modeBtn = document.getElementById('modeBtn');
-      const THEME_KEY = 'vl.theme';
-      const THEMES = ['auto','light','dark'];
-      function applyTheme(mode){
-        html.setAttribute('data-theme', mode);
-        modeBtn.setAttribute('aria-pressed', mode !== 'auto'); // pressed when forced
-        modeBtn.textContent = mode === 'auto' ? 'Thème: Auto' : (mode === 'light' ? 'Thème: Clair' : 'Thème: Sombre');
-      }
-      let theme = storage.get(THEME_KEY, 'auto');
-      applyTheme(theme);
-      modeBtn.addEventListener('click', () => {
-        const idx = (THEMES.indexOf(theme) + 1) % THEMES.length;
-        theme = THEMES[idx];
-        storage.set(THEME_KEY, theme);
-        applyTheme(theme);
-      });
-
-      /* ========= Zoom (root font-size) ========= */
-      const ZOOM_KEY = 'vl.zoom';
-      const zoomIn  = document.getElementById('zoomIn');
-      const zoomOut = document.getElementById('zoomOut');
-      function getZoom(){ return storage.get(ZOOM_KEY, 16) }
-      function setZoom(px){
-        const clamped = Math.max(12, Math.min(22, px|0));
-        document.documentElement.style.fontSize = clamped + 'px';
-        storage.set(ZOOM_KEY, clamped);
-      }
-      setZoom(getZoom());
-      zoomIn.addEventListener('click',  () => setZoom(getZoom()+1));
-      zoomOut.addEventListener('click', () => setZoom(getZoom()-1));
-
-      /* ========= Print ========= */
-      const printBtn = document.getElementById('printBtn');
-      printBtn.addEventListener('click', () => window.print());
-
-      /* ========= Keyboard shortcuts =========
-         Ctrl+K: focus search
-         Ctrl+'=' or Ctrl+'+': zoom in
-         Ctrl+'-': zoom out
-         Ctrl+0: reset zoom
-         Ctrl+P: print
-      */
-      const q = document.getElementById('q');
-      window.addEventListener('keydown', (e) => {
-        const ctrl = e.ctrlKey || e.metaKey;
-        if (ctrl && e.key.toLowerCase() === 'k'){ e.preventDefault(); q.focus(); q.select(); }
-        if (ctrl && (e.key === '=' || e.key === '+')){ e.preventDefault(); setZoom(getZoom()+1) }
-        if (ctrl && e.key === '-'){ e.preventDefault(); setZoom(getZoom()-1) }
-        if (ctrl && e.key === '0'){ e.preventDefault(); setZoom(16) }
-        if (ctrl && e.key.toLowerCase() === 'p'){ /* allow default */ }
-      });
-
-      /* ========= Simple client-side search with highlighting ========= */
-      const hits = document.getElementById('hits');
-      let lastMarks = [];
-      function clearMarks(){
-        lastMarks.forEach(m => {
-          const parent = m.parentNode;
-          if (!parent) return;
-          parent.replaceChild(document.createTextNode(m.textContent), m);
-          parent.normalize();
-        });
-        lastMarks = [];
-      }
-      function highlight(node, regex){
-        if (node.nodeType === 3){ // text
-          const text = node.nodeValue;
-          const match = regex.exec(text);
-          if (match){
-            const mark = document.createElement('mark');
-            const start = match.index;
-            const end = start + match[0].length;
-            const before = document.createTextNode(text.slice(0,start));
-            const after  = document.createTextNode(text.slice(end));
-            mark.textContent = text.slice(start,end);
-            const frag = document.createDocumentFragment();
-            frag.appendChild(before); frag.appendChild(mark); frag.appendChild(after);
+    /* ===================== SURBRILLANCE & NAV ===================== */
+    let marks=[], cur=-1;
+    function clearMarks(){ marks.forEach(m=>{ const t=document.createTextNode(m.textContent); m.replaceWith(t); }); marks=[]; cur=-1; }
+    function markAll(needles){
+      if (!needles.length) return 0;
+      const targets = content.querySelectorAll('section, p, li, pre, code, h1, h2, h3');
+      const needlesN = needles.map(n=>({raw:n, n:norm(n)})).filter(n=>n.n);
+      const findOne = (srcLower, from) => {
+        let best = {i:-1, t:null};
+        for (const nd of needlesN){
+          const idx = srcLower.indexOf(nd.n, from);
+          if (idx!==-1 && (best.i===-1 || idx<best.i)) best = {i:idx, t:nd};
+        }
+        return best;
+      };
+      targets.forEach(el=>{
+        const tw = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null);
+        const local = [];
+        while (tw.nextNode()){
+          const node = tw.currentNode;
+          const src = node.nodeValue; const low = norm(src);
+          let from=0; if (!low) continue;
+          const out=[];
+          while (true){
+            const f = findOne(low, from);
+            if (f.i===-1) break;
+            const realStart = f.i + (src.slice(0,f.i).length - low.slice(0,f.i).length);
+            if (realStart>from) out.push(document.createTextNode(src.slice(from, realStart)));
+            const marked = document.createElement('mark'); marked.setAttribute('data-hl','');
+            const rawSlice = src.slice(realStart, realStart + f.t.raw.length);
+            marked.textContent = rawSlice || src.slice(realStart, realStart + f.t.n.length);
+            out.push(marked); local.push(marked);
+            from = realStart + (rawSlice||f.t.n).length;
+            if (from>=src.length) break;
+          }
+          if (from < src.length) out.push(document.createTextNode(src.slice(from)));
+          if (out.length){
+            const frag = document.createDocumentFragment(); out.forEach(n=>frag.appendChild(n));
             node.parentNode.replaceChild(frag, node);
-            lastMarks.push(mark);
-            return 1;
           }
-          return 0;
-        } else if (node.nodeType === 1 && !['SCRIPT','STYLE'].includes(node.tagName)){
-          let count = 0;
-          for (let i=0;i<node.childNodes.length;i++){
-            count += highlight(node.childNodes[i], regex);
-          }
-          return count;
         }
-        return 0;
-      }
-      function search(qs){
-        clearMarks();
-        if (!qs || qs.length < 2){ hits.textContent = ''; return }
-        const rx = new RegExp(qs.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'), 'i');
-        const content = document.getElementById('content');
-        let total = 0;
-        // Try to mark at most one occurrence per block for performance
-        content.querySelectorAll('section, p, li, pre').forEach(el => {
-          total += highlight(el, rx);
-        });
-        hits.textContent = total ? `${total} résultat(s)` : 'Aucun résultat';
-        if (lastMarks[0]){ lastMarks[0].scrollIntoView({behavior:'smooth', block:'center'}) }
-      }
-      q.addEventListener('input', e => search(e.target.value.trim()));
-
-      /* ========= TOC Floating button ========= */
-      const tocFab = document.getElementById('tocFab');
-      tocFab.addEventListener('click', () => {
-        document.querySelector('nav.toc')?.scrollIntoView({behavior:'smooth', block:'start'});
+        marks.push(...local);
       });
+      return marks.length;
+    }
+    function focusCur(){
+      marks.forEach(m=> m.removeAttribute('data-cur'));
+      if (cur>=0 && marks[cur]){ marks[cur].setAttribute('data-cur',''); marks[cur].scrollIntoView({behavior:'smooth', block:'center'}); }
+      hitsEl.textContent = marks.length ? `${cur+1}/${marks.length} hits` : 'Aucun résultat';
+    }
+    function gotoNext(){ if (!marks.length) return; cur=(cur+1)%marks.length; focusCur(); }
+    function gotoPrev(){ if (!marks.length) return; cur=(cur-1+marks.length)%marks.length; focusCur(); }
+    window.gotoNext = gotoNext; window.gotoPrev = gotoPrev;
 
-      /* ========= Progressive enhancement: show FAB after scroll ========= */
-      let shown = true;
-      function onScroll(){
-        const y = window.scrollY || document.documentElement.scrollTop;
-        const show = y > 240;
-        if (show !== shown){
-          tocFab.toggleAttribute('hidden', !show);
-          shown = show;
-        }
+    /* ===================== SUGGESTIONS UI ===================== */
+    const suggBox = document.getElementById('suggestions');
+    const searchBtn = document.getElementById('searchBtn');
+
+    // Filtres dynamiques (files/types/pages)
+    let activeFile = 'all'; let activeType = 'all';
+    function pill(label, pressed, cb){
+      const p = document.createElement('button'); p.type='button'; p.className='pill'; p.textContent=label; p.setAttribute('aria-pressed', pressed?'true':'false');
+      p.addEventListener('click', ()=>{ cb(); });
+      return p;
+    }
+
+    function hideSugg(){ suggBox.setAttribute('hidden',''); suggBox.innerHTML=''; document.querySelector('.srch').setAttribute('aria-expanded','false'); selIndex=-1; }
+    function addGroupHeader(label, addons){
+      const h = document.createElement('div'); h.className='group-h'; h.textContent=label;
+      if (addons){ const box=document.createElement('div'); box.className='filters'; addons.forEach(x=> box.appendChild(x)); h.appendChild(box); }
+      suggBox.appendChild(h);
+    }
+    function famTag(text, emph=false){ const s=document.createElement('span'); s.className='tag'+(emph?' emph':''); s.textContent=text; return s; }
+    function addItem(item, queryTerms){
+      const {d} = item;
+      const btn = document.createElement('button');
+      btn.type='button'; btn.className='sugg-item'; btn.setAttribute('role','option');
+
+      const left = document.createElement('div'); left.className='sugg-left';
+      const right = document.createElement('div'); right.className='sugg-right';
+
+      const title = d.headingNo ? `${d.headingNo} — ${d.title||''}` : (d.title||'');
+      const path  = title || (d.type==='heading'? 'Title' : d.type.startsWith('code')?'Code':'Content');
+      const snippet = (d.text||'').replace(/\s+/g,' ').trim().slice(0,160);
+
+      left.innerHTML = `<strong>${path || 'Result'}</strong><small>… ${snippet} …</small>`;
+
+      // Famille (en anglais à droite)
+      const fam = d.fam || (d.type==='heading'?'Title': d.type.startsWith('code')?'Code Block':'Content');
+      right.appendChild(famTag(fam, true));
+      // Sous-type Subtitle (ex: 1.1)
+      if (d.fam==='Subtitle' && d.headingNo) right.appendChild(famTag(`Subtitle ${d.headingNo}`));
+      // File group
+      right.appendChild(famTag(`File: ${d.file}`));
+      // Page index
+      right.appendChild(famTag(`p. ${d.page}/${FORCE_PAGES||pages}`));
+
+      btn.appendChild(left); btn.appendChild(right);
+
+      btn.addEventListener('click', ()=>{
+        hideSugg(); clearMarks();
+        (d.el.closest('section')||d.el).scrollIntoView({behavior:'smooth', block:'start'});
+        const needles = [...queryTerms.phrases, ...queryTerms.pos, ...queryTerms.wild.map(w=>w), ...queryTerms.chars];
+        if (needles.length){ const total = markAll(needles); if (total){ cur=0; focusCur(); } }
+      });
+      suggBox.appendChild(btn);
+    }
+
+    function addTokenItem(token){
+      const btn = document.createElement('button'); btn.type='button'; btn.className='sugg-item'; btn.setAttribute('role','option');
+      const left = document.createElement('div'); left.className='sugg-left';
+      const right = document.createElement('div'); right.className='sugg-right';
+      left.innerHTML = `<strong>${token.label}</strong><small>Suggested query</small>`;
+      right.appendChild(famTag(token.fam, true));
+      btn.appendChild(left); btn.appendChild(right);
+      btn.addEventListener('click', ()=>{ q.value = token.label.replace(/^"|"$/g,''); doSearch(q.value); });
+      suggBox.appendChild(btn);
+    }
+
+    function renderSuggestions(query){
+      const parsed = parseQuery(query);
+      const res = matchAndScore(query);
+      suggBox.innerHTML='';
+
+      // Filtres dynamiques (files/types)
+      const filePills = [
+        pill('All files', activeFile==='all', ()=>{ activeFile='all'; q.value = q.value.replace(/\bfile:[^\s]+/,'').trim(); renderSuggestions(q.value); })
+      ];
+      FILES.forEach(f=> filePills.push(pill(f.label, activeFile===f.id, ()=>{ activeFile=f.id; if (!/\bfile:/i.test(q.value)) q.value+=' '; q.value=q.value.replace(/\bfile:[^\s]+/,'').trim()+' file:'+f.id; renderSuggestions(q.value); })));
+      const typePills = [
+        pill('All types', activeType==='all', ()=>{ activeType='all'; q.value=q.value.replace(/\btype:[^\s]+/,'').trim(); renderSuggestions(q.value); }),
+        pill('Titles', /type:/.test(q.value)&&/head|title/.test(q.value), ()=>{ activeType='heading'; q.value=q.value.replace(/\btype:[^\s]+/,'').trim()+' type:heading'; renderSuggestions(q.value); }),
+        pill('Code', /type:/.test(q.value)&&/code/.test(q.value), ()=>{ activeType='code'; q.value=q.value.replace(/\btype:[^\s]+/,'').trim()+' type:code'; renderSuggestions(q.value); }),
+        pill('Content', /type:/.test(q.value)&&/text|content/.test(q.value), ()=>{ activeType='text'; q.value=q.value.replace(/\btype:[^\s]+/,'').trim()+' type:text'; renderSuggestions(q.value); }),
+      ];
+      addGroupHeader('Filters', [...filePills, ...typePills]);
+
+      // Families: Keywords / Words / Characters (anglais)
+      if (res.keyword.length || res.word.length || res.char.length){
+        addGroupHeader('Query families');
+        res.keyword.slice(0,8).forEach(addTokenItem);
+        res.word.slice(0,8).forEach(addTokenItem);
+        res.char.slice(0,8).forEach(addTokenItem);
+      } else if (!query.trim()){
+        addGroupHeader('Top Keywords');
+        const bar = document.createElement('div'); bar.className='chipbar';
+        TOP_KEYWORDS.forEach(k=>{ const c=document.createElement('button'); c.type='button'; c.className='chip'; c.textContent=k; c.addEventListener('click', ()=>{ q.value=k; doSearch(k); }); bar.appendChild(c); });
+        suggBox.appendChild(bar);
+        addGroupHeader('Frequent Words');
+        const bar2 = document.createElement('div'); bar2.className='chipbar';
+        freqList.forEach(k=>{ const c=document.createElement('button'); c.type='button'; c.className='chip'; c.textContent=k; c.addEventListener('click', ()=>{ q.value=k; doSearch(k); }); bar2.appendChild(c); });
+        suggBox.appendChild(bar2);
       }
-      tocFab.setAttribute('hidden','');
-      document.addEventListener('scroll', onScroll, {passive:true});
-      onScroll();
 
-      /* ========= Accessibility niceties ========= */
-      // Announce count changes even when identical text repeats
-      const announce = (text) => { hits.textContent = ''; requestAnimationFrame(()=> hits.textContent = text) };
-      const oldSearch = search;
-      search = function(qs){ oldSearch(qs); if(qs.length>=2){ announce(hits.textContent) } };
-    })();
+      if (res.heading.length){ addGroupHeader('Titles & Subtitles'); res.heading.slice(0,8).forEach(it=> addItem(it, parsed)); }
+      if (res.text.length){ addGroupHeader('Content'); res.text.slice(0,8).forEach(it=> addItem(it, parsed)); }
+      if (res.code.length){
+        addGroupHeader('Code content');
+        res.code.slice(0,8).forEach(it=> addItem(it, parsed));
+      }
+
+      if (!res.heading.length && !res.text.length && !res.code.length && query.trim()){
+        const e = document.createElement('div'); e.className='sugg-item'; e.innerHTML='<small>No results</small>'; suggBox.appendChild(e);
+      }
+
+      suggBox.removeAttribute('hidden');
+      document.querySelector('.srch').setAttribute('aria-expanded','true');
+
+      const parts = [];
+      if (res.summary.heading) parts.push(`Titles: ${res.summary.heading}`);
+      if (res.summary.text)    parts.push(`Content: ${res.summary.text}`);
+      if (res.summary.code)    parts.push(`Code: ${res.summary.code}`);
+      hitsEl.textContent = parts.length ? parts.join(' • ') + ` • Total: ${res.summary.total}` : (query.trim()? 'No results' : '');
+    }
+
+    /* ===================== DO SEARCH ===================== */
+    function doSearch(term){
+      hideSugg(); clearMarks();
+      const parsed = parseQuery(term);
+      const res = matchAndScore(term);
+      const needles = [...parsed.phrases, ...parsed.pos, ...parsed.wild.map(w=>w), ...parsed.chars];
+      if (needles.length){ const total = markAll(needles); if (total){ cur=0; focusCur(); } }
+      const parts = [];
+      if (res.summary.heading) parts.push(`Titles: ${res.summary.heading}`);
+      if (res.summary.text)    parts.push(`Content: ${res.summary.text}`);
+      if (res.summary.code)    parts.push(`Code: ${res.summary.code}`);
+      hitsEl.textContent = parts.length ? parts.join(' • ') + ` • Total: ${res.summary.total}` : (term.trim()? 'No results' : '');
+      renderSuggestions(term);
+    }
+
+    // Events
+    let selIndex=-1; const suggBoxEl = document.getElementById('suggestions');
+    q.addEventListener('input', ()=>{ clearTimeout(q._t); q._t=setTimeout(()=> renderSuggestions(q.value), 120); });
+    q.addEventListener('keydown', (e)=>{
+      if (e.key==='Enter'){ e.preventDefault(); doSearch(q.value); }
+      else if (e.key==='ArrowDown' || e.key==='ArrowUp'){
+        const items = [...suggBoxEl.querySelectorAll('.sugg-item')];
+        if (!items.length) return;
+        e.preventDefault();
+        if (e.key==='ArrowDown') selIndex = (selIndex+1) % items.length;
+        else selIndex = (selIndex-1+items.length) % items.length;
+        items.forEach((el,i)=> el.setAttribute('aria-selected', i===selIndex ? 'true' : 'false'));
+        items[selIndex].scrollIntoView({block:'nearest'});
+      } else if (e.key==='Escape'){ hideSugg(); }
+    });
+    document.getElementById('searchBtn').addEventListener('click', ()=> doSearch(q.value));
+    document.addEventListener('click', (e)=>{ if (!document.querySelector('.srch').contains(e.target)) hideSugg(); });
+
+    // Initial suggestions
+    renderSuggestions('');
+  })();
   </script>
 
 
@@ -672,22 +1030,28 @@ vitl doc src/ -o build/docs.txt
 
 
     <!-- 1) STRUCTURE -->
-<section id="structure">
-  <h2>1) Structure de projet — Guide complet</h2>
+    <section id="structure">
+      <h2>1) Structure de projet — Guide complet</h2>
 
-  <div class="callout info">
-    <h4>En clair</h4>
-    <p>Trois dossiers suffisent&nbsp;: <code>/src</code> (code VITL), <code>/libs</code> (C/FFI), <code>/build</code> (artefacts). Cette séparation garde les sources propres, facilite les revues et les pipelines CI.</p>
-  </div>
+      <div class="callout info">
+        <h4>En clair</h4>
+        <p>Trois dossiers suffisent&nbsp;: <code>/src</code> (code VITL), <code>/libs</code> (C/FFI),
+          <code>/build</code> (artefacts). Cette séparation garde les sources propres, facilite les revues et les
+          pipelines CI.
+        </p>
+      </div>
 
-  <p>
-    Une structure claire évite des heures perdues&nbsp;: on sait où créer un fichier, où trouver une fonctionnalité, où tombent les binaires.
-    Cette section propose une arborescence <em>de base</em> puis des variantes (simple → complexe), des conventions de nommage,
-    des exemples <em>copier/coller</em> (<code>.gitignore</code>, tâches build, CI), et des intégrations C (CMake/Meson).
-  </p>
+      <p>
+        Une structure claire évite des heures perdues&nbsp;: on sait où créer un fichier, où trouver une fonctionnalité,
+        où tombent les binaires.
+        Cette section propose une arborescence <em>de base</em> puis des variantes (simple → complexe), des conventions
+        de nommage,
+        des exemples <em>copier/coller</em> (<code>.gitignore</code>, tâches build, CI), et des intégrations C
+        (CMake/Meson).
+      </p>
 
-  <h3>1.1 Arborescence type minimale</h3>
-  <pre><code>/src   → code source principal (.vitl)
+      <h3>1.1 Arborescence type minimale</h3>
+      <pre><code>/src   → code source principal (.vitl)
 /libs  → bibliothèques natives C/FFI (.c, .so, .dll, .a)
 /build → binaires, artefacts intermédiaires, bytecode (.vitbc)
 
@@ -703,39 +1067,41 @@ mon_projet/
     app.vitbc  (bytecode)
 </code></pre>
 
-  <h3>1.2 Convention des modules</h3>
-  <ul>
-    <li>Un fichier = un module.</li>
-    <li>Chemin disque = nom de module (lisible et prédictible).</li>
-    <li>Noms en <code>snake.case</code> pour modules/fichiers, <code>CamelCase</code> pour types.</li>
-  </ul>
-  <pre><code>Fichier : src/std/io.vitl
+      <h3>1.2 Convention des modules</h3>
+      <ul>
+        <li>Un fichier = un module.</li>
+        <li>Chemin disque = nom de module (lisible et prédictible).</li>
+        <li>Noms en <code>snake.case</code> pour modules/fichiers, <code>CamelCase</code> pour types.</li>
+      </ul>
+      <pre><code>Fichier : src/std/io.vitl
 Contenu : module std.io
 
 Fichier : src/app/http/client.vitl
 Contenu : module app.http.client
 </code></pre>
-  <p>Imports clairs&nbsp;: <code>import std.io</code>, <code>import util.str</code>. Évite les conflits, favorise la réutilisation.</p>
+      <p>Imports clairs&nbsp;: <code>import std.io</code>, <code>import util.str</code>. Évite les conflits, favorise la
+        réutilisation.</p>
 
-  <div class="callout ok">
-    <h4>Raison pratique</h4>
-    <p>Quand le chemin et le module correspondent, on sait toujours <em>où</em> vit une fonction. Plus simple pour les revues, la navigation IDE et la CI.</p>
-  </div>
+      <div class="callout ok">
+        <h4>Raison pratique</h4>
+        <p>Quand le chemin et le module correspondent, on sait toujours <em>où</em> vit une fonction. Plus simple pour
+          les revues, la navigation IDE et la CI.</p>
+      </div>
 
-  <h3>1.3 Variantes d’organisation (selon la taille)</h3>
-  <div class="grid-2">
-    <div class="card">
-      <strong>Projet simple</strong>
-      <pre><code>mon_projet/
+      <h3>1.3 Variantes d’organisation (selon la taille)</h3>
+      <div class="grid-2">
+        <div class="card">
+          <strong>Projet simple</strong>
+          <pre><code>mon_projet/
   src/main.vitl
   src/util/print.vitl
   build/
 </code></pre>
-      <p>Objectif&nbsp;: aller vite. Tests intégrés au bas des fichiers.</p>
-    </div>
-    <div class="card">
-      <strong>Projet moyen</strong>
-      <pre><code>mon_projet/
+          <p>Objectif&nbsp;: aller vite. Tests intégrés au bas des fichiers.</p>
+        </div>
+        <div class="card">
+          <strong>Projet moyen</strong>
+          <pre><code>mon_projet/
   src/app/main.vitl
   src/app/cli/args.vitl
   src/std/extra/time.vitl
@@ -743,13 +1109,15 @@ Contenu : module app.http.client
   libs/fast.c
   build/{debug,release,docs}
 </code></pre>
-      <p>On sépare <code>app/</code>, <code>util/</code>, <code>std/</code> local. Dossiers <code>debug/</code> et <code>release/</code> dans <code>build/</code>.</p>
-    </div>
-  </div>
+          <p>On sépare <code>app/</code>, <code>util/</code>, <code>std/</code> local. Dossiers <code>debug/</code> et
+            <code>release/</code> dans <code>build/</code>.
+          </p>
+        </div>
+      </div>
 
-  <div class="card">
-    <strong>Projet complexe (modulaire)</strong>
-    <pre><code>mon_projet/
+      <div class="card">
+        <strong>Projet complexe (modulaire)</strong>
+        <pre><code>mon_projet/
   src/
     app/main.vitl
     app/sub/feature.vitl
@@ -775,40 +1143,46 @@ Contenu : module app.http.client
     README.md
     CHANGELOG.md
 </code></pre>
-    <p>Tests isolés dans <code>/tests</code>, scripts utilitaires dans <code>/scripts</code>, documentation dédiée dans <code>/docs</code>.</p>
-  </div>
+        <p>Tests isolés dans <code>/tests</code>, scripts utilitaires dans <code>/scripts</code>, documentation dédiée
+          dans <code>/docs</code>.</p>
+      </div>
 
-  <h3>1.4 Rôles des dossiers (rappel express)</h3>
-  <ul>
-    <li><code>/src</code>&nbsp;: code VITL uniquement (modules, types, fonctions, tests intégrés).</li>
-    <li><code>/libs</code>&nbsp;: code C/C++ <em>enveloppé</em> côté C (shim) pour exposer une API C stable.</li>
-    <li><code>/build</code>&nbsp;: non versionné&nbsp;; binaires, <code>.vitbc</code>, docs générées, artefacts temporaires.</li>
-    <li><code>/tests</code> (optionnel)&nbsp;: scénarios et jeux de données.</li>
-    <li><code>/scripts</code> (optionnel)&nbsp;: tâches build/release reproductibles.</li>
-    <li><code>/docs</code> (optionnel)&nbsp;: guides, captures, changelog, spécifications.</li>
-  </ul>
+      <h3>1.4 Rôles des dossiers (rappel express)</h3>
+      <ul>
+        <li><code>/src</code>&nbsp;: code VITL uniquement (modules, types, fonctions, tests intégrés).</li>
+        <li><code>/libs</code>&nbsp;: code C/C++ <em>enveloppé</em> côté C (shim) pour exposer une API C stable.</li>
+        <li><code>/build</code>&nbsp;: non versionné&nbsp;; binaires, <code>.vitbc</code>, docs générées, artefacts
+          temporaires.</li>
+        <li><code>/tests</code> (optionnel)&nbsp;: scénarios et jeux de données.</li>
+        <li><code>/scripts</code> (optionnel)&nbsp;: tâches build/release reproductibles.</li>
+        <li><code>/docs</code> (optionnel)&nbsp;: guides, captures, changelog, spécifications.</li>
+      </ul>
 
-  <h3>1.5 Conventions de nommage</h3>
-  <ul>
-    <li>Modules/fichiers&nbsp;: <code>snake.case</code> (<code>net/http.vitl</code> → <code>module net.http</code>).</li>
-    <li>Types&nbsp;: <code>CamelCase</code> (<code>struct HttpClient</code>).</li>
-    <li>Fonctions/variables&nbsp;: <code>snake_case</code> (<code>fn read_config()</code>).</li>
-    <li>Tests&nbsp;: <code>test "nom explicite du comportement"</code>.</li>
-  </ul>
+      <h3>1.5 Conventions de nommage</h3>
+      <ul>
+        <li>Modules/fichiers&nbsp;: <code>snake.case</code> (<code>net/http.vitl</code> → <code>module net.http</code>).
+        </li>
+        <li>Types&nbsp;: <code>CamelCase</code> (<code>struct HttpClient</code>).</li>
+        <li>Fonctions/variables&nbsp;: <code>snake_case</code> (<code>fn read_config()</code>).</li>
+        <li>Tests&nbsp;: <code>test "nom explicite du comportement"</code>.</li>
+      </ul>
 
-  <h3>1.6 Chemins &amp; portabilité (Linux/macOS/Windows)</h3>
-  <ul>
-    <li>Utilisez des chemins relatifs au projet (évite les surprises en CI).</li>
-    <li>Évitez de coder en dur <code>\\</code> ou <code>/</code>&nbsp;: centralisez la logique de chemins si nécessaire.</li>
-    <li>Stockez les fichiers de test dans <code>tests/data/</code> et adressez-les via <code>std.fs</code> depuis la racine.</li>
-  </ul>
+      <h3>1.6 Chemins &amp; portabilité (Linux/macOS/Windows)</h3>
+      <ul>
+        <li>Utilisez des chemins relatifs au projet (évite les surprises en CI).</li>
+        <li>Évitez de coder en dur <code>\\</code> ou <code>/</code>&nbsp;: centralisez la logique de chemins si
+          nécessaire.</li>
+        <li>Stockez les fichiers de test dans <code>tests/data/</code> et adressez-les via <code>std.fs</code> depuis la
+          racine.</li>
+      </ul>
 
-  <h3>1.7 Tests&nbsp;: où les placer&nbsp;?</h3>
-  <ul>
-    <li><strong>Petit projet</strong>&nbsp;: tests à la fin de chaque fichier.</li>
-    <li><strong>Projet moyen/complexe</strong>&nbsp;: combiner tests intégrés + scénarios dans <code>/tests</code>.</li>
-  </ul>
-  <pre><code>src/core/math.vitl
+      <h3>1.7 Tests&nbsp;: où les placer&nbsp;?</h3>
+      <ul>
+        <li><strong>Petit projet</strong>&nbsp;: tests à la fin de chaque fichier.</li>
+        <li><strong>Projet moyen/complexe</strong>&nbsp;: combiner tests intégrés + scénarios dans <code>/tests</code>.
+        </li>
+      </ul>
+      <pre><code>src/core/math.vitl
   ... code ...
   test "somme de base" { assert(add(1,2) == 3) }
 
@@ -816,19 +1190,21 @@ tests/test_math.vitl
   ... scénarios plus riches, I/O, golden files ...
 </code></pre>
 
-  <h3>1.8 Documentation générée</h3>
-  <p>Documentez vos APIs avec <code>///</code> en tête d’éléments publics, puis générez avec <code>vitl doc src/ -o build/docs.txt</code>. Conservez les docs “métier” plus longues dans <code>/docs</code>.</p>
+      <h3>1.8 Documentation générée</h3>
+      <p>Documentez vos APIs avec <code>///</code> en tête d’éléments publics, puis générez avec
+        <code>vitl doc src/ -o build/docs.txt</code>. Conservez les docs “métier” plus longues dans <code>/docs</code>.
+      </p>
 
-  <h3>1.9 Sorties de build (organisation)</h3>
-  <pre><code>/build/
+      <h3>1.9 Sorties de build (organisation)</h3>
+      <pre><code>/build/
   debug/     → binaires -O0 -g (débogage)
   release/   → binaires -O3 (livraison)
   docs/      → doc générée (ex. docs.txt)
   *.vitbc    → bytecode (exécution VM)
 </code></pre>
 
-  <h3>1.10 Fichier .gitignore (copier/coller)</h3>
-  <pre><code># VITL
+      <h3>1.10 Fichier .gitignore (copier/coller)</h3>
+      <pre><code># VITL
 /build/
 *.vitbc
 
@@ -847,11 +1223,11 @@ Thumbs.db
 .cache/
 </code></pre>
 
-  <h3>1.11 Tâches build pratiques</h3>
-  <div class="grid-2">
-    <div class="card">
-      <strong>bash (Linux/macOS)</strong>
-      <pre><code># scripts/build.sh
+      <h3>1.11 Tâches build pratiques</h3>
+      <div class="grid-2">
+        <div class="card">
+          <strong>bash (Linux/macOS)</strong>
+          <pre><code># scripts/build.sh
 set -euo pipefail
 mkdir -p build/release
 vitl fmt src/
@@ -859,10 +1235,10 @@ vitl check src/
 vitl build -O3 -o build/release/app src/app/main.vitl
 echo "OK → build/release/app"
 </code></pre>
-    </div>
-    <div class="card">
-      <strong>PowerShell (Windows)</strong>
-      <pre><code># scripts/build.ps1
+        </div>
+        <div class="card">
+          <strong>PowerShell (Windows)</strong>
+          <pre><code># scripts/build.ps1
 $ErrorActionPreference = "Stop"
 New-Item -ItemType Directory -Force -Path build/release | Out-Null
 vitl fmt src/
@@ -870,11 +1246,11 @@ vitl check src/
 vitl build -O3 -o build/release/app.exe src/app/main.vitl
 Write-Host "OK → build/release/app.exe"
 </code></pre>
-    </div>
-  </div>
+        </div>
+      </div>
 
-  <h3>1.12 Intégration CI (GitHub Actions minimal)</h3>
-  <pre><code># .github/workflows/ci.yml
+      <h3>1.12 Intégration CI (GitHub Actions minimal)</h3>
+      <pre><code># .github/workflows/ci.yml
 name: CI
 on: [push, pull_request]
 jobs:
@@ -902,16 +1278,16 @@ jobs:
           name: app-linux
           path: build/release/app
 </code></pre>
-  <p class="note">Adaptez l’étape “Install VITL” à votre source de binaire (URL/paquet interne).</p>
+      <p class="note">Adaptez l’étape “Install VITL” à votre source de binaire (URL/paquet interne).</p>
 
-  <h3>1.13 Intégration d’une lib C (FFI) — CMake</h3>
-  <pre><code># libs/CMakeLists.txt
+      <h3>1.13 Intégration d’une lib C (FFI) — CMake</h3>
+      <pre><code># libs/CMakeLists.txt
 cmake_minimum_required(VERSION 3.16)
 project(vitl_ffi C)
 add_library(foo STATIC foo.c)
 target_include_directories(foo PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 </code></pre>
-  <pre><code># Construire la lib puis lier côté VITL
+      <pre><code># Construire la lib puis lier côté VITL
 mkdir -p libs/build &amp;&amp; cd libs/build
 cmake ..
 cmake --build . --config Release
@@ -919,38 +1295,38 @@ cmake --build . --config Release
 vitl build -O2 -L libs/build -lfoo -o build/app src/main.vitl
 </code></pre>
 
-  <h3>1.14 Intégration d’une lib C (FFI) — Meson</h3>
-  <pre><code># libs/meson.build
+      <h3>1.14 Intégration d’une lib C (FFI) — Meson</h3>
+      <pre><code># libs/meson.build
 project('vitl_ffi', 'c')
 libfoo = static_library('foo', 'foo.c', include_directories: include_directories('.'))
 </code></pre>
-  <pre><code># Build Meson/Ninja
+      <pre><code># Build Meson/Ninja
 meson setup libs/build libs
 meson compile -C libs/build
 # Puis lier lors du build VITL :
 vitl build -O2 -L libs/build -lfoo -o build/app src/main.vitl
 </code></pre>
 
-  <h3>1.15 Packaging &amp; release</h3>
-  <ul>
-    <li>Générez le binaire <code>release/</code> (<code>-O3</code>) pour chaque OS visé.</li>
-    <li>Ajoutez un README court par plateforme&nbsp;: commande, options, exemples.</li>
-    <li>Incluez <code>LICENSE</code>, <code>CHANGELOG.md</code> et un hash (SHA256) des binaires.</li>
-    <li>Option&nbsp;: archivez <code>app</code> + fichiers d’exemple (<code>examples/</code>).</li>
-  </ul>
+      <h3>1.15 Packaging &amp; release</h3>
+      <ul>
+        <li>Générez le binaire <code>release/</code> (<code>-O3</code>) pour chaque OS visé.</li>
+        <li>Ajoutez un README court par plateforme&nbsp;: commande, options, exemples.</li>
+        <li>Incluez <code>LICENSE</code>, <code>CHANGELOG.md</code> et un hash (SHA256) des binaires.</li>
+        <li>Option&nbsp;: archivez <code>app</code> + fichiers d’exemple (<code>examples/</code>).</li>
+      </ul>
 
-  <h3>1.16 Versionning &amp; docs projet</h3>
-  <ul>
-    <li><code>CHANGELOG.md</code> (Keep a Changelog&nbsp;: Added/Changed/Fixed/Removed).</li>
-    <li><code>README.md</code>&nbsp;: but, installation, quick start, table des commandes.</li>
-    <li>Tagguez vos versions (tags Git)&nbsp;; automatisez un brouillon de release en CI.</li>
-  </ul>
+      <h3>1.16 Versionning &amp; docs projet</h3>
+      <ul>
+        <li><code>CHANGELOG.md</code> (Keep a Changelog&nbsp;: Added/Changed/Fixed/Removed).</li>
+        <li><code>README.md</code>&nbsp;: but, installation, quick start, table des commandes.</li>
+        <li>Tagguez vos versions (tags Git)&nbsp;; automatisez un brouillon de release en CI.</li>
+      </ul>
 
-  <h3>1.17 Fichiers de configuration (exemples)</h3>
-  <div class="grid-2">
-    <div class="card">
-      <strong>README.md (squelette)</strong>
-      <pre><code># Mon Projet VITL
+      <h3>1.17 Fichiers de configuration (exemples)</h3>
+      <div class="grid-2">
+        <div class="card">
+          <strong>README.md (squelette)</strong>
+          <pre><code># Mon Projet VITL
 But&nbsp;: une ligne claire ici.
 
 ## Installation
@@ -962,10 +1338,10 @@ But&nbsp;: une ligne claire ici.
 vitl --help
 \`\`\`
 </code></pre>
-    </div>
-    <div class="card">
-      <strong>.editorconfig</strong>
-      <pre><code>root = true
+        </div>
+        <div class="card">
+          <strong>.editorconfig</strong>
+          <pre><code>root = true
 
 [*]
 charset = utf-8
@@ -975,30 +1351,34 @@ indent_style = space
 indent_size = 2
 trim_trailing_whitespace = true
 </code></pre>
-    </div>
-  </div>
-</section>
+        </div>
+      </div>
+    </section>
 
 
 
-<!-- 2) CLI -->
-<section id="cli">
-  <h2>2) Outils en ligne de commande — Guide ultra-complet</h2>
+    <!-- 2) CLI -->
+    <section id="cli">
+      <h2>2) Outils en ligne de commande — Guide ultra-complet</h2>
 
-  <div class="callout info">
-    <h4>Vue d’ensemble</h4>
-    <ul>
-      <li><code>vitl run &lt;fichier.vitl&gt; [-- args...]</code> — compile en bytecode puis exécute dans la VM (idéal pour apprendre, prototyper, CI rapide).</li>
-      <li><code>vitl build [options] -o &lt;sortie&gt; &lt;fichier.vitl&gt;</code> — produit un exécutable natif (livraison, perf).</li>
-      <li><code>vitl fmt &lt;chemin&gt;</code> — formateur de code (style standard).</li>
-      <li><code>vitl check &lt;chemin&gt;</code> — analyse statique (imports, types, diagnostics rapides).</li>
-      <li><code>vitl test</code> — exécute tous les blocs <code>test "…"{…}</code> rencontrés.</li>
-      <li><code>vitl doc &lt;chemin&gt; -o &lt;fichier&gt;</code> — génère la doc à partir des commentaires <code>///</code>.</li>
-    </ul>
-  </div>
+      <div class="callout info">
+        <h4>Vue d’ensemble</h4>
+        <ul>
+          <li><code>vitl run &lt;fichier.vitl&gt; [-- args...]</code> — compile en bytecode puis exécute dans la VM
+            (idéal pour apprendre, prototyper, CI rapide).</li>
+          <li><code>vitl build [options] -o &lt;sortie&gt; &lt;fichier.vitl&gt;</code> — produit un exécutable natif
+            (livraison, perf).</li>
+          <li><code>vitl fmt &lt;chemin&gt;</code> — formateur de code (style standard).</li>
+          <li><code>vitl check &lt;chemin&gt;</code> — analyse statique (imports, types, diagnostics rapides).</li>
+          <li><code>vitl test</code> — exécute tous les blocs <code>test "…"{…}</code> rencontrés.</li>
+          <li><code>vitl doc &lt;chemin&gt; -o &lt;fichier&gt;</code> — génère la doc à partir des commentaires
+            <code>///</code>.
+          </li>
+        </ul>
+      </div>
 
-  <h3>2.1 Exécution immédiate (VM/JIT)</h3>
-<pre><code># Lancer un fichier
+      <h3>2.1 Exécution immédiate (VM/JIT)</h3>
+      <pre><code># Lancer un fichier
 vitl run src/main.vitl
 
 # Passer des arguments utilisateur au programme (utilisez -- pour séparer)
@@ -1007,15 +1387,15 @@ vitl run src/cat.vitl -- README.md
 # Exécuter plusieurs fichiers (point d’entrée = premier fichier avec fn main)
 vitl run src/app/main.vitl src/util/str.vitl
 </code></pre>
-          <ul>
-            <li><strong>Quand l’utiliser</strong> : démo, TDD rapide, scripts éphémères, validation CI sans build natif.
-            </li>
-            <li><strong>Bon à savoir</strong> : la VM applique les mêmes vérifications que le build (types, imports,
-              sécurité).</li>
-          </ul>
+      <ul>
+        <li><strong>Quand l’utiliser</strong> : démo, TDD rapide, scripts éphémères, validation CI sans build natif.
+        </li>
+        <li><strong>Bon à savoir</strong> : la VM applique les mêmes vérifications que le build (types, imports,
+          sécurité).</li>
+      </ul>
 
-          <h3>2.2 Compilation en exécutable natif</h3>
-          <pre><code># Build simple (optimisation par défaut -O2)
+      <h3>2.2 Compilation en exécutable natif</h3>
+      <pre><code># Build simple (optimisation par défaut -O2)
 vitl build -o build/app src/main.vitl
 
 # Profils typiques
@@ -1026,16 +1406,16 @@ vitl build -O3    -o build/release/app  src/main.vitl   # Livraison (perf max)
 vitl build --emit-ir       -o build/app src/main.vitl   # IR lisible
 vitl build --emit-bytecode -o build/app src/main.vitl   # Bytecode VM (.vitbc)
 </code></pre>
-          <div class="callout ok">
-            <h4>Conseils</h4>
-            <ul>
-              <li>Utilisez <code>-O0 -g</code> en dev pour des builds rapides + backtraces lisibles.</li>
-              <li>Pour livrer, préférez <code>-O3</code>, mesurez, puis ajustez (I/O, allocations, FFI).</li>
-            </ul>
-          </div>
+      <div class="callout ok">
+        <h4>Conseils</h4>
+        <ul>
+          <li>Utilisez <code>-O0 -g</code> en dev pour des builds rapides + backtraces lisibles.</li>
+          <li>Pour livrer, préférez <code>-O3</code>, mesurez, puis ajustez (I/O, allocations, FFI).</li>
+        </ul>
+      </div>
 
-          <h3>2.3 Formateur, analyseur, tests, doc</h3>
-          <pre><code># Formater tout le code (à intégrer en pre-commit)
+      <h3>2.3 Formateur, analyseur, tests, doc</h3>
+      <pre><code># Formater tout le code (à intégrer en pre-commit)
 vitl fmt src/
 
 # Analyse statique (imports manquants, types, règles de base)
@@ -1048,34 +1428,34 @@ vitl test
 vitl doc src/ -o build/docs.txt
 </code></pre>
 
-          <h3>2.4 Lier des bibliothèques C (FFI)</h3>
-          <pre><code># Fichiers de shim C compilés séparément dans libs/
+      <h3>2.4 Lier des bibliothèques C (FFI)</h3>
+      <pre><code># Fichiers de shim C compilés séparément dans libs/
 # Lier une lib partagée ou statique pendant le build
 vitl build -O2 -L libs -lfoo -o build/app src/main.vitl
 
 # Définir un rpath pour retrouver les .so/.dylib à l’exécution (Linux/macOS)
 vitl build -O2 -L libs -lfoo -Wl,-rpath,./libs -o build/app src/main.vitl
 </code></pre>
-          <ul>
-            <li><strong>-L</strong> : ajoute un chemin de recherche des bibliothèques.</li>
-            <li><strong>-lfoo</strong> : lie la bibliothèque <code>libfoo.{so,dylib,a}</code>.</li>
-            <li><strong>Astuce</strong> : conservez un <em>shim C plat</em> (types stables, ownership clair) pour un FFI
-              robuste.</li>
-          </ul>
+      <ul>
+        <li><strong>-L</strong> : ajoute un chemin de recherche des bibliothèques.</li>
+        <li><strong>-lfoo</strong> : lie la bibliothèque <code>libfoo.{so,dylib,a}</code>.</li>
+        <li><strong>Astuce</strong> : conservez un <em>shim C plat</em> (types stables, ownership clair) pour un FFI
+          robuste.</li>
+      </ul>
 
-          <h3>2.5 Exemples concrets (sessions)</h3>
-          <pre><code># Hello World (VM puis binaire)
+      <h3>2.5 Exemples concrets (sessions)</h3>
+      <pre><code># Hello World (VM puis binaire)
 vitl run   src/main.vitl
 vitl build -O2 -o build/hello src/main.vitl
 ./build/hello
 </code></pre>
-          <pre><code># Programme CLI avec arguments et codes d’erreur
+      <pre><code># Programme CLI avec arguments et codes d’erreur
 vitl run src/cat.vitl -- data.txt     # 0 si succès, 2 usage, 3 I/O
 vitl build -O2 -o build/cat src/cat.vitl
 ./build/cat data.txt
 echo $?   # vérifie le code de sortie
 </code></pre>
-          <pre><code># Pipeline CI local minimal (bash)
+      <pre><code># Pipeline CI local minimal (bash)
 set -euo pipefail
 vitl fmt src/
 vitl check src/
@@ -1083,74 +1463,74 @@ vitl test
 vitl build -O3 -o build/release/app src/app/main.vitl
 </code></pre>
 
-          <h3>2.6 Débogage &amp; diagnostics</h3>
-          <ul>
-            <li>Compilez avec <code>-g</code> pour obtenir des backtraces plus utiles.</li>
-            <li>En VM (<code>vitl run</code>), les messages d’erreur incluent le module et la ligne fautive.</li>
-            <li>Utilisez <code>--emit-ir</code>/<code>--emit-bytecode</code> pour comprendre ce que “voit” le
-              compilateur.</li>
-          </ul>
+      <h3>2.6 Débogage &amp; diagnostics</h3>
+      <ul>
+        <li>Compilez avec <code>-g</code> pour obtenir des backtraces plus utiles.</li>
+        <li>En VM (<code>vitl run</code>), les messages d’erreur incluent le module et la ligne fautive.</li>
+        <li>Utilisez <code>--emit-ir</code>/<code>--emit-bytecode</code> pour comprendre ce que “voit” le
+          compilateur.</li>
+      </ul>
 
-          <h3>2.7 Organisation des sorties</h3>
-          <pre><code>mkdir -p build/{debug,release,docs}
+      <h3>2.7 Organisation des sorties</h3>
+      <pre><code>mkdir -p build/{debug,release,docs}
 vitl build -O0 -g -o build/debug/app   src/app/main.vitl
 vitl build -O3    -o build/release/app src/app/main.vitl
 vitl doc src/ -o build/docs/api.txt
 </code></pre>
 
-          <h3>2.8 Bonnes pratiques (tous niveaux)</h3>
+      <h3>2.8 Bonnes pratiques (tous niveaux)</h3>
+      <ul>
+        <li><strong>Débutant</strong> : <code>vitl run</code> + <code>vitl fmt</code>. Gardez un seul fichier
+          <code>main.vitl</code> au début.
+        </li>
+        <li><strong>Intermédiaire</strong> : ajoutez <code>vitl check</code>, factorisez en modules, commencez à
+          tester (<code>vitl test</code>).</li>
+        <li><strong>Pro</strong> : CI (fmt/check/test/build), doc générée, profilage simple, FFI maîtrisé (règles
+          d’ownership).</li>
+      </ul>
+
+      <h3>2.9 Problèmes fréquents &amp; solutions</h3>
+      <div class="grid-2">
+        <div class="card">
+          <strong>“Permission denied” au lancement</strong>
           <ul>
-            <li><strong>Débutant</strong> : <code>vitl run</code> + <code>vitl fmt</code>. Gardez un seul fichier
-              <code>main.vitl</code> au début.
-            </li>
-            <li><strong>Intermédiaire</strong> : ajoutez <code>vitl check</code>, factorisez en modules, commencez à
-              tester (<code>vitl test</code>).</li>
-            <li><strong>Pro</strong> : CI (fmt/check/test/build), doc générée, profilage simple, FFI maîtrisé (règles
-              d’ownership).</li>
+            <li>Linux/macOS : <code>chmod +x build/app</code>, exécuter <code>./build/app</code>.</li>
+            <li>Windows : exécuter <code>build\\app.exe</code> directement.</li>
           </ul>
+        </div>
+        <div class="card">
+          <strong>Options mal placées</strong>
+          <ul>
+            <li>Placez <code>-o</code> après <code>build</code> :
+              <code>vitl build -O2 -o build/app src/main.vitl</code>.
+            </li>
+            <li>Les arguments au programme se placent après <code>--</code> :
+              <code>vitl run file.vitl -- arg1</code>.
+            </li>
+          </ul>
+        </div>
+      </div>
 
-          <h3>2.9 Problèmes fréquents &amp; solutions</h3>
-          <div class="grid-2">
-            <div class="card">
-              <strong>“Permission denied” au lancement</strong>
-              <ul>
-                <li>Linux/macOS : <code>chmod +x build/app</code>, exécuter <code>./build/app</code>.</li>
-                <li>Windows : exécuter <code>build\\app.exe</code> directement.</li>
-              </ul>
-            </div>
-            <div class="card">
-              <strong>Options mal placées</strong>
-              <ul>
-                <li>Placez <code>-o</code> après <code>build</code> :
-                  <code>vitl build -O2 -o build/app src/main.vitl</code>.
-                </li>
-                <li>Les arguments au programme se placent après <code>--</code> :
-                  <code>vitl run file.vitl -- arg1</code>.
-                </li>
-              </ul>
-            </div>
-          </div>
+      <h3>2.10 Table de référence rapide</h3>
+      <div class="card">
+        <ul>
+          <li><code>run</code> : exécuter via VM — <em>rapide à itérer</em>.</li>
+          <li><code>build</code> : binaire natif — <em>déploiement/perf</em>.</li>
+          <li><code>fmt</code> : style cohérent — <em>revues plus simples</em>.</li>
+          <li><code>check</code> : diagnostics — <em>trouve tôt les erreurs</em>.</li>
+          <li><code>test</code> : qualité — <em>régression évitée</em>.</li>
+          <li><code>doc</code> : API — <em>autodoc depuis <code>///</code></em>.</li>
+          <li>Options clés : <code>-O0|-O1|-O2|-O3</code>, <code>-g</code>, <code>-o</code>, <code>--emit-ir</code>,
+            <code>--emit-bytecode</code>, <code>-L</code>, <code>-lX</code>, <code>-Wl,opts</code>.
+          </li>
+        </ul>
+      </div>
 
-          <h3>2.10 Table de référence rapide</h3>
-          <div class="card">
-            <ul>
-              <li><code>run</code> : exécuter via VM — <em>rapide à itérer</em>.</li>
-              <li><code>build</code> : binaire natif — <em>déploiement/perf</em>.</li>
-              <li><code>fmt</code> : style cohérent — <em>revues plus simples</em>.</li>
-              <li><code>check</code> : diagnostics — <em>trouve tôt les erreurs</em>.</li>
-              <li><code>test</code> : qualité — <em>régression évitée</em>.</li>
-              <li><code>doc</code> : API — <em>autodoc depuis <code>///</code></em>.</li>
-              <li>Options clés : <code>-O0|-O1|-O2|-O3</code>, <code>-g</code>, <code>-o</code>, <code>--emit-ir</code>,
-                <code>--emit-bytecode</code>, <code>-L</code>, <code>-lX</code>, <code>-Wl,opts</code>.
-              </li>
-            </ul>
-          </div>
-
-          <p class="card"><strong>Résumé</strong> — Utilisez <code>run</code> pour explorer, <code>build</code> pour
-            livrer. Automatisez <code>fmt</code>/<code>check</code>/<code>test</code> en CI. Inspectez avec
-            <code>--emit-ir</code>/<code>--emit-bytecode</code>. Pour le FFI, liez proprement avec
-            <code>-L</code>/<code>-l</code> et un <em>shim</em> C clair.
-          </p>
+      <p class="card"><strong>Résumé</strong> — Utilisez <code>run</code> pour explorer, <code>build</code> pour
+        livrer. Automatisez <code>fmt</code>/<code>check</code>/<code>test</code> en CI. Inspectez avec
+        <code>--emit-ir</code>/<code>--emit-bytecode</code>. Pour le FFI, liez proprement avec
+        <code>-L</code>/<code>-l</code> et un <em>shim</em> C clair.
+      </p>
     </section>
 
     <hr />
