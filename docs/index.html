@@ -1142,6 +1142,97 @@
         if (res.code.length) { addGroupHeader('Blocs de code'); res.code.slice(0, 8).forEach(it => addItemToSugg(it, parseQuery(query))); }
 
         if (!res.summary.total && query.trim()) {
+          const e = document.createElement('div'); e.className = 'sugg-item'; e.innerHTML = '<small>Aucun résultat</small>'; suggBox.appendChild(e);
+        }
+
+        suggBox.removeAttribute('hidden');
+        document.querySelector('.srch').setAttribute('aria-expanded', 'true');
+
+        const parts = [];
+        if (res.summary.heading) parts.push(`Titres: ${res.summary.heading}`);
+        if (res.summary.text) parts.push(`Texte: ${res.summary.text}`);
+        if (res.summary.code) parts.push(`Code: ${res.summary.code}`);
+        hitsEl.textContent = parts.length ? parts.join(' • ') + ` • Total: ${res.summary.total}` : (query.trim() ? 'Aucun résultat' : `Index chargé (${SITE_INDEX?.meta?.pagesCount || 0} pages)`);
+      }
+
+      function doSearch(term) {
+        hideSugg(); clearMarks();
+        const parsed = parseQuery(term);
+        const res = matchAndScore(term);
+        const needles = [...parsed.phrases, ...parsed.pos, ...parsed.wild.map(w => w), ...parsed.chars];
+        if (needles.length) { const total = markAll(needles); if (total) { curMark = 0; focusCur(); } }
+        const parts = [];
+        if (res.summary.heading) parts.push(`Titres: ${res.summary.heading}`);
+        if (res.summary.text) parts.push(`Texte: ${res.summary.text}`);
+        if (res.summary.code) parts.push(`Code: ${res.summary.code}`);
+        hitsEl.textContent = parts.length ? parts.join(' • ') + ` • Total: ${res.summary.total}` : (term.trim() ? 'Aucun résultat' : `Index chargé (${SITE_INDEX?.meta?.pagesCount || 0} pages)`);
+        renderSuggestions(term);
+      }
+
+      // Events
+      q.addEventListener('input', () => { clearTimeout(q._t); q._t = setTimeout(() => renderSuggestions(q.value), 140); });
+      q.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); doSearch(q.value); }
+        else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          const items = [...suggBox.querySelectorAll('.sugg-item')];
+          if (!items.length) return;
+          e.preventDefault();
+          if (e.key === 'ArrowDown') selIndex = (selIndex + 1) % items.length;
+          else selIndex = (selIndex - 1 + items.length) % items.length;
+          items.forEach((el, i) => el.setAttribute('aria-selected', i === selIndex ? 'true' : 'false'));
+          items[selIndex].scrollIntoView({ block: 'nearest' });
+        } else if (e.key === 'Escape') { hideSugg(); }
+      });
+      searchBtn.addEventListener('click', () => doSearch(q.value));
+      document.addEventListener('click', (e) => { if (!document.querySelector('.srch').contains(e.target)) hideSugg(); });
+
+      /* ===================== CHARGEMENT / CACHE INDEX ===================== */
+      function setProgress(d, t) { hitsEl.textContent = `Indexation du site… ${d}/${t}`; }
+      async function ensureIndex(force) {
+        // Cache local (24h)
+        if (!force) {
+          const saved = storage.get(INDEX_KEY);
+          if (saved && saved.meta && saved.meta.base === SITE_BASE && (Date.now() - saved.meta.ts) < INDEX_TTL_MS) {
+            SITE_INDEX = deserializeIndex(saved);
+            buildFilesFromIndex();
+            hitsEl.textContent = `Index chargé (${SITE_INDEX.meta.pagesCount || 0} pages)`;
+            renderSuggestions(q.value || '');
+            return;
+          }
+        }
+        const { index, meta, pages } = await makeIndex(setProgress);
+        SITE_INDEX = { ...index, meta };
+        buildFilesFromIndex(pages);
+        storage.set(INDEX_KEY, serializeIndex(index, meta));
+        hitsEl.textContent = `Index chargé (${meta.pagesCount} pages)`;
+        renderSuggestions(q.value || '');
+      }
+
+      function buildFilesFromIndex(pagesList) {
+        const labels = new Map();
+        (pagesList || []).forEach(p => {
+          try {
+            const path = new URL(p.url).pathname.replace(SITE_BASE.replace(location.origin, ''), '').replace(/^\/+/, '') || 'index';
+            labels.set(path, (p.title || path).replace(/\s*\|\s*.+$/, ''));
+          } catch { }
+        });
+        // fallback depuis les docs si nécessaire
+        if (!labels.size && SITE_INDEX) {
+          SITE_INDEX.docs.forEach(d => labels.set(d.file, labels.get(d.file) || d.file));
+        }
+        FILES = [{ id: 'all', label: 'Toutes les pages' }, ...Array.from(labels.entries()).slice(0, 60).map(([id, label]) => ({ id, label }))];
+      }
+
+      // Démarrage
+      (async function init() {
+        // indexe site + suggestions initiales
+        try { await ensureIndex(false); } catch { await ensureIndex(true); }
+        renderSuggestions('');
+      })();
+
+    })();
+  </script>
+
   <!-- ===== Main ===== -->
   <main class="container" id="main">
     <!-- Sommaire -->
@@ -5223,6 +5314,7 @@ vitl build -O3 -o build/app src/main.vitl
 </body>
 
 </html>
+
 
 
 
