@@ -23,36 +23,54 @@
   const hitsEl  = document.getElementById("hits");
   const toolbar = document.querySelector(".toolbar");
   const srchRoot= document.querySelector(".srch");
-  const suggBox = document.getElementById("suggestions");
+  // const suggBox = document.getElementById("suggestions"); // ❌ inutile désormais
   const searchBtn = document.getElementById("searchBtn");
   const sommaire  = document.getElementById("sommaire");
   const fabToc    = document.getElementById("fabToc");
   const content   = document.getElementById("content");
 
-  // crée/garantit la box de suggestions + styles de secours
+  // crée/garantit la box de suggestions (portée dans <body>)
   function ensureSuggBox(){
     let box = document.getElementById("suggestions");
-    if (srchRoot && getComputedStyle(srchRoot).position === "static") {
-      srchRoot.style.position = "relative";
-    }
     if(!box){
       box = document.createElement("div");
       box.id = "suggestions";
-      (srchRoot || document.body).appendChild(box);
+      document.body.appendChild(box);
     }
-    box.style.position = "absolute";
-    box.style.left = "0";
-    box.style.top = "100%";
-    box.style.marginTop = ".25rem";
-    box.style.zIndex = "9999";
-    box.style.background = "var(--card, #0f141b)";
-    box.style.border = "1px solid var(--line, #202938)";
-    box.style.borderRadius = "8px";
-    box.style.maxHeight = "50vh";
-    box.style.overflow = "auto";
-    box.style.width = "min(48rem, 95vw)";
-    box.style.padding = "6px";
+    Object.assign(box.style, {
+      position: "fixed",
+      left: "0", top: "0",
+      transform: "translate(-9999px,-9999px)",
+      zIndex: "2147483647",
+      background: "var(--card, #0f141b)",
+      border: "1px solid var(--line, #202938)",
+      borderRadius: "8px",
+      maxHeight: "50vh",
+      overflow: "auto",
+      minWidth: "24rem",
+      maxWidth: "min(48rem, 95vw)",
+      padding: "6px",
+      boxShadow: "0 8px 24px rgba(0,0,0,.2)"
+    });
     return box;
+  }
+
+  // place la box sous le champ de recherche
+  function positionSuggBox(){
+    const box = document.getElementById("suggestions");
+    if(!box || box.hasAttribute("hidden")) return;
+    const anchor = (q && q.offsetParent) ? q : (srchRoot || toolbar || document.body);
+    const r = anchor.getBoundingClientRect();
+    const width = Math.max(r.width || 0, 320);
+    box.style.width = width + "px";
+    // forcer un layout pour avoir offsetWidth à jour
+    const bw = box.offsetWidth || width;
+    const bh = box.offsetHeight || 0;
+    const vw = Math.max(document.documentElement.clientWidth, window.innerWidth || 0);
+    const vh = Math.max(document.documentElement.clientHeight, window.innerHeight || 0);
+    const x = Math.min(Math.max(8, r.left), vw - bw - 8);
+    const y = Math.min(Math.max(8, r.bottom + 6), vh - bh - 8);
+    box.style.transform = `translate(${x}px, ${y}px)`;
   }
 
   // Theme
@@ -451,6 +469,7 @@
     if(!box) return;
     box.setAttribute("hidden","");
     box.innerHTML="";
+    box.style.transform = "translate(-9999px,-9999px)";
     srchRoot?.setAttribute("aria-expanded","false");
     selIndex=-1;
   }
@@ -556,12 +575,7 @@
     }
 
     updateToolbarH();
-
-    const parts=[];
-    if(res.summary.heading) parts.push(`Titres: ${res.summary.heading}`);
-    if(res.summary.text)    parts.push(`Texte: ${res.summary.text}`);
-    if(res.summary.code)    parts.push(`Code: ${res.summary.code}`);
-    hitsEl && (hitsEl.textContent = parts.length ? `${parts.join(" • ")} • Total: ${res.summary.total}` : ((query ?? "").trim() ? "Aucun résultat" : hitsEl.textContent));
+    requestAnimationFrame(positionSuggBox);
   }
 
   /* ========== SEARCH FLOW ==========\ */
@@ -599,9 +613,19 @@
       }
       if(e.key==="Escape"){ hideSugg(); }
     });
+    q.addEventListener("focus", positionSuggBox);
   }
   searchBtn?.addEventListener("click", ()=> doSearch(q?.value || ""));
-  document.addEventListener("click", (e)=>{ if(!srchRoot) return; if(!srchRoot.contains(e.target)) hideSugg(); }, {capture:true});
+  // ne pas fermer si on clique DANS la box de suggestions
+  document.addEventListener("click", (e)=>{
+    const box = document.getElementById("suggestions");
+    if(!srchRoot) return;
+    if(!(srchRoot.contains(e.target) || box?.contains(e.target))) hideSugg();
+  }, {capture:true});
+
+  addEventListener("resize", positionSuggBox, { passive:true });
+  addEventListener("scroll", positionSuggBox, { passive:true });
+
   if (toolbar && "MutationObserver" in window){
     const mo=new MutationObserver(()=> onResize());
     mo.observe(document.body, {childList:true, subtree:true});
