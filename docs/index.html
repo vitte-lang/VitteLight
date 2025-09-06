@@ -1,15 +1,3 @@
-<!doctype html>
-<html lang="fr" data-theme="auto">
-
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <meta name="color-scheme" content="light dark" />
-  <title>VITTE LIGHT — Guide utilisateur complet (Révision 2025-09-05)</title>
-  <meta name="description"
-    content="Guide Vitte Light : installation, CLI, structure de projet, FFI, CI, bonnes pratiques." />
-
-  <!-- Thème anti-flash + préférence utilisateur -->
   <script>
     (function () {
       try {
@@ -49,6 +37,7 @@
       --font-family: "Inter", "SF Pro Text", system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, Arial, "Noto Sans";
       --lh: 1.7;
       --code-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, Monaco, monospace;
+      --tbH: 56px;
     }
 
     :root[data-theme="dark"] {
@@ -133,7 +122,7 @@
     .toolbar {
       position: sticky;
       top: 0;
-      z-index: 50;
+      z-index: 60;
       background: var(--bg);
       border-bottom: 1px solid var(--border)
     }
@@ -142,12 +131,14 @@
       display: flex;
       align-items: center;
       gap: .5rem;
-      height: 56px
+      min-height: var(--tbH);
+      padding: 8px 16px
     }
 
     .brand {
       font-weight: 700;
-      font-size: 1rem
+      font-size: 1rem;
+      white-space: nowrap
     }
 
     .srch {
@@ -155,19 +146,21 @@
       display: flex;
       align-items: center;
       gap: .5rem;
-      position: relative
+      position: relative;
+      flex: 1;
+      min-width: 200px
     }
 
     .srch input {
-      width: 420px;
-      max-width: 60vw;
-      padding: .55rem .7rem;
+      width: 100%;
+      padding: .6rem .75rem;
       border: 1px solid var(--border);
       background: var(--card);
       color: var(--fg);
       border-radius: .65rem;
       outline: none;
-      font-size: 1rem
+      font-size: 1rem;
+      min-height: 42px
     }
 
     .srch input:focus {
@@ -176,7 +169,8 @@
 
     .mini {
       font-size: .875rem;
-      color: var(--muted)
+      color: var(--muted);
+      white-space: nowrap
     }
 
     .split {
@@ -190,7 +184,7 @@
       border: 1px solid var(--border);
       background: var(--btnbg);
       color: var(--btnfg);
-      padding: .45rem .7rem;
+      padding: .5rem .7rem;
       border-radius: .5rem;
       cursor: pointer;
       box-shadow: var(--shadow);
@@ -209,7 +203,7 @@
 
     .btn-invert {
       background: var(--fg);
-      color: var(--bg);
+      color: var(--bg)
     }
 
     /* Suggestions */
@@ -217,7 +211,7 @@
       position: absolute;
       left: 0;
       right: 0;
-      top: 110%;
+      top: calc(100% + 8px);
       background: var(--card);
       border: 1px solid var(--border);
       border-radius: .85rem;
@@ -252,9 +246,9 @@
     .pill {
       border: 1px solid var(--border);
       background: color-mix(in srgb, var(--card) 85%, transparent);
-      padding: .2rem .5rem;
+      padding: .3rem .6rem;
       border-radius: 999px;
-      font-size: .8rem;
+      font-size: .85rem;
       cursor: pointer;
       white-space: nowrap
     }
@@ -271,7 +265,7 @@
       width: 100%;
       text-align: left;
       gap: .75rem;
-      padding: .65rem .8rem;
+      padding: .75rem .9rem;
       border: 0;
       background: transparent;
       color: var(--fg);
@@ -312,7 +306,7 @@
 
     .tag {
       border: 1px solid var(--border);
-      padding: .15rem .45rem;
+      padding: .2rem .5rem;
       border-radius: 999px;
       font-size: .75rem;
       white-space: nowrap
@@ -332,9 +326,9 @@
     .chip {
       border: 1px solid var(--border);
       background: color-mix(in srgb, var(--card) 85%, transparent);
-      padding: .25rem .5rem;
+      padding: .35rem .6rem;
       border-radius: 999px;
-      font-size: .85rem;
+      font-size: .9rem;
       cursor: pointer
     }
 
@@ -364,13 +358,13 @@
 
     h1 {
       margin: 0;
-      font-size: clamp(1.5rem, 3vw, 2.25rem);
+      font-size: clamp(1.4rem, 2.8vw, 2.25rem);
       letter-spacing: .2px
     }
 
     .rev {
       color: var(--muted);
-      font-size: 0.95rem
+      font-size: .95rem
     }
 
     main {
@@ -466,7 +460,7 @@
       position: fixed;
       right: clamp(16px, 2vw, 24px);
       bottom: calc(max(16px, env(safe-area-inset-bottom)) + 8px);
-      z-index: 60;
+      z-index: 70;
       display: inline-flex;
       align-items: center;
       justify-content: center;
@@ -481,6 +475,69 @@
 
     .fab[hidden] {
       display: none
+    }
+
+    /* Responsive */
+    @media (max-width: 920px) {
+      .wrap {
+        padding: 0 12px
+      }
+
+      .toolbar .wrap {
+        flex-wrap: wrap;
+        gap: .5rem
+      }
+
+      .srch {
+        order: 3;
+        width: 100%;
+        margin: 6px 0 2px
+      }
+
+      .split,
+      .mini {
+        display: none
+      }
+    }
+
+    @media (max-width: 768px) {
+      .sugg {
+        position: fixed;
+        left: 12px;
+        right: 12px;
+        top: calc(var(--tbH, 56px) + 8px);
+        max-height: calc(100vh - var(--tbH, 56px) - 24px);
+        border-radius: 14px;
+        z-index: 80
+      }
+
+      .btn {
+        padding: .5rem .6rem
+      }
+
+      .pill {
+        padding: .35rem .6rem
+      }
+
+      .sugg-item {
+        padding: 1rem
+      }
+    }
+
+    @media (max-width: 420px) {
+      h1 {
+        font-size: 1.25rem
+      }
+
+      .brand {
+        max-width: 45vw;
+        overflow: hidden;
+        text-overflow: ellipsis
+      }
+
+      .btn {
+        font-size: .95rem
+      }
     }
 
     @media print {
@@ -504,7 +561,7 @@
       <div class="srch" role="search" aria-haspopup="listbox" aria-expanded="false">
         <input id="q" type="search"
           placeholder="Rechercher sur tout le site (Ctrl+K). Astuces : guillemets, -, *, file:*, type:*, url:*"
-          aria-label="Rechercher sur tout le site" />
+          aria-label="Rechercher sur tout le site" inputmode="search" />
         <button class="btn btn-ghost" id="searchBtn" aria-label="Lancer la recherche">Rechercher</button>
         <span class="mini" id="hits" aria-live="polite"></span>
         <div class="sugg" id="suggestions" role="listbox" aria-label="Suggestions" hidden></div>
@@ -530,7 +587,7 @@
     </div>
   </header>
 
-  <!-- Contenu (page locale) -->
+  <!-- Contenu -->
   <main id="content" class="wrap" tabindex="-1" data-file="main">
     <div class="index" id="sommaire" aria-label="Index des sections" data-page="1" data-file="main">
       <ol>
@@ -562,7 +619,8 @@
       <h2>3) Structure de projet — Guide complet</h2>
       <div class="card">
         <p>Placez le code VITL dans <code>/src</code>, les shims C/FFI dans <code>/libs</code> et les artefacts dans
-          <code>/build</code>.</p>
+          <code>/build</code>.
+        </p>
       </div>
       <h3>3.1 Arborescence</h3>
       <pre><code>mon_projet/
@@ -588,25 +646,26 @@
   </script>
   -->
 
+  <!-- Moteur de recherche site-wide (index complet + responsive) -->
   <script>
     (function () {
-      /* ===================== VARS & HELPERS ===================== */
-      // ---- CONFIG SITE-WIDE SEARCH ----
-      const CRAWL_LIMIT = 160;        // max pages à indexer si pas de sitemap
-      const FETCH_CONCURRENCY = 5;    // parallélisme
-      const INDEX_TTL_MS = 24 * 3600 * 1000; // rafraîchissement du cache (24h)
+      /* ====== CONFIG (index intégral) ====== */
+      const CRAWL_LIMIT = 500;              // ↑ couvre l'intégralité du site
+      const FETCH_CONCURRENCY = 8;          // parallélisme
+      const INDEX_TTL_MS = 24 * 3600 * 1000;
       const INDEX_KEY = 'vl.site.index.v2';
       const STOP_FR = ['le', 'la', 'les', 'de', 'des', 'du', 'un', 'une', 'et', 'ou', 'au', 'aux', 'a', 'à', 'en', 'dans', 'pour', 'par', 'avec', 'sans', 'sur', 'sous', 'chez', 'est', 'sont', 'être', 'été', 'avoir', 'que', 'qui', 'quoi', 'dont', 'où', 'ne', 'pas', 'plus', 'moins', 'ce', 'cet', 'cette', 'ces', 'se', 'sa', 'son', 'ses', 'nos', 'vos', 'leurs', 'il', 'elle', 'on', 'nous', 'vous', 'ils', 'elles', 'd', 'l', 'n'];
       const STOP_EN = ['the', 'a', 'an', 'and', 'or', 'to', 'in', 'of', 'for', 'on', 'at', 'as', 'is', 'are', 'be', 'been', 'was', 'were', 'by', 'from', 'this', 'that', 'these', 'those', 'it', 'its', 'with', 'without', 'not'];
       const STOP = new Set([...STOP_FR, ...STOP_EN]);
 
+      /* ====== STORAGE ====== */
       const storage = {
         get(k, d = null) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v) } catch { return d } },
         set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)) } catch { } },
-        del(k) { try { localStorage.removeItem(k) } catch { } }
+        del(k) { try { localStorage.removeItem(k) } catch { } },
       };
 
-      // ---- Thème / UI utilitaires (inchangé) ----
+      /* ====== UI BASICS / THEME / ZOOM / PRINT ====== */
       const html = document.documentElement;
       const modeBtn = document.getElementById('modeBtn');
       const THEMES = ['auto', 'light', 'dark']; const THEME_KEY = 'vl.theme';
@@ -621,23 +680,26 @@
       modeBtn.addEventListener('click', () => { const cur = storage.get(THEME_KEY, 'auto'); applyTheme(THEMES[(THEMES.indexOf(cur) + 1) % THEMES.length]) });
       mq.addEventListener('change', () => { if (storage.get(THEME_KEY, 'auto') === 'auto') applyTheme('auto') });
 
-      // ---- Zoom / Impression ----
       const ZOOM_KEY = 'vl.zoom', zoomIn = document.getElementById('zoomIn'), zoomOut = document.getElementById('zoomOut');
       const getZoom = () => storage.get(ZOOM_KEY, 16);
-      const setZoom = px => { const z = Math.max(12, Math.min(22, px | 0)); document.documentElement.style.fontSize = z + 'px'; storage.set(ZOOM_KEY, z); };
+      const setZoom = px => { const z = Math.max(12, Math.min(22, px | 0)); html.style.fontSize = z + 'px'; storage.set(ZOOM_KEY, z); };
       setZoom(getZoom()); zoomIn.addEventListener('click', () => setZoom(getZoom() + 1)); zoomOut.addEventListener('click', () => setZoom(getZoom() - 1));
       document.getElementById('printBtn').addEventListener('click', () => window.print());
 
-      // ---- Sommaire flottant ----
+      // Toolbar height → CSS variable (utile pour mobile sheet)
+      const toolbar = document.querySelector('.toolbar');
+      function updateToolbarH() { html.style.setProperty('--tbH', toolbar.getBoundingClientRect().height + 'px'); }
+      updateToolbarH(); addEventListener('resize', updateToolbarH);
+
+      // Sommaire flottant
       const fabToc = document.getElementById('fabToc'), sommaire = document.getElementById('sommaire');
       function thresholdY() { const s = sommaire ? (sommaire.offsetTop + sommaire.offsetHeight) : 0; return Math.min(innerHeight, s || innerHeight) }
       function onScroll() { const y = scrollY || document.documentElement.scrollTop || 0; fabToc.toggleAttribute('hidden', !(y > thresholdY())); }
       onScroll(); addEventListener('scroll', onScroll, { passive: true }); addEventListener('resize', onScroll);
       fabToc.addEventListener('click', () => (sommaire || document.body).scrollIntoView({ behavior: 'smooth', block: 'start' }));
 
-      // ---- Raccourcis ----
-      const q = document.getElementById('q');
-      const hitsEl = document.getElementById('hits');
+      // Raccourcis
+      const q = document.getElementById('q'); const hitsEl = document.getElementById('hits');
       addEventListener('keydown', (e) => {
         const ctrl = e.ctrlKey || e.metaKey;
         if (ctrl && e.key.toLowerCase() === 'k') { e.preventDefault(); q.focus(); q.select(); }
@@ -647,8 +709,11 @@
         if (e.key === 'F3') { e.preventDefault(); e.shiftKey ? gotoPrev() : gotoNext(); }
       });
 
-      /* ===================== DÉTECTION DES PAGES DU SITE ===================== */
-      // Base GitHub Pages: https://vitte-lang.github.io/VitteLight/
+      /* ====== HELPERS ====== */
+      const content = document.getElementById('content');
+      const norm = s => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const rxToken = /[a-z0-9_]+/gi;
+
       function siteBase() {
         const parts = location.pathname.split('/').filter(Boolean);
         const baseFolder = parts.length ? parts[0] : '';
@@ -656,27 +721,24 @@
       }
       const SITE_BASE = siteBase();
       const SITEMAP_URL = SITE_BASE + 'sitemap.xml';
+      const basePathname = new URL(SITE_BASE).pathname;
+      const relPath = (url) => new URL(url, SITE_BASE).pathname.replace(basePathname, '').replace(/^\/+/, '') || 'index';
 
       function canonical(url) {
         try {
           const u = new URL(url, SITE_BASE);
-          // Retirer ancres & normaliser index.html
           u.hash = '';
           if (u.pathname.endsWith('/index.html')) u.pathname = u.pathname.replace(/\/index\.html$/, '/');
           return u.href;
         } catch { return null }
       }
-      function isInternal(url) {
-        try { const u = new URL(url, SITE_BASE); return u.href.startsWith(SITE_BASE); } catch { return false }
-      }
-      function isHtmlLike(url) {
-        return !/\.(png|jpe?g|gif|svg|webp|ico|pdf|zip|gz|bz2|7z|rar|mp[34]|wav|ogg|webm|woff2?|ttf|otf|css|json|map)$/i.test(url);
-      }
+      function isInternal(url) { try { return new URL(url, SITE_BASE).href.startsWith(SITE_BASE) } catch { return false } }
+      function isHtmlLike(url) { return !/\.(png|jpe?g|gif|svg|webp|ico|pdf|zip|gz|bz2|7z|rar|mp[34]|wav|ogg|webm|woff2?|ttf|otf|css|json|map)$/i.test(url); }
 
       async function fetchText(url) {
         const res = await fetch(url, { credentials: 'same-origin' });
         if (!res.ok) throw new Error('HTTP ' + res.status);
-        return await res.text();
+        return res.text();
       }
 
       async function pagesFromSitemap() {
@@ -688,7 +750,6 @@
           return Array.from(new Set(urls));
         } catch { return null }
       }
-
       async function pagesFromInlineConfig() {
         try {
           const fg = document.getElementById('file-groups');
@@ -701,11 +762,9 @@
         } catch { }
         return null;
       }
-
       async function crawlSite(seed) {
         const start = canonical(seed || SITE_BASE);
-        const queue = [start]; const seen = new Set(queue);
-        const out = [];
+        const queue = [start]; const seen = new Set(queue); const out = [];
         async function worker() {
           while (queue.length) {
             const url = queue.shift(); out.push(url);
@@ -717,102 +776,74 @@
               const abs = canonical(new URL(href, url).href);
               if (!abs) continue;
               if (!isInternal(abs) || !isHtmlLike(abs)) continue;
-              if (!seen.has(abs) && seen.size < CRAWL_LIMIT * 2) {
-                seen.add(abs); queue.push(abs);
-              }
+              if (!seen.has(abs) && seen.size < CRAWL_LIMIT * 2) { seen.add(abs); queue.push(abs); }
             }
           }
         }
-        const workers = Array.from({ length: FETCH_CONCURRENCY }, worker);
-        await Promise.all(workers);
+        await Promise.all(Array.from({ length: FETCH_CONCURRENCY }, worker));
         return out.slice(0, CRAWL_LIMIT);
       }
 
-      /* ===================== INDEXATION (TOUT LE SITE) ===================== */
-      const norm = s => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-      const rxToken = /[a-z0-9_]+/gi;
-
+      /* ====== EXTRACTION / INDEX ====== */
       function extractNodesFromDoc(doc, pageUrl) {
         const scope = doc.querySelector('#content, main, article') || doc.body || doc;
-        const fileId = new URL(pageUrl).pathname.replace(SITE_BASE.replace(location.origin, ''), '').replace(/^\/+/, '') || 'index';
         const nodes = [];
         const sectionTitles = new Map();
         scope.querySelectorAll('section').forEach(sec => {
           const h2 = sec.querySelector('h2'); const h3 = sec.querySelector('h3');
           sectionTitles.set(sec, [h2?.textContent || '', h3?.textContent || ''].filter(Boolean).join(' › '));
         });
-        const push = (el, type, fam, weight, title, anchor) => {
-          nodes.push({
-            el: null, // pas besoin du noeud réel pour d’autres pages
-            type, fam, weight, title, file: fileId, url: pageUrl, anchor,
-            text: (el.textContent || '').trim()
-          });
-        };
-        // Headings
+        const push = (el, type, fam, weight, title, anchor) => nodes.push({
+          id: -1, type, fam, weight, title, file: relPath(pageUrl), url: canonical(pageUrl), anchor, text: (el.textContent || '').trim()
+        });
         scope.querySelectorAll('h1,h2,h3').forEach(el => {
           const level = el.tagName === 'H1' ? 1 : (el.tagName === 'H2' ? 2 : 3);
           const fam = level === 1 ? 'Title' : 'Subtitle';
-          const id = el.id || '';
-          push(el, 'heading', fam, level === 1 ? 4 : (level === 2 ? 3 : 2), (el.textContent || '').trim(), id);
+          push(el, 'heading', fam, level === 1 ? 4 : (level === 2 ? 3 : 2), (el.textContent || '').trim(), el.id || '');
         });
-        // Text
         scope.querySelectorAll('p, li').forEach(el => {
-          const sec = el.closest('section');
-          const title = sectionTitles.get(sec) || '';
-          const anchor = (sec && (sec.id || sec.querySelector('[id]')?.id)) || '';
+          const sec = el.closest('section'); const title = sectionTitles.get(sec) || ''; const anchor = sec?.id || '';
           push(el, 'text', 'Content', 1, title, anchor);
         });
-        // Code blocks
         scope.querySelectorAll('pre code').forEach(el => {
-          const sec = el.closest('section');
-          const title = sectionTitles.get(sec) || 'Code block';
-          const anchor = (sec && (sec.id || sec.querySelector('[id]')?.id)) || '';
+          const sec = el.closest('section'); const title = sectionTitles.get(sec) || 'Code block'; const anchor = sec?.id || '';
           push(el, 'code-block', 'Code Block', 2, title, anchor);
         });
-        // Inline code
         scope.querySelectorAll('code:not(pre code)').forEach(el => {
-          const sec = el.closest('section');
-          const title = sectionTitles.get(sec) || 'Code';
-          const anchor = (sec && (sec.id || sec.querySelector('[id]')?.id)) || '';
+          const sec = el.closest('section'); const title = sectionTitles.get(sec) || 'Code'; const anchor = sec?.id || '';
           push(el, 'code-inline', 'Inline Code', 1.5, title, anchor);
         });
         return nodes;
       }
 
-      function buildIndex(allDocs) {
-        // allDocs: array of {url, title, nodes:[{...}]}
+      function buildIndex(pageBundles) {
+        const docs = []; pageBundles.forEach(pb => pb.nodes.forEach(n => docs.push(n)));
+        docs.forEach((d, i) => d.id = i);
+
         const postings = new Map();
-        const docs = [];
-        allDocs.forEach(doc => {
-          doc.nodes.forEach((n) => {
-            const textNorm = norm(n.text);
-            const tokens = (textNorm.match(rxToken) || []).filter(t => !STOP.has(t));
-            const tf = new Map(); tokens.forEach(t => tf.set(t, (tf.get(t) || 0) + 1));
-            tf.forEach((f, t) => {
-              if (!postings.has(t)) postings.set(t, new Map());
-              const id = docs.length;
-              // temp push a placeholder to get id, then replace (we’ll push after loop)
-            });
-            docs.push({
-              id: docs.length, ...n, textNorm, tf, tokenCount: tokens.length
-            });
-          });
-        });
-        // fill postings with real ids/scores
         docs.forEach(d => {
-          d.tf.forEach((f, t) => {
-            // weight headings more
-            const base = d.weight || 1;
+          const textNorm = norm(d.text); d.textNorm = textNorm;
+          const tokens = (textNorm.match(rxToken) || []).filter(t => !STOP.has(t));
+          const tf = new Map(); tokens.forEach(t => tf.set(t, (tf.get(t) || 0) + 1));
+          tf.forEach((f, t) => {
             if (!postings.has(t)) postings.set(t, new Map());
-            postings.get(t).set(d.id, (postings.get(t).get(d.id) || 0) + f * base);
+            postings.get(t).set(d.id, (postings.get(t).get(d.id) || 0) + f * (d.weight || 1));
           });
+          d.tokenCount = tokens.length;
         });
 
         const N = docs.length;
         const df = new Map(); postings.forEach((map, tok) => df.set(tok, map.size));
         const globalTF = new Map(); postings.forEach((map, tok) => { let s = 0; map.forEach(v => s += v); globalTF.set(tok, s); });
+
         const titleBonus = new Map();
-        docs.filter(d => d.type === 'heading').forEach(d => d.tf.forEach((f, t) => titleBonus.set(t, (titleBonus.get(t) || 0) + f * 1.5)));
+        docs.filter(d => d.type === 'heading').forEach(d => {
+          (d.textNorm.match(rxToken) || []).forEach(tok => {
+            if (STOP.has(tok)) return;
+            titleBonus.set(tok, (titleBonus.get(tok) || 0) + 1.5);
+          });
+        });
+
         const keyScores = [];
         df.forEach((dF, tok) => {
           if (tok.length < 3) return;
@@ -826,94 +857,95 @@
         return { docs, postings, TOP_KEYWORDS, freqList };
       }
 
-      function serializeIndex(index, meta) {
-        // Convert Maps to plain objects for storage
+      function serializeIndex(index, meta, pages) {
         const postings = {};
-        index.postings.forEach((map, tok) => {
-          postings[tok] = Array.from(map.entries()); // [ [docId, score], ...]
-        });
-        return { meta, docs: index.docs, postings, top: index.TOP_KEYWORDS, freq: index.freqList };
+        index.postings.forEach((map, tok) => postings[tok] = Array.from(map.entries()));
+        const docs = index.docs.map(d => ({
+          id: d.id, type: d.type, fam: d.fam, weight: d.weight, title: d.title,
+          file: d.file, url: d.url, anchor: d.anchor, text: d.text, textNorm: d.textNorm, tokenCount: d.tokenCount
+        }));
+        return { meta, docs, postings, top: index.TOP_KEYWORDS, freq: index.freqList, pages };
       }
       function deserializeIndex(saved) {
         const postings = new Map();
-        for (const [tok, arr] of Object.entries(saved.postings || {})) {
-          postings.set(tok, new Map(arr));
-        }
-        return {
-          docs: saved.docs || [],
-          postings,
-          TOP_KEYWORDS: saved.top || [],
-          freqList: saved.freq || [],
-          meta: saved.meta || {}
-        };
+        for (const [tok, arr] of Object.entries(saved.postings || {})) postings.set(tok, new Map(arr));
+        return { docs: saved.docs || [], postings, TOP_KEYWORDS: saved.top || [], freqList: saved.freq || [], meta: saved.meta || {}, pages: saved.pages || [] };
       }
 
+      /* ====== BUILD / LOAD INDEX ====== */
+      let SITE_INDEX = null;
+      let FILES = [{ id: 'all', label: 'Toutes les pages' }];
+
       async function makeIndex(progressCb) {
-        // 1) Déterminer pages
         let pages = await pagesFromInlineConfig();
         if (!pages) pages = await pagesFromSitemap();
         if (!pages) pages = await crawlSite(SITE_BASE);
-        // Toujours inclure la page courante (utile en local)
-        const cur = canonical(location.href); if (cur && !pages.includes(cur)) pages.unshift(cur);
 
-        // 2) Charger & parser
-        const results = [];
+        const here = canonical(location.href);
+        if (here && !pages.includes(here)) pages.unshift(here);
+
+        const bundles = [];
         let done = 0;
         async function fetchOne(url) {
           let html = ''; try { html = await fetchText(url); } catch { done++; progressCb && progressCb(done, pages.length); return; }
           const doc = new DOMParser().parseFromString(html, 'text/html');
           const title = (doc.querySelector('title')?.textContent || '').trim() || url;
           const nodes = extractNodesFromDoc(doc, url);
-          results.push({ url, title, nodes });
+          bundles.push({ url: canonical(url), title, nodes });
           done++; progressCb && progressCb(done, pages.length);
         }
-        const chunks = Array.from({ length: FETCH_CONCURRENCY }, async () => { for (let i = 0; i < pages.length; i++) { const url = pages[i]; if (url == null) continue; pages[i] = null; await fetchOne(url); } });
-        await Promise.all(chunks);
+        let i = 0;
+        await Promise.all(Array.from({ length: FETCH_CONCURRENCY }, async () => {
+          while (true) { const idx = i++; if (idx >= pages.length) break; await fetchOne(pages[idx]); }
+        }));
 
-        // 3) Construire l’index
-        const index = buildIndex(results);
-
-        // 4) Méta & cache
-        const meta = { ts: Date.now(), base: SITE_BASE, pagesCount: results.length, version: 2 };
-        return { index, meta, pages: results.map(r => ({ url: r.url, title: r.title })) };
+        const index = buildIndex(bundles);
+        const meta = { ts: Date.now(), base: SITE_BASE, version: 2, pagesCount: bundles.length };
+        const pageList = bundles.map(b => ({ url: b.url, title: b.title, id: relPath(b.url) }));
+        return { index, meta, pages: pageList };
       }
 
-      /* ===================== UI RECHERCHE ===================== */
-      const content = document.getElementById('content');
-      let SITE_INDEX = null;   // {docs, postings, TOP_KEYWORDS, freqList, meta}
-      let FILES = [{ id: 'all', label: 'Toutes les pages' }];
-
-      const suggBox = document.getElementById('suggestions');
-      const searchBtn = document.getElementById('searchBtn');
-      let selIndex = -1;
-
-      function hideSugg() { suggBox.setAttribute('hidden', ''); suggBox.innerHTML = ''; document.querySelector('.srch').setAttribute('aria-expanded', 'false'); selIndex = -1; }
-      function famTag(text, emph = false) { const s = document.createElement('span'); s.className = 'tag' + (emph ? ' emph' : ''); s.textContent = text; return s; }
-      function pill(label, pressed, cb) {
-        const p = document.createElement('button'); p.type = 'button'; p.className = 'pill'; p.textContent = label; p.setAttribute('aria-pressed', pressed ? 'true' : 'false');
-        p.addEventListener('click', cb); return p;
-      }
-      function addGroupHeader(label, addons) {
-        const h = document.createElement('div'); h.className = 'group-h'; h.textContent = label;
-        if (addons) { const box = document.createElement('div'); box.className = 'filters'; addons.forEach(x => box.appendChild(x)); h.appendChild(box); }
-        suggBox.appendChild(h);
+      function buildFilesFromIndex(pagesList) {
+        const labels = new Map();
+        (pagesList || SITE_INDEX?.pages || []).forEach(p => {
+          try { const id = p.id || relPath(p.url); labels.set(id, (p.title || id).replace(/\s*\|\s*.+$/, '')); } catch { }
+        });
+        if (!labels.size && SITE_INDEX) { SITE_INDEX.docs.forEach(d => labels.set(d.file, labels.get(d.file) || d.file)); }
+        FILES = [{ id: 'all', label: 'Toutes les pages' }, ...Array.from(labels.entries()).slice(0, 100).map(([id, label]) => ({ id, label }))];
       }
 
+      function setProgress(d, t) { hitsEl.textContent = `Indexation du site… ${d}/${t}`; }
+      async function ensureIndex(force) {
+        if (!force) {
+          const saved = storage.get(INDEX_KEY);
+          if (saved && saved.meta && saved.meta.base === SITE_BASE && (Date.now() - (saved.meta.ts || 0) < INDEX_TTL_MS)) {
+            const d = deserializeIndex(saved);
+            SITE_INDEX = d; buildFilesFromIndex(d.pages);
+            hitsEl.textContent = `Index chargé (${d.meta.pagesCount || d.pages.length} pages)`;
+            return;
+          }
+        }
+        hitsEl.textContent = 'Indexation du site…';
+        const { index, meta, pages } = await makeIndex(setProgress);
+        SITE_INDEX = { ...index, meta, pages };
+        buildFilesFromIndex(pages);
+        storage.set(INDEX_KEY, serializeIndex(index, meta, pages));
+        hitsEl.textContent = `Index prêt • ${pages.length} pages`;
+      }
+
+      /* ====== PARSE / MATCH ====== */
       function parseQuery(qStr) {
         const raw = qStr || '';
         const filters = { file: null, type: null, url: null };
-        // extraire filtres
         raw.replace(/\b(file|type|url):([^\s]+)/gi, (_, k, v) => {
           const key = k.toLowerCase();
-          if (key === 'url') { filters.url = v.toLowerCase(); }
-          else if (key === 'file') { filters.file = v.toLowerCase(); }
-          else if (key === 'type') { filters.type = v.toLowerCase(); }
+          if (key === 'url') filters.url = v.toLowerCase();
+          if (key === 'file') filters.file = v.toLowerCase();
+          if (key === 'type') filters.type = v.toLowerCase();
           return '';
         });
-
         const nQ = norm(raw.replace(/\b(file|type|url):([^\s]+)/gi, ' ')).trim();
-        const phrases = [];
-        let rest = nQ.replace(/"([^"]+)"/g, (_, p) => { if (p.trim()) phrases.push(p.trim()); return ' ' });
+        const phrases = []; let rest = nQ.replace(/"([^"]+)"/g, (_, p) => { if (p.trim()) phrases.push(p.trim()); return ' ' });
         const parts = rest.split(/\s+/).map(s => s.trim()).filter(Boolean);
         const pos = [], neg = [], wild = [], chars = [];
         for (let t of parts) {
@@ -928,10 +960,8 @@
       }
 
       function matchAndScore(query) {
-        if (!SITE_INDEX) return { heading: [], code: [], text: [], keyword: [], word: [], char: [], summary: { heading: 0, code: 0, text: 0, total: 0 } };
-        const docs = SITE_INDEX.docs, postings = SITE_INDEX.postings;
-        const TOP_KEYWORDS = SITE_INDEX.TOP_KEYWORDS, freqList = SITE_INDEX.freqList;
-
+        if (!SITE_INDEX) return { heading: [], code: [], text: [], keyword: [], word: [], char: [], summary: { heading: 0, code: 0, text: 0, total: 0 }, TOP_KEYWORDS: [], freqList: [] };
+        const { docs, postings, TOP_KEYWORDS, freqList } = SITE_INDEX;
         const { phrases, pos, neg, wild, chars, filters } = parseQuery(query);
         const groups = { heading: [], code: [], text: [], keyword: [], word: [], char: [] };
 
@@ -945,65 +975,59 @@
           chars.forEach(c => groups.char.push({ label: c, fam: 'Character' }));
         }
 
-        const required = pos;
         const candSet = new Set();
         function addCands(tok) { const m = postings.get(tok); if (!m) return; m.forEach((_, id) => candSet.add(id)); }
-        required.forEach(addCands);
-        wild.forEach(w => postings.forEach((_, tok) => { if (tok.startsWith(w)) addCands(tok); }));
-        if (!required.length && !wild.length && (phrases.length || chars.length)) docs.forEach(d => candSet.add(d.id));
-        if (!phrases.length && !required.length && !wild.length && !chars.length) docs.forEach(d => candSet.add(d.id));
+        pos.forEach(addCands);
+        wild.forEach(w => postings.forEach((map, tok) => { if (tok.startsWith(w)) addCands(tok); }));
+        if (!pos.length && !wild.length && (phrases.length || chars.length)) docs.forEach(d => candSet.add(d.id));
+        if (!phrases.length && !pos.length && !wild.length && !chars.length) docs.forEach(d => candSet.add(d.id));
 
         const typeFilter = filters.type && /head|title/.test(filters.type) ? 'heading'
           : filters.type && /code/.test(filters.type) ? 'code'
             : filters.type && /text|content/.test(filters.type) ? 'text' : null;
 
         candSet.forEach(id => {
-          const d = docs[id];
-          // Filtres
-          if (filters.file && d.file.toLowerCase() !== filters.file) return;
-          if (filters.url && !d.url.toLowerCase().includes(filters.url)) return;
+          const d = docs[id]; if (!d) return;
+          if (filters.file && String(d.file || '').toLowerCase() !== filters.file) return;
+          if (filters.url && !String(d.url || '').toLowerCase().includes(filters.url)) return;
           if (typeFilter) {
             if (typeFilter === 'heading' && d.type !== 'heading') return;
-            if (typeFilter === 'code' && !d.type.startsWith('code')) return;
+            if (typeFilter === 'code' && !String(d.type).startsWith('code')) return;
             if (typeFilter === 'text' && d.type !== 'text') return;
           }
-          const tnorm = d.textNorm;
+          const tnorm = d.textNorm || norm(d.text || '');
           for (const n of neg) { if (tnorm.includes(n)) return; }
           for (const p of phrases) { if (!tnorm.includes(p)) return; }
-          for (const r of required) { if (!d.tf.has(r)) return; }
-          for (const w of wild) {
-            let ok = false; d.tf.forEach((_, tok) => { if (!ok && tok.startsWith(w)) ok = true; }); if (!ok) return;
-          }
-          for (const c of chars) { if (!tnorm.includes(c)) return; }
 
           let score = 0;
-          required.forEach(t => { const f = d.tf.get(t) || 0; score += Math.log(1 + f) * (d.weight || 1) * 2; });
-          wild.forEach(w => { let f = 0; d.tf.forEach((v, tok) => { if (tok.startsWith(w)) f += v; }); score += Math.log(1 + f) * (d.weight || 1) * 1.5; });
-          phrases.forEach(p => { if (tnorm.includes(p)) score += 3 * (d.weight || 1); });
+          pos.forEach(t => {
+            const base = (postings.get(t)?.get(d.id)) || 0;
+            score += Math.log(1 + base) * 2;
+          });
+          wild.forEach(w => {
+            let sum = 0; postings.forEach((map, tok) => { if (tok.startsWith(w)) sum += (map.get(d.id) || 0); });
+            score += Math.log(1 + sum) * 1.5;
+          });
+          phrases.forEach(p => { if (tnorm.includes(p)) score += 3; });
           chars.forEach(c => { const count = (tnorm.split(c).length - 1) || 0; score += Math.min(2, count * 0.2); });
           if (d.type === 'heading') score += 2;
-          if (d.type.startsWith('code')) score += 0.5;
+          if (String(d.type).startsWith('code')) score += 0.5;
 
           const item = { id, score, d };
           if (d.type === 'heading') groups.heading.push(item);
-          else if (d.type.startsWith('code')) groups.code.push(item);
+          else if (String(d.type).startsWith('code')) groups.code.push(item);
           else groups.text.push(item);
         });
 
         groups.heading.sort((a, b) => b.score - a.score);
-        groups.code.sort((a, b) => b.score - a.score);
+        groups.code.sort((a, b) => b.score - a.score);   // FIX tri
         groups.text.sort((a, b) => b.score - a.score);
 
-        const summary = {
-          heading: groups.heading.length,
-          code: groups.code.length,
-          text: groups.text.length,
-          total: groups.heading.length + groups.code.length + groups.text.length
-        };
+        const summary = { heading: groups.heading.length, code: groups.code.length, text: groups.text.length, total: groups.heading.length + groups.text.length + groups.code.length };
         return { ...groups, summary, TOP_KEYWORDS, freqList };
       }
 
-      // Surbrillance pour la page courante uniquement
+      /* ====== HIGHLIGHT (page courante) ====== */
       let marks = [], curMark = -1;
       function clearMarks() { marks.forEach(m => { const t = document.createTextNode(m.textContent); m.replaceWith(t); }); marks = []; curMark = -1; }
       function markAll(needles) {
@@ -1039,10 +1063,7 @@
               if (from >= src.length) break;
             }
             if (from < src.length) out.push(document.createTextNode(src.slice(from)));
-            if (out.length) {
-              const frag = document.createDocumentFragment(); out.forEach(n => frag.appendChild(n));
-              node.parentNode.replaceChild(frag, node);
-            }
+            if (out.length) { const frag = document.createDocumentFragment(); out.forEach(n => frag.appendChild(n)); node.parentNode.replaceChild(frag, node); }
           }
           marks.push(...local);
         });
@@ -1057,32 +1078,36 @@
       function gotoPrev() { if (!marks.length) return; curMark = (curMark - 1 + marks.length) % marks.length; focusCur(); }
       window.gotoNext = gotoNext; window.gotoPrev = gotoPrev;
 
+      /* ====== SUGGESTIONS UI ====== */
+      const suggBox = document.getElementById('suggestions');
+      const searchBtn = document.getElementById('searchBtn');
+      let selIndex = -1;
+
+      function hideSugg() { suggBox.setAttribute('hidden', ''); suggBox.innerHTML = ''; document.querySelector('.srch').setAttribute('aria-expanded', 'false'); selIndex = -1; }
+      function famTag(text, emph = false) { const s = document.createElement('span'); s.className = 'tag' + (emph ? ' emph' : ''); s.textContent = text; return s; }
+      function pill(label, pressed, cb) { const p = document.createElement('button'); p.type = 'button'; p.className = 'pill'; p.textContent = label; p.setAttribute('aria-pressed', pressed ? 'true' : 'false'); p.addEventListener('click', cb); return p; }
+      function addGroupHeader(label, addons) { const h = document.createElement('div'); h.className = 'group-h'; h.textContent = label; if (addons) { const box = document.createElement('div'); box.className = 'filters'; addons.forEach(x => box.appendChild(x)); h.appendChild(box); } suggBox.appendChild(h); }
+
       function addItemToSugg(item, queryTerms) {
         const { d } = item;
-        const btn = document.createElement('button');
-        btn.type = 'button'; btn.className = 'sugg-item'; btn.setAttribute('role', 'option');
-
+        const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'sugg-item'; btn.setAttribute('role', 'option');
         const left = document.createElement('div'); left.className = 'sugg-left';
         const right = document.createElement('div'); right.className = 'sugg-right';
-
-        const path = d.title || (d.type === 'heading' ? 'Titre' : d.type.startsWith('code') ? 'Code' : 'Contenu');
+        const path = d.title || (d.type === 'heading' ? 'Titre' : String(d.type).startsWith('code') ? 'Code' : 'Contenu');
         const snippet = (d.text || '').replace(/\s+/g, ' ').trim().slice(0, 160);
         const anchor = d.anchor ? '#' + d.anchor : '';
-
         left.innerHTML = `<strong>${path}</strong><small>${new URL(d.url).pathname} — … ${snippet} …</small>`;
         right.appendChild(famTag(d.fam || 'Content', true));
         right.appendChild(famTag(`file: ${d.file}`));
         btn.appendChild(left); btn.appendChild(right);
-
         btn.addEventListener('click', () => {
           hideSugg(); clearMarks();
-          // si la cible est la page courante, surligner, sinon naviguer
-          const here = canonical(location.href);
-          const there = canonical(d.url);
+          const here = canonical(location.href), there = canonical(d.url);
           if (here === there) {
             const target = d.anchor ? document.getElementById(d.anchor) : content;
             (target || content).scrollIntoView({ behavior: 'smooth', block: 'start' });
-            const needles = [...queryTerms.phrases, ...queryTerms.pos, ...queryTerms.wild.map(w => w), ...queryTerms.chars];
+            const parsed = parseQuery(q.value);
+            const needles = [...parsed.phrases, ...parsed.pos, ...parsed.wild.map(w => w), ...parsed.chars];
             if (needles.length) { const total = markAll(needles); if (total) { curMark = 0; focusCur(); } }
           } else {
             location.href = d.url + anchor;
@@ -1095,16 +1120,13 @@
         const res = matchAndScore(query);
         suggBox.innerHTML = '';
 
-        // Filtres dynamiques (pages/types)
-        const filePills = [
-          pill('Toutes les pages', true, () => { q.value = q.value.replace(/\bfile:[^\s]+/, '').trim(); renderSuggestions(q.value); }),
-        ];
+        const filePills = [pill('Toutes les pages', true, () => { q.value = q.value.replace(/\bfile:[^\s]+/, '').trim(); renderSuggestions(q.value); })];
         FILES.slice(1).forEach(f => filePills.push(pill(f.label, false, () => { if (!/\bfile:/i.test(q.value)) q.value += ' '; q.value = q.value.replace(/\bfile:[^\s]+/, '').trim() + ' file:' + f.id; renderSuggestions(q.value); })));
         const typePills = [
-          pill('Tous types', /type:/.test(q.value) === false, () => { q.value = q.value.replace(/\btype:[^\s]+/, '').trim(); renderSuggestions(q.value); }),
-          pill('Titres', /type:/.test(q.value) && /head|title/.test(q.value), () => { q.value = q.value.replace(/\btype:[^\s]+/, '').trim() + ' type:heading'; renderSuggestions(q.value); }),
-          pill('Code', /type:/.test(q.value) && /code/.test(q.value), () => { q.value = q.value.replace(/\btype:[^\s]+/, '').trim() + ' type:code'; renderSuggestions(q.value); }),
-          pill('Texte', /type:/.test(q.value) && /text|content/.test(q.value), () => { q.value = q.value.replace(/\btype:[^\s]+/, '').trim() + ' type:text'; renderSuggestions(q.value); }),
+          pill('Tous types', !/\btype:/.test(q.value), () => { q.value = q.value.replace(/\btype:[^\s]+/, '').trim(); renderSuggestions(q.value); }),
+          pill('Titres', /head|title/.test(q.value), () => { q.value = q.value.replace(/\btype:[^\s]+/, '').trim() + ' type:heading'; renderSuggestions(q.value); }),
+          pill('Code', /type:code/.test(q.value), () => { q.value = q.value.replace(/\btype:[^\s]+/, '').trim() + ' type:code'; renderSuggestions(q.value); }),
+          pill('Texte', /type:(text|content)/.test(q.value), () => { q.value = q.value.replace(/\btype:[^\s]+/, '').trim() + ' type:text'; renderSuggestions(q.value); }),
         ];
         const refreshBtn = pill('↻ Réindexer', false, async () => {
           storage.del(INDEX_KEY);
@@ -1128,10 +1150,10 @@
             btn.addEventListener('click', () => { q.value = tok.label; doSearch(q.value); });
             suggBox.appendChild(btn);
           });
-        } else if (!query.trim()) {
+        } else if (!query.trim() && SITE_INDEX) {
           addGroupHeader('Mots-clés fréquents');
           const bar = document.createElement('div'); bar.className = 'chipbar';
-          (SITE_INDEX?.TOP_KEYWORDS || []).slice(0, 12).forEach(k => {
+          (SITE_INDEX.TOP_KEYWORDS || []).slice(0, 12).forEach(k => {
             const c = document.createElement('button'); c.type = 'button'; c.className = 'chip'; c.textContent = k; c.addEventListener('click', () => { q.value = k; doSearch(k); }); bar.appendChild(c);
           });
           suggBox.appendChild(bar);
@@ -1147,91 +1169,113 @@
 
         suggBox.removeAttribute('hidden');
         document.querySelector('.srch').setAttribute('aria-expanded', 'true');
+        updateToolbarH(); // garantit la bonne position en mobile
 
-        const parts = [];
-        if (res.summary.heading) parts.push(`Titres: ${res.summary.heading}`);
-        if (res.summary.text) parts.push(`Texte: ${res.summary.text}`);
-        if (res.summary.code) parts.push(`Code: ${res.summary.code}`);
-        hitsEl.textContent = parts.length ? parts.join(' • ') + ` • Total: ${res.summary.total}` : (query.trim() ? 'Aucun résultat' : `Index chargé (${SITE_INDEX?.meta?.pagesCount || 0} pages)`);
+        const parts = []; if (res.summary.heading) parts.push(`Titres: ${res.summary.heading}`); if (res.summary.text) parts.push(`Texte: ${res.summary.text}`); if (res.summary.code) parts.push(`Code: ${res.summary.code}`);
+        hitsEl.textContent = parts.length ? parts.join(' • ') + ` • Total: ${res.summary.total}` : (query.trim() ? 'Aucun résultat' : hitsEl.textContent);
       }
 
+      /* ====== SEARCH FLOW ====== */
       function doSearch(term) {
         hideSugg(); clearMarks();
         const parsed = parseQuery(term);
         const res = matchAndScore(term);
         const needles = [...parsed.phrases, ...parsed.pos, ...parsed.wild.map(w => w), ...parsed.chars];
         if (needles.length) { const total = markAll(needles); if (total) { curMark = 0; focusCur(); } }
-        const parts = [];
-        if (res.summary.heading) parts.push(`Titres: ${res.summary.heading}`);
-        if (res.summary.text) parts.push(`Texte: ${res.summary.text}`);
-        if (res.summary.code) parts.push(`Code: ${res.summary.code}`);
-        hitsEl.textContent = parts.length ? parts.join(' • ') + ` • Total: ${res.summary.total}` : (term.trim() ? 'Aucun résultat' : `Index chargé (${SITE_INDEX?.meta?.pagesCount || 0} pages)`);
+        const parts = []; if (res.summary.heading) parts.push(`Titres: ${res.summary.heading}`); if (res.summary.text) parts.push(`Texte: ${res.summary.text}`); if (res.summary.code) parts.push(`Code: ${res.summary.code}`);
+        hitsEl.textContent = parts.length ? parts.join(' • ') + ` • Total: ${res.summary.total}` : (term.trim() ? 'Aucun résultat' : hitsEl.textContent);
         renderSuggestions(term);
       }
 
-      // Events
+      /* ====== EVENTS & INIT ====== */
+      const suggBoxEl = document.getElementById('suggestions');
       q.addEventListener('input', () => { clearTimeout(q._t); q._t = setTimeout(() => renderSuggestions(q.value), 140); });
       q.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') { e.preventDefault(); doSearch(q.value); }
         else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-          const items = [...suggBox.querySelectorAll('.sugg-item')];
-          if (!items.length) return;
-          e.preventDefault();
-          if (e.key === 'ArrowDown') selIndex = (selIndex + 1) % items.length;
-          else selIndex = (selIndex - 1 + items.length) % items.length;
+          const items = [...suggBoxEl.querySelectorAll('.sugg-item')]; if (!items.length) return;
+          e.preventDefault(); if (e.key === 'ArrowDown') selIndex = (selIndex + 1) % items.length; else selIndex = (selIndex - 1 + items.length) % items.length;
           items.forEach((el, i) => el.setAttribute('aria-selected', i === selIndex ? 'true' : 'false'));
           items[selIndex].scrollIntoView({ block: 'nearest' });
         } else if (e.key === 'Escape') { hideSugg(); }
       });
-      searchBtn.addEventListener('click', () => doSearch(q.value));
+      document.getElementById('searchBtn').addEventListener('click', () => doSearch(q.value));
       document.addEventListener('click', (e) => { if (!document.querySelector('.srch').contains(e.target)) hideSugg(); });
 
-      /* ===================== CHARGEMENT / CACHE INDEX ===================== */
-      function setProgress(d, t) { hitsEl.textContent = `Indexation du site… ${d}/${t}`; }
-      async function ensureIndex(force) {
-        // Cache local (24h)
-        if (!force) {
-          const saved = storage.get(INDEX_KEY);
-          if (saved && saved.meta && saved.meta.base === SITE_BASE && (Date.now() - saved.meta.ts) < INDEX_TTL_MS) {
-            SITE_INDEX = deserializeIndex(saved);
-            buildFilesFromIndex();
-            hitsEl.textContent = `Index chargé (${SITE_INDEX.meta.pagesCount || 0} pages)`;
-            renderSuggestions(q.value || '');
-            return;
-          }
-        }
-        const { index, meta, pages } = await makeIndex(setProgress);
-        SITE_INDEX = { ...index, meta };
-        buildFilesFromIndex(pages);
-        storage.set(INDEX_KEY, serializeIndex(index, meta));
-        hitsEl.textContent = `Index chargé (${meta.pagesCount} pages)`;
-        renderSuggestions(q.value || '');
-      }
-
-      function buildFilesFromIndex(pagesList) {
-        const labels = new Map();
-        (pagesList || []).forEach(p => {
-          try {
-            const path = new URL(p.url).pathname.replace(SITE_BASE.replace(location.origin, ''), '').replace(/^\/+/, '') || 'index';
-            labels.set(path, (p.title || path).replace(/\s*\|\s*.+$/, ''));
-          } catch { }
-        });
-        // fallback depuis les docs si nécessaire
-        if (!labels.size && SITE_INDEX) {
-          SITE_INDEX.docs.forEach(d => labels.set(d.file, labels.get(d.file) || d.file));
-        }
-        FILES = [{ id: 'all', label: 'Toutes les pages' }, ...Array.from(labels.entries()).slice(0, 60).map(([id, label]) => ({ id, label }))];
-      }
-
-      // Démarrage
       (async function init() {
-        // indexe site + suggestions initiales
         try { await ensureIndex(false); } catch { await ensureIndex(true); }
         renderSuggestions('');
       })();
-
     })();
-  </script>
+  
+
+ // --- Corrections du bloc de fin ---
+// (à coller à la place de votre fragment)
+
+suggBox.removeAttribute('hidden');
+document.querySelector('.srch').setAttribute('aria-expanded', 'true');
+
+const parts = [];
+if (res.summary.heading) parts.push(`Titres: ${res.summary.heading}`);
+if (res.summary.text)   parts.push(`Texte: ${res.summary.text}`);
+if (res.summary.code)   parts.push(`Code: ${res.summary.code}`);
+hitsEl.textContent = parts.length
+  ? `${parts.join(' • ')} • Total: ${res.summary.total}`
+  : (query.trim() ? 'Aucun résultat' : hitsEl.textContent);
+}
+
+/* ===================== SEARCH FLOW ===================== */
+function doSearch(term) {
+  hideSugg(); clearMarks();
+  const parsed = parseQuery(term);
+  const res = matchAndScore(term);
+  const needles = [...parsed.phrases, ...parsed.pos, ...parsed.wild.map(w => w), ...parsed.chars];
+  if (needles.length) {
+    const total = markAll(needles);
+    if (total) { curMark = 0; focusCur(); }
+  }
+  const parts = [];
+  if (res.summary.heading) parts.push(`Titres: ${res.summary.heading}`);
+  if (res.summary.text)   parts.push(`Texte: ${res.summary.text}`);
+  if (res.summary.code)   parts.push(`Code: ${res.summary.code}`);
+  hitsEl.textContent = parts.length
+    ? `${parts.join(' • ')} • Total: ${res.summary.total}`
+    : (term.trim() ? 'Aucun résultat' : hitsEl.textContent);
+  renderSuggestions(term);
+}
+
+/* ===================== EVENTS & INIT ===================== */
+const suggBoxEl = document.getElementById('suggestions');
+q.addEventListener('input', () => {
+  clearTimeout(q._t);
+  q._t = setTimeout(() => renderSuggestions(q.value), 140);
+});
+q.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault(); doSearch(q.value);
+  } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    const items = [...suggBoxEl.querySelectorAll('.sugg-item')];
+    if (!items.length) return;
+    e.preventDefault();
+    if (e.key === 'ArrowDown') selIndex = (selIndex + 1) % items.length;
+    else selIndex = (selIndex - 1 + items.length) % items.length;
+    items.forEach((el, i) => el.setAttribute('aria-selected', i === selIndex ? 'true' : 'false'));
+    items[selIndex].scrollIntoView({ block: 'nearest' });
+  } else if (e.key === 'Escape') {
+    hideSugg();
+  }
+});
+searchBtn.addEventListener('click', () => doSearch(q.value));
+document.addEventListener('click', (e) => {
+  if (!document.querySelector('.srch').contains(e.target)) hideSugg();
+});
+
+(async function init() {
+  try { await ensureIndex(false); } catch { await ensureIndex(true); }
+  renderSuggestions('');
+})();
+</script>
+
 
   <!-- ===== Main ===== -->
   <main class="container" id="main">
@@ -5314,6 +5358,7 @@ vitl build -O3 -o build/app src/main.vitl
 </body>
 
 </html>
+
 
 
 
