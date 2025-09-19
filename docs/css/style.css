@@ -84,7 +84,7 @@ body {
     }
 }
 
-/* ===================== LIENS (corrigés) ===================== */
+/* ===================== LIENS ===================== */
 a {
     color: var(--accent);
     text-decoration: none;
@@ -99,40 +99,36 @@ a {
 }
 
 a:hover {
-    background-size: 100% 1px;
+    background-size: 100% 1px
 }
 
 a:active {
-    opacity: .9;
+    opacity: .9
 }
 
 a:visited {
-    color: color-mix(in srgb, var(--accent) 80%, var(--fg));
+    color: color-mix(in srgb, var(--accent) 80%, var(--fg))
 }
 
-/* Focus accessible */
 a:focus-visible {
     outline: 2px solid color-mix(in srgb, var(--accent) 55%, var(--focus));
     outline-offset: 2px;
     border-radius: 4px;
 }
 
-/* Lien contenant du code inline */
 a>code {
     color: inherit;
-    border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+    border-color: color-mix(in srgb, var(--accent) 30%, var(--border))
 }
 
-/* Boutons-lien (si .btn est un <a>) */
 a.btn {
     background: var(--btnbg);
     color: var(--btnfg);
-    text-decoration: none;
-    background-image: none;
+    background-image: none
 }
 
 a.btn:hover {
-    filter: saturate(1.02);
+    filter: saturate(1.02)
 }
 
 /* Icône liens externes */
@@ -140,7 +136,7 @@ a[target="_blank"],
 a[href^="http://"],
 a[href^="https://"] {
     position: relative;
-    padding-right: 1.05em;
+    padding-right: 1.05em
 }
 
 a[target="_blank"]::after,
@@ -161,10 +157,10 @@ a[href^="https://"]::after {
 :root[data-theme="dark"] a[target="_blank"]::after,
 :root[data-theme="dark"] a[href^="http://"]::after,
 :root[data-theme="dark"] a[href^="https://"]::after {
-    opacity: .9;
+    opacity: .9
 }
 
-/* Liens du sommaire */
+/* Sommaire */
 .toc a {
     display: inline-block;
     padding: .1rem .2rem;
@@ -175,22 +171,22 @@ a[href^="https://"]::after {
 }
 
 .toc a:hover {
-    background-size: 100% .08em;
+    background-size: 100% .08em
 }
 
 .toc a:focus-visible {
     outline: 2px solid color-mix(in srgb, var(--accent) 45%, var(--focus));
-    outline-offset: 1px;
+    outline-offset: 1px
 }
 
 /* Liens dans suggestions & méta */
 .sugg-item a {
     color: inherit;
-    background-image: none;
+    background-image: none
 }
 
 .sugg-item a:hover {
-    text-decoration: underline;
+    text-decoration: underline
 }
 
 .mini a {
@@ -202,7 +198,7 @@ a[href^="https://"]::after {
 
 .mini a:hover {
     color: var(--fg);
-    text-decoration-color: currentColor;
+    text-decoration-color: currentColor
 }
 
 /* ===================== LAYOUT & COMPOSANTS ===================== */
@@ -255,7 +251,7 @@ a[href^="https://"]::after {
     gap: .5rem;
     position: relative;
     flex: 1;
-    min-width: 200px
+    min-width: 200px;
 }
 
 .srch input {
@@ -313,6 +309,7 @@ a[href^="https://"]::after {
     color: var(--bg)
 }
 
+/* ===== Boîte de suggestions du moteur (injection JS) ===== */
 .sugg {
     position: absolute;
     left: 0;
@@ -331,6 +328,24 @@ a[href^="https://"]::after {
     display: none
 }
 
+#suggestions {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: .85rem;
+    box-shadow: var(--shadow);
+    overflow: auto;
+    max-height: 70vh;
+    color: var(--fg);
+}
+
+#suggestions .group-h {
+    position: sticky;
+    top: 0;
+    background: var(--card);
+    z-index: 1
+}
+
+/* Filtres & items */
 .group-h {
     display: flex;
     align-items: center;
@@ -381,7 +396,7 @@ a[href^="https://"]::after {
 
 .sugg-item:hover,
 .sugg-item[aria-selected="true"] {
-    background: color-mix(in srgb, var(--accent) 12%, transparent)
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 .sugg-left {
@@ -398,7 +413,7 @@ a[href^="https://"]::after {
     color: var(--muted);
     overflow: hidden;
     text-overflow: ellipsis;
-    white-space: nowrap
+    white-space: nowrap;
 }
 
 .sugg-right {
@@ -422,6 +437,34 @@ a[href^="https://"]::after {
     border-color: var(--accent)
 }
 
+/* Navigation Préc./Suiv. (injection JS) */
+.find-nav {
+    display: flex;
+    gap: 6px;
+    align-items: center
+}
+
+.find-nav button {
+    border: 1px solid var(--border);
+    background: var(--btnbg);
+    color: var(--btnfg);
+    padding: .45rem .65rem;
+    border-radius: .5rem;
+    cursor: pointer;
+    box-shadow: var(--shadow);
+    font-size: .95rem;
+    min-width: 40px;
+    min-height: 40px;
+    touch-action: manipulation;
+}
+
+.find-nav button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: .5rem
+}
+
+/* ===================== CONTENU ===================== */
 header {
     padding: 24px;
     border-bottom: 1px solid var(--border);
@@ -486,7 +529,7 @@ h2 {
     margin: 0 0 10px;
     padding-top: 10px;
     border-top: 1px solid var(--border);
-    font-size: 1.25rem;
+    font-size: 1.25rem
 }
 
 h3 {
@@ -526,6 +569,7 @@ hr {
     margin: 16px 0
 }
 
+/* Surbrillance recherche */
 mark[data-hl] {
     background: #fde68a;
     color: #111827;
@@ -535,9 +579,12 @@ mark[data-hl] {
 
 mark[data-cur] {
     background: #f59e0b;
-    color: #111827
+    color: #111827;
+    outline: 2px solid var(--accent);
+    border-radius: 3px
 }
 
+/* Callouts */
 .callout {
     border: 1px solid var(--border);
     border-left: 4px solid var(--accent);
@@ -583,6 +630,7 @@ mark[data-cur] {
     }
 }
 
+/* FAB Sommaire */
 .fab {
     position: fixed;
     right: clamp(16px, 2vw, 24px);
@@ -638,6 +686,18 @@ mark[data-cur] {
         z-index: 80;
     }
 
+    #suggestions {
+        min-width: 90vw;
+        max-width: 95vw;
+    }
+
+    #suggestions .sugg-left small {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 70vw
+    }
+
     .btn {
         padding: .5rem .6rem
     }
@@ -671,7 +731,8 @@ mark[data-cur] {
 @media print {
 
     .fab,
-    .sugg {
+    .sugg,
+    #suggestions {
         display: none
     }
 }
