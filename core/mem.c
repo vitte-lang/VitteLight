@@ -1,98 +1,207 @@
 /* ============================================================================
    mem.c — Allocateurs et utilitaires mémoire « ultra complet » (C17)
-   - Wrappers sûrs (vt_malloc/calloc/realloc/free) avec stats atomiques
-   - Aligned alloc cross-platform
-   - Pages OS (mmap/VirtualAlloc)
-   - Arena allocator (grow, mark/reset, align)
-   - Pool fixe (free-list), thread-safe optionnel
-   - Buffer dynamique (vt_buf) + printf-like
-   - Duplication (mem/str), fill/zero/swap
-   - Leak tracking optionnel (VT_MEM_LEAK_TRACK)
-   Licence: MIT.
+   …
    ============================================================================
  */
 
 #if defined(__has_include)
-#if __has_include("mem.h")
-#include "mem.h"
-#define VT_HAVE_MEM_H 1
-#endif
-#endif
+
+/* Prefer project-local includes if available */
+#  if __has_include("core/prefix.h")
+#    include "core/prefix.h"
+#  elif __has_include("prefix.h")
+#    include "prefix.h"
+#  endif
+
+#  if __has_include("core/types.h")
+#    include "core/types.h"
+#  elif __has_include("types.h")
+#    include "types.h"
+#  endif
+
+#  if __has_include("core/vl_compat.h")
+#    include "core/vl_compat.h"
+#  elif __has_include("vl_compat.h")
+#    include "vl_compat.h"
+#  endif
+
+#  if __has_include("core/opcodes.h")
+#    include "core/opcodes.h"
+#  elif __has_include("opcodes.h")
+#    include "opcodes.h"
+#  endif
+
+#  if __has_include("core/opnames.h")
+#    include "core/opnames.h"
+#  elif __has_include("opnames.h")
+#    include "opnames.h"
+#  endif
+
+#  if __has_include("core/api.h")
+#    include "core/api.h"
+#  elif __has_include("api.h")
+#    include "api.h"
+#  endif
+
+#  if __has_include("core/limitslex.h")
+#    include "core/limitslex.h"
+#  elif __has_include("limitslex.h")
+#    include "limitslex.h"
+#  endif
+
+#  if __has_include("core/ctype.h")
+#    include "core/ctype.h"
+#  elif __has_include("ctype.h")
+#    include "ctype.h"
+#  endif
+
+#  if __has_include("core/jumptab.h")
+#    include "core/jumptab.h"
+#  elif __has_include("jumptab.h")
+#    include "jumptab.h"
+#  endif
+
+#  if __has_include("core/zio.h")
+#    include "core/zio.h"
+#  elif __has_include("zio.h")
+#    include "zio.h"
+#  endif
+
+#  if __has_include("core/string.h")
+#    include "core/string.h"
+#  elif __has_include("string.h")
+#    include "string.h"
+#  endif
+
+#  if __has_include("core/table.h")
+#    include "core/table.h"
+#  elif __has_include("table.h")
+#    include "table.h"
+#  endif
+
+#  if __has_include("core/object.h")
+#    include "core/object.h"
+#  elif __has_include("object.h")
+#    include "object.h"
+#  endif
+
+#  if __has_include("core/gc.h")
+#    include "core/gc.h"
+#  elif __has_include("gc.h")
+#    include "gc.h"
+#  endif
+
+#  if __has_include("core/func.h")
+#    include "core/func.h"
+#  elif __has_include("func.h")
+#    include "func.h"
+#  endif
+
+#  if __has_include("core/state.h")
+#    include "core/state.h"
+#  elif __has_include("state.h")
+#    include "state.h"
+#  endif
+
+#  if __has_include("core/tm.h")
+#    include "core/tm.h"
+#  elif __has_include("tm.h")
+#    include "tm.h"
+#  endif
+
+#  if __has_include("core/code.h")
+#    include "core/code.h"
+#  elif __has_include("code.h")
+#    include "code.h"
+#  endif
+
+#  if __has_include("core/parser.h")
+#    include "core/parser.h"
+#  elif __has_include("parser.h")
+#    include "parser.h"
+#  endif
+
+#  if __has_include("core/undump.h")
+#    include "core/undump.h"
+#  elif __has_include("undump.h")
+#    include "undump.h"
+#  endif
+
+#  if __has_include("core/vm.h")
+#    include "core/vm.h"
+#  elif __has_include("vm.h")
+#    include "vm.h"
+#  endif
+
+#  if __has_include("core/dump.h")
+#    include "core/dump.h"
+#  elif __has_include("dump.h")
+#    include "dump.h"
+#  endif
+
+#  if __has_include("core/debug.h")
+#    include "core/debug.h"
+#  elif __has_include("debug.h")
+#    include "debug.h"
+#  endif
+
+/* mem.h en dernier pour éviter les dépendances circulaires */
+#  if __has_include("core/mem.h")
+#    include "core/mem.h"
+#    define VT_HAVE_MEM_H 1
+#  elif __has_include("mem.h")
+#    include "mem.h"
+#    define VT_HAVE_MEM_H 1
+#  endif
+
+#endif /* defined(__has_include) */
 
 #ifndef VT_HAVE_MEM_H
 /* Interface minimale si mem.h absent (compilation autonome) */
 #include <stddef.h>
 #include <stdint.h>
-typedef struct vt_mem_stats {
-  size_t cur_bytes;
-  size_t peak_bytes;
-  size_t total_allocs;
-  size_t total_frees;
-} vt_mem_stats;
+#include <stdalign.h>
+#ifndef VT_MEM_ALIGN_DEFAULT
+#  define VT_MEM_ALIGN_DEFAULT 16
+#endif
 
-typedef struct vt_arena vt_arena;
-typedef struct vt_arena_mark {
-  void* _chunk;
-  size_t _len;
-  size_t _total;
-} vt_arena_mark;
+typedef struct vt__arena_chunk {
+    struct vt__arena_chunk* next;
+    size_t cap, len;
+#  if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#    include <stdalign.h>
+    alignas(VT_MEM_ALIGN_DEFAULT) unsigned char data[];
+#  elif defined(_MSC_VER)
+    __declspec(align(VT_MEM_ALIGN_DEFAULT)) unsigned char data[1];
+#  else
+    unsigned char data[1];
+#  endif
+} vt__arena_chunk;
 
-typedef struct vt_pool vt_pool;
+typedef struct vt_arena {
+    vt__arena_chunk* head;
+    size_t chunk_size;
+    size_t total;
+} vt_arena;
 
-typedef struct vt_buf {
-  unsigned char* data;
-  size_t len, cap;
-} vt_buf;
+/* Prototypes minimum utilisés par mem.c */
+void*  vl_xmalloc(size_t n);
+void*  vl_xcalloc(size_t n, size_t s);
+void*  vl_xrealloc(void* p, size_t n);
+void   vl_free(void* p);
 
-/* API */
-void vt_mem_init(void);
-void vt_mem_shutdown(void);
-void vt_mem_get_stats(vt_mem_stats* out);
-void vt_mem_set_abort_on_oom(int on);
+int    vl_read_file_all(const char* path, uint8_t** out, size_t* n);
+int    vl_write_file(const char* path, const void* data, size_t n);
+void   vl_hexdump(const void* data, size_t n, size_t base, FILE* out);
 
-void* vt_malloc(size_t n);
-void* vt_calloc(size_t nmemb, size_t size);
-void* vt_realloc(void* p, size_t n);
-void vt_free(void* p);
+void   vt_arena_init(vt_arena* a, size_t chunk_size);
+void*  vt_arena_alloc(vt_arena* a, size_t n);
+void*  vt_arena_alloc_aligned(vt_arena* a, size_t n, size_t align);
+char*  vt_arena_strdup(vt_arena* a, const char* s);
+void   vt_arena_reset(vt_arena* a);
+void   vt_arena_free(vt_arena* a);
+#endif /* !VT_HAVE_MEM_H */
 
-void* vt_aligned_alloc(size_t alignment, size_t size);
-void vt_aligned_free(void* p);
-
-void* vt_memdup(const void* src, size_t n);
-char* vt_strndup(const char* s, size_t n);
-
-void* vt_page_alloc(size_t size);
-void vt_page_free(void* p, size_t size);
-
-void vt_mem_zero(void* p, size_t n);
-void vt_mem_fill(void* p, int byte, size_t n);
-void vt_mem_swap(void* a, void* b, size_t n);
-
-/* Arena */
-void vt_arena_init(vt_arena* a, size_t first_chunk);
-void vt_arena_dispose(vt_arena* a);
-void* vt_arena_alloc(vt_arena* a, size_t n, size_t align);
-void vt_arena_reset(vt_arena* a);
-vt_arena_mark vt_arena_mark_get(vt_arena* a);
-void vt_arena_mark_reset(vt_arena* a, vt_arena_mark m);
-
-/* Pool */
-int vt_pool_init(vt_pool* p, size_t obj_size, size_t obj_align,
-                 size_t objs_per_block);
-void vt_pool_dispose(vt_pool* p);
-void* vt_pool_alloc(vt_pool* p);
-void vt_pool_free(vt_pool* p, void* obj);
-
-/* Buffer */
-void vt_buf_init(vt_buf* b);
-void vt_buf_dispose(vt_buf* b);
-int vt_buf_reserve(vt_buf* b, size_t need_cap);
-int vt_buf_append(vt_buf* b, const void* data, size_t n);
-int vt_buf_append_cstr(vt_buf* b, const char* s);
-int vt_buf_printf(vt_buf* b, const char* fmt, ...);
-unsigned char* vt_buf_detach(vt_buf* b, size_t* out_len);
-
-#endif /* VT_HAVE_MEM_H */
 
 /* ----------------------------------------------------------------------------
    Includes système
@@ -563,9 +672,10 @@ void vt_page_free(void* p, size_t size) {
    Arena allocator
 ---------------------------------------------------------------------------- */
 typedef struct vt__arena_chunk {
-  struct vt__arena_chunk* next;
-  size_t cap, len;
-  alignas(VT_MEM_ALIGN_DEFAULT) unsigned char data[];
+    struct vt__arena_chunk* next;
+    size_t cap;
+    size_t len;
+    unsigned char data[] alignas(VT_MEM_ALIGN_DEFAULT);
 } vt__arena_chunk;
 
 struct vt_arena {
