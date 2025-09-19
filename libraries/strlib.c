@@ -1,810 +1,424 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// strlib.c — String library for Vitte Light VM (C17, complet)
+// strlib.c — Utilitaires chaînes “batteries incluses” (C17, portable)
 // Namespace: "str"
 //
-// Conventions:
-//   - Byte indexing is 1-based. Negative indexes are from end (-1 == last).
-//   - All operations are byte-based unless prefixed with utf8_*.
-//   - Functions return (nil,"EINVAL") or (nil,"ERANGE") on invalid args/ranges.
-//   - split() returns N results as multiple return values.
+// Fournit:
+//   - Trim/lstrip/rstrip
+//   - startswith/endswith (cs/ci), strstr_ci, icmp
+//   - tolower/upper in-place, ASCII
+//   - split/join (séparateur multi-char-set), free de tableau
+//   - replace_all (littéral), collapse_spaces
+//   - escape/unescape style C (\n, \t, \xNN)
+//   - hex encode/decode
+//   - base64 encode/decode
+//   - StringBuilder: sb_* (init, append, appendn, appendf, data, len, clear, free)
 //
-// API:
-//   Basics:
-//     str.len(s)                       -> int
-//     str.byte_at(s, i)                -> int (0..255) | (nil,"ERANGE")
-//     str.sub(s, i[, j])               -> string
-//     str.find(s, needle[, start=1[, nocase=false]]) -> pos:int (0 if not
-//     found) str.replace(s, from, to[, max=-1[, nocase=false]]) -> out:string,
-//     count:int str.split(s, sep[, max=-1])      -> v1, v2, ... (N returns)
-//     str.lower(s)                     -> string
-//     str.upper(s)                     -> string
-//     str.trim(s)                      -> string
-//     str.ltrim(s)                     -> string
-//     str.rtrim(s)                     -> string
-//     str.starts_with(s, pfx[, nocase=false]) -> bool
-//     str.ends_with(s, sfx[, nocase=false])   -> bool
-//     str.repeat(s, n)                 -> string | (nil,"ERANGE")
-//     str.reverse(s)                   -> string
-//     str.pad_left(s, width[, ch=" "]) -> string
-//     str.pad_right(s, width[, ch=" "])-> string
-//     str.cmp(a,b[, nocase=false])     -> -1|0|1
-//     str.hash32(s)                    -> uint32 (FNV-1a)
+// Build:
+//   cc -std=c17 -O2 -Wall -Wextra -pedantic -c strlib.c
 //
-//   Encoding:
-//     str.hex(s)                       -> hex:string
-//     str.unhex(hex)                   -> bytes:string | (nil,"EINVAL")
-//     str.base64_encode(s)             -> b64:string
-//     str.base64_decode(b64)           -> bytes:string | (nil,"EINVAL")
-//
-//   UTF-8 helpers (best-effort, validation-light):
-//     str.utf8_len(s)                  -> codepoints:int
-//     str.utf8_sub(s, i[, j])          -> substring by codepoints
-//
-// Depends: auxlib.h, state.h, object.h, vm.h
+// Test (STR_TEST):
+//   cc -std=c17 -O2 -Wall -Wextra -pedantic -DSTR_TEST strlib.c && ./a.out
 
-#include <ctype.h>
-#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <ctype.h>
 
-#include "auxlib.h"
-#include "object.h"
-#include "state.h"
-#include "vm.h"
-
-// ---------------------------------------------------------------------
-// VM arg helpers
-// ---------------------------------------------------------------------
-static const char *st_check_str(VL_State *S, int idx) {
-  if (vl_get(S, idx) && vl_isstring(S, idx))
-    return vl_tocstring(S, vl_get(S, idx));
-  vl_errorf(S, "argument #%d: string expected", idx);
-  vl_error(S);
-  return NULL;
-}
-static int64_t st_check_int(VL_State *S, int idx) {
-  if (vl_get(S, idx) && (vl_isint(S, idx) || vl_isfloat(S, idx)))
-    return vl_isint(S, idx) ? vl_toint(S, vl_get(S, idx))
-                            : (int64_t)vl_tonumber(S, vl_get(S, idx));
-  vl_errorf(S, "argument #%d: int expected", idx);
-  vl_error(S);
-  return 0;
-}
-static int st_opt_bool(VL_State *S, int idx, int defv) {
-  if (!vl_get(S, idx)) return defv;
-  return vl_tobool(vl_get(S, idx)) ? 1 : 0;
-}
-static int st_opt_int(VL_State *S, int idx, int defv) {
-  if (!vl_get(S, idx)) return defv;
-  if (vl_isint(S, idx) || vl_isfloat(S, idx)) return (int)st_check_int(S, idx);
-  return defv;
-}
-
-// ---------------------------------------------------------------------
-// Utilities
-// ---------------------------------------------------------------------
-static size_t clamp_pos_1b(int64_t i, size_t n) {
-  // 1-based, negatives from end
-  if (i < 0) {
-    int64_t p = (int64_t)n + i + 1;  // -1 -> n
-    if (p < 1) p = 1;
-    if ((uint64_t)p > n) p = (int64_t)n;
-    return (size_t)p;
-  }
-  if (i < 1) return 1;
-  if ((uint64_t)i > n) return n;
-  return (size_t)i;
-}
-static int eq_char_ci(unsigned char a, unsigned char b) {
-  return (int)tolower(a) == (int)tolower(b);
-}
-
-static const char *memmem_case(const char *hay, size_t hlen, const char *needle,
-                               size_t nlen, int nocase) {
-  if (nlen == 0) return hay;
-  if (hlen < nlen) return NULL;
-  if (!nocase) {
-    // naive search
-    const char *end = hay + (hlen - nlen) + 1;
-    for (const char *p = hay; p < end; ++p) {
-      if (*p == *needle && memcmp(p, needle, nlen) == 0) return p;
-    }
-    return NULL;
-  } else {
-    const unsigned char *H = (const unsigned char *)hay;
-    const unsigned char *N = (const unsigned char *)needle;
-    for (size_t i = 0; i + nlen <= hlen; ++i) {
-      if (!eq_char_ci(H[i], N[0])) continue;
-      size_t j = 1;
-      for (; j < nlen; ++j)
-        if (!eq_char_ci(H[i + j], N[j])) break;
-      if (j == nlen) return (const char *)(H + i);
-    }
-    return NULL;
-  }
-}
-
-// FNV-1a 32-bit
-static uint32_t fnv1a32(const uint8_t *p, size_t n) {
-  uint32_t h = 2166136261u;
-  for (size_t i = 0; i < n; i++) {
-    h ^= p[i];
-    h *= 16777619u;
-  }
-  return h;
-}
-
-// Base64
-static const char B64TAB[] =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-static int b64_val(int c) {
-  if (c >= 'A' && c <= 'Z') return c - 'A';
-  if (c >= 'a' && c <= 'z') return c - 'a' + 26;
-  if (c >= '0' && c <= '9') return c - '0' + 52;
-  if (c == '+') return 62;
-  if (c == '/') return 63;
-  return -1;
-}
-
-// UTF-8 decode next; returns bytes consumed (1..4) or 0 on invalid
-static size_t utf8_next(const unsigned char *s, size_t n, uint32_t *out_cp) {
-  if (n == 0) return 0;
-  unsigned char c = s[0];
-  if (c < 0x80) {
-    if (out_cp) *out_cp = c;
-    return 1;
-  }
-  if ((c & 0xE0) == 0xC0 && n >= 2) {
-    uint32_t cp = ((uint32_t)(c & 0x1F) << 6) | (uint32_t)(s[1] & 0x3F);
-    if (cp < 0x80) return 0;  // overlong
-    if (out_cp) *out_cp = cp;
-    return 2;
-  }
-  if ((c & 0xF0) == 0xE0 && n >= 3) {
-    uint32_t cp = ((uint32_t)(c & 0x0F) << 12) |
-                  ((uint32_t)(s[1] & 0x3F) << 6) | (uint32_t)(s[2] & 0x3F);
-    if (cp < 0x800) return 0;  // overlong
-    if (out_cp) *out_cp = cp;
-    return 3;
-  }
-  if ((c & 0xF8) == 0xF0 && n >= 4) {
-    uint32_t cp = ((uint32_t)(c & 0x07) << 18) |
-                  ((uint32_t)(s[1] & 0x3F) << 12) |
-                  ((uint32_t)(s[2] & 0x3F) << 6) | (uint32_t)(s[3] & 0x3F);
-    if (cp < 0x10000 || cp > 0x10FFFF) return 0;  // overlong or out of range
-    if (out_cp) *out_cp = cp;
-    return 4;
-  }
-  return 0;
-}
-
-// ---------------------------------------------------------------------
-// VM functions
-// ---------------------------------------------------------------------
-
-static int vm_str_len(VL_State *S) {
-  const char *s = st_check_str(S, 1);
-  vl_push_int(S, (int64_t)strlen(s));
-  return 1;
-}
-
-static int vm_str_byte_at(VL_State *S) {
-  const char *s = st_check_str(S, 1);
-  int64_t i = st_check_int(S, 2);
-  size_t n = strlen(s);
-  if (n == 0) {
-    vl_push_nil(S);
-    vl_push_string(S, "ERANGE");
-    return 2;
-  }
-  size_t p = clamp_pos_1b(i, n);
-  if (p < 1 || p > n) {
-    vl_push_nil(S);
-    vl_push_string(S, "ERANGE");
-    return 2;
-  }
-  vl_push_int(S, (int64_t)(unsigned char)s[p - 1]);
-  return 1;
-}
-
-static int vm_str_sub(VL_State *S) {
-  const char *s = st_check_str(S, 1);
-  size_t n = strlen(s);
-  int have_j = (vl_get(S, 3) != NULL);
-  int64_t i = st_check_int(S, 2);
-  int64_t j = have_j ? st_check_int(S, 3) : (int64_t)n;
-  size_t si = clamp_pos_1b(i, n);
-  size_t sj = clamp_pos_1b(j, n);
-  if (sj < si) {
-    vl_push_string(S, "");
-    return 1;
-  }
-  size_t len = sj - si + 1;
-  vl_push_lstring(S, s + (si - 1), (int)len);
-  return 1;
-}
-
-static int vm_str_find(VL_State *S) {
-  const char *s = st_check_str(S, 1);
-  const char *needle = st_check_str(S, 2);
-  size_t n = strlen(s), m = strlen(needle);
-  size_t start = (size_t)clamp_pos_1b(st_opt_int(S, 3, 1), n == 0 ? 1 : (int)n);
-  int nocase = st_opt_bool(S, 4, 0);
-  if (m == 0) {
-    vl_push_int(S, (int64_t)start);
-    return 1;
-  }
-  if (start < 1) start = 1;
-  if (start > n) {
-    vl_push_int(S, 0);
-    return 1;
-  }
-  const char *p =
-      memmem_case(s + (start - 1), n - (start - 1), needle, m, nocase);
-  if (!p) {
-    vl_push_int(S, 0);
-    return 1;
-  }
-  size_t pos = (size_t)(p - s) + 1;
-  vl_push_int(S, (int64_t)pos);
-  return 1;
-}
-
-static int vm_str_replace(VL_State *S) {
-  const char *s = st_check_str(S, 1);
-  const char *from = st_check_str(S, 2);
-  const char *to = st_check_str(S, 3);
-  int maxrep = st_opt_int(S, 4, -1);
-  int nocase = st_opt_bool(S, 5, 0);
-  size_t sn = strlen(s), fn = strlen(from), tn = strlen(to);
-  if (fn == 0) {
-    vl_push_string(S, s);
-    vl_push_int(S, 0);
-    return 2;
-  }
-
-  AuxBuffer out = {0};
-  size_t i = 0, count = 0;
-  while (i < sn) {
-    const char *p = memmem_case(s + i, sn - i, from, fn, nocase);
-    if (!p) {
-      aux_buffer_append(&out, (const uint8_t *)s + i, sn - i);
-      break;
-    }
-    size_t off = (size_t)(p - s);
-    aux_buffer_append(&out, (const uint8_t *)s + i, off - i);
-    aux_buffer_append(&out, (const uint8_t *)to, tn);
-    i = off + fn;
-    count++;
-    if (maxrep >= 0 && (int)count >= maxrep) {
-      aux_buffer_append(&out, (const uint8_t *)s + i, sn - i);
-      break;
-    }
-  }
-  vl_push_lstring(S, (const char *)out.data, (int)out.len);
-  vl_push_int(S, (int64_t)count);
-  aux_buffer_free(&out);
-  return 2;
-}
-
-static int vm_str_split(VL_State *S) {
-  const char *s = st_check_str(S, 1);
-  const char *sep = st_check_str(S, 2);
-  int maxparts = st_opt_int(S, 3, -1);
-  size_t n = strlen(s), sp = strlen(sep);
-  if (sp == 0) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-
-  int pushed = 0;
-  size_t i = 0;
-  while (i <= n) {
-    if (maxparts == 1) {
-      vl_push_lstring(S, s + i, (int)(n - i));
-      pushed++;
-      break;
-    }
-    const char *p = memmem_case(s + i, n - i, sep, sp, 0);
-    if (!p) {
-      vl_push_lstring(S, s + i, (int)(n - i));
-      pushed++;
-      break;
-    }
-    size_t off = (size_t)(p - s);
-    vl_push_lstring(S, s + i, (int)(off - i));
-    pushed++;
-    i = off + sp;
-    if (maxparts > 0) maxparts--;
-  }
-  return pushed;
-}
-
-static int vm_str_lower(VL_State *S) {
-  const char *s = st_check_str(S, 1);
-  size_t n = strlen(s);
-  char *buf = (char *)malloc(n + 1);
-  if (!buf) {
-    vl_push_nil(S);
-    vl_push_string(S, "ENOMEM");
-    return 2;
-  }
-  for (size_t i = 0; i < n; i++) buf[i] = (char)tolower((unsigned char)s[i]);
-  buf[n] = 0;
-  vl_push_string(S, buf);
-  free(buf);
-  return 1;
-}
-static int vm_str_upper(VL_State *S) {
-  const char *s = st_check_str(S, 1);
-  size_t n = strlen(s);
-  char *buf = (char *)malloc(n + 1);
-  if (!buf) {
-    vl_push_nil(S);
-    vl_push_string(S, "ENOMEM");
-    return 2;
-  }
-  for (size_t i = 0; i < n; i++) buf[i] = (char)toupper((unsigned char)s[i]);
-  buf[n] = 0;
-  vl_push_string(S, buf);
-  free(buf);
-  return 1;
-}
-
-static int vm_str_trim(VL_State *S) {
-  const char *s = st_check_str(S, 1);
-  size_t n = strlen(s);
-  size_t a = 0, b = n;
-  while (a < b && isspace((unsigned char)s[a])) a++;
-  while (b > a && isspace((unsigned char)s[b - 1])) b--;
-  vl_push_lstring(S, s + a, (int)(b - a));
-  return 1;
-}
-static int vm_str_ltrim(VL_State *S) {
-  const char *s = st_check_str(S, 1);
-  size_t n = strlen(s), a = 0;
-  while (a < n && isspace((unsigned char)s[a])) a++;
-  vl_push_lstring(S, s + a, (int)(n - a));
-  return 1;
-}
-static int vm_str_rtrim(VL_State *S) {
-  const char *s = st_check_str(S, 1);
-  size_t n = strlen(s), b = n;
-  while (b > 0 && isspace((unsigned char)s[b - 1])) b--;
-  vl_push_lstring(S, s, (int)b);
-  return 1;
-}
-
-static int vm_str_starts_with(VL_State *S) {
-  const char *s = st_check_str(S, 1);
-  const char *pfx = st_check_str(S, 2);
-  int nocase = st_opt_bool(S, 3, 0);
-  size_t n = strlen(s), m = strlen(pfx);
-  if (m > n) {
-    vl_push_bool(S, 0);
-    return 1;
-  }
-  int ok = nocase ? (strncasecmp(s, pfx, m) == 0) : (memcmp(s, pfx, m) == 0);
-#ifndef _WIN32
-  // strncasecmp available on POSIX; on Windows emulate
-#else
-  if (nocase) {
-    ok = 1;
-    for (size_t i = 0; i < m; i++)
-      if (tolower((unsigned char)s[i]) != tolower((unsigned char)pfx[i])) {
-        ok = 0;
-        break;
-      }
-  }
+#ifndef STR_API
+#define STR_API
 #endif
-  vl_push_bool(S, ok ? 1 : 0);
-  return 1;
+
+/* ===================== helpers ===================== */
+
+static inline int _eq_ci(unsigned char a, unsigned char b){
+    return (int)tolower(a) == (int)tolower(b);
+}
+static inline int _is_space(unsigned char c){
+    return c==' '||c=='\t'||c=='\n'||c=='\r'||c=='\v'||c=='\f';
+}
+static inline int _issep(unsigned char c, const char* seps){
+    for (const char* q=seps; *q; q++) if ((unsigned char)*q==c) return 1;
+    return 0;
+}
+static inline int _hexval(int c){
+    if (c>='0'&&c<='9') return c-'0';
+    if (c>='a'&&c<='f') return 10+c-'a';
+    if (c>='A'&&c<='F') return 10+c-'A';
+    return -1;
 }
 
-static int vm_str_ends_with(VL_State *S) {
-  const char *s = st_check_str(S, 1);
-  const char *sfx = st_check_str(S, 2);
-  int nocase = st_opt_bool(S, 3, 0);
-  size_t n = strlen(s), m = strlen(sfx);
-  if (m > n) {
-    vl_push_bool(S, 0);
-    return 1;
-  }
-  const char *a = s + (n - m);
-  int ok;
-  if (!nocase)
-    ok = (memcmp(a, sfx, m) == 0);
-  else {
-    ok = 1;
-    for (size_t i = 0; i < m; i++)
-      if (tolower((unsigned char)a[i]) != tolower((unsigned char)sfx[i])) {
-        ok = 0;
-        break;
-      }
-  }
-  vl_push_bool(S, ok ? 1 : 0);
-  return 1;
-}
+/* ===================== Trim ===================== */
 
-static int vm_str_repeat(VL_State *S) {
-  const char *s = st_check_str(S, 1);
-  int64_t times = st_check_int(S, 2);
-  if (times < 0 || times > (1 << 20)) {
-    vl_push_nil(S);
-    vl_push_string(S, "ERANGE");
-    return 2;
-  }
-  size_t n = strlen(s);
-  uint64_t need = (uint64_t)n * (uint64_t)times;
-  if (need > (uint64_t)(32 * 1024 * 1024)) {
-    vl_push_nil(S);
-    vl_push_string(S, "ERANGE");
-    return 2;
-  }
-  char *buf = (char *)malloc((size_t)need + 1);
-  if (!buf) {
-    vl_push_nil(S);
-    vl_push_string(S, "ENOMEM");
-    return 2;
-  }
-  char *p = buf;
-  for (int64_t i = 0; i < times; i++) {
-    memcpy(p, s, n);
-    p += n;
-  }
-  buf[need] = 0;
-  vl_push_string(S, buf);
-  free(buf);
-  return 1;
+STR_API char* str_lstrip(char* s){
+    if (!s) return NULL;
+    char* p=s;
+    while (*p && _is_space((unsigned char)*p)) p++;
+    if (p!=s) memmove(s,p,(size_t)(strlen(p)+1));
+    return s;
 }
+STR_API char* str_rstrip(char* s){
+    if (!s) return NULL;
+    size_t n=strlen(s);
+    while (n && _is_space((unsigned char)s[n-1])) n--;
+    s[n]=0;
+    return s;
+}
+STR_API char* str_strip(char* s){ return str_rstrip(str_lstrip(s)); }
 
-static int vm_str_reverse(VL_State *S) {
-  const char *s = st_check_str(S, 1);
-  size_t n = strlen(s);
-  char *b = (char *)malloc(n + 1);
-  if (!b) {
-    vl_push_nil(S);
-    vl_push_string(S, "ENOMEM");
-    return 2;
-  }
-  for (size_t i = 0; i < n; i++) b[i] = s[n - 1 - i];
-  b[n] = 0;
-  vl_push_string(S, b);
-  free(b);
-  return 1;
-}
+/* ===================== Predicates ===================== */
 
-static int vm_str_pad_left(VL_State *S) {
-  const char *s = st_check_str(S, 1);
-  int width = (int)st_check_int(S, 2);
-  const char *pch =
-      (vl_get(S, 3) && vl_isstring(S, 3)) ? st_check_str(S, 3) : " ";
-  unsigned char ch = (unsigned char)(pch[0] ? pch[0] : ' ');
-  size_t n = strlen(s);
-  if (width <= 0 || (size_t)width <= n) {
-    vl_push_string(S, s);
-    return 1;
-  }
-  size_t pad = (size_t)width - n;
-  char *b = (char *)malloc((size_t)width + 1);
-  if (!b) {
-    vl_push_nil(S);
-    vl_push_string(S, "ENOMEM");
-    return 2;
-  }
-  memset(b, ch, pad);
-  memcpy(b + pad, s, n);
-  b[width] = 0;
-  vl_push_string(S, b);
-  free(b);
-  return 1;
+STR_API int str_startswith(const char* s, const char* pre){
+    if (!s||!pre) return 0;
+    size_t lp=strlen(pre);
+    return strncmp(s,pre,lp)==0;
 }
-static int vm_str_pad_right(VL_State *S) {
-  const char *s = st_check_str(S, 1);
-  int width = (int)st_check_int(S, 2);
-  const char *pch =
-      (vl_get(S, 3) && vl_isstring(S, 3)) ? st_check_str(S, 3) : " ";
-  unsigned char ch = (unsigned char)(pch[0] ? pch[0] : ' ');
-  size_t n = strlen(s);
-  if (width <= 0 || (size_t)width <= n) {
-    vl_push_string(S, s);
-    return 1;
-  }
-  size_t pad = (size_t)width - n;
-  char *b = (char *)malloc((size_t)width + 1);
-  if (!b) {
-    vl_push_nil(S);
-    vl_push_string(S, "ENOMEM");
-    return 2;
-  }
-  memcpy(b, s, n);
-  memset(b + n, ch, pad);
-  b[width] = 0;
-  vl_push_string(S, b);
-  free(b);
-  return 1;
-}
-
-static int vm_str_cmp(VL_State *S) {
-  const char *a = st_check_str(S, 1);
-  const char *b = st_check_str(S, 2);
-  int nocase = st_opt_bool(S, 3, 0);
-  int r;
-  if (!nocase)
-    r = strcmp(a, b);
-  else {
-    size_t i = 0;
-    for (;; i++) {
-      unsigned char ca = (unsigned char)a[i], cb = (unsigned char)b[i];
-      int da = tolower(ca), db = tolower(cb);
-      if (da != db) {
-        r = da < db ? -1 : 1;
-        break;
-      }
-      if (!ca || !cb) {
-        r = 0;
-        break;
-      }
+STR_API int str_startswith_ci(const char* s, const char* pre){
+    if (!s||!pre) return 0;
+    while (*pre){
+        if (!*s || !_eq_ci((unsigned char)*s,(unsigned char)*pre)) return 0;
+        s++; pre++;
     }
-  }
-  vl_push_int(S, (int64_t)(r < 0 ? -1 : (r > 0 ? 1 : 0)));
-  return 1;
-}
-
-static int vm_str_hash32(VL_State *S) {
-  const char *s = st_check_str(S, 1);
-  vl_push_int(S, (int64_t)(uint32_t)fnv1a32((const uint8_t *)s, strlen(s)));
-  return 1;
-}
-
-// hex / unhex
-static int vm_str_hex(VL_State *S) {
-  const char *s = st_check_str(S, 1);
-  size_t n = strlen(s);
-  if (n > 32 * 1024 * 1024) {
-    vl_push_nil(S);
-    vl_push_string(S, "ERANGE");
-    return 2;
-  }
-  size_t outn = n * 2;
-  char *out = (char *)malloc(outn + 1);
-  if (!out) {
-    vl_push_nil(S);
-    vl_push_string(S, "ENOMEM");
-    return 2;
-  }
-  static const char *H = "0123456789abcdef";
-  for (size_t i = 0; i < n; i++) {
-    unsigned char c = (unsigned char)s[i];
-    out[2 * i] = H[c >> 4];
-    out[2 * i + 1] = H[c & 15];
-  }
-  out[outn] = 0;
-  vl_push_string(S, out);
-  free(out);
-  return 1;
-}
-static int vm_str_unhex(VL_State *S) {
-  const char *h = st_check_str(S, 1);
-  size_t n = strlen(h);
-  if (n % 2) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-  size_t outn = n / 2;
-  char *out = (char *)malloc(outn + 1);
-  if (!out) {
-    vl_push_nil(S);
-    vl_push_string(S, "ENOMEM");
-    return 2;
-  }
-  for (size_t i = 0; i < outn; i++) {
-    int c1 = h[2 * i], c2 = h[2 * i + 1];
-    int v1 = (c1 >= '0' && c1 <= '9')   ? c1 - '0'
-             : (c1 >= 'a' && c1 <= 'f') ? c1 - 'a' + 10
-             : (c1 >= 'A' && c1 <= 'F') ? c1 - 'A' + 10
-                                        : -1;
-    int v2 = (c2 >= '0' && c2 <= '9')   ? c2 - '0'
-             : (c2 >= 'a' && c2 <= 'f') ? c2 - 'a' + 10
-             : (c2 >= 'A' && c2 <= 'F') ? c2 - 'A' + 10
-                                        : -1;
-    if (v1 < 0 || v2 < 0) {
-      free(out);
-      vl_push_nil(S);
-      vl_push_string(S, "EINVAL");
-      return 2;
-    }
-    out[i] = (char)((v1 << 4) | v2);
-  }
-  vl_push_lstring(S, out, (int)outn);
-  free(out);
-  return 1;
-}
-
-// base64
-static int vm_str_b64_enc(VL_State *S) {
-  const char *s = st_check_str(S, 1);
-  size_t n = strlen(s);
-  size_t outn = ((n + 2) / 3) * 4;
-  char *o = (char *)malloc(outn + 1);
-  if (!o) {
-    vl_push_nil(S);
-    vl_push_string(S, "ENOMEM");
-    return 2;
-  }
-  size_t i = 0, w = 0;
-  while (i < n) {
-    uint32_t v = 0;
-    int bytes = 0;
-    for (int k = 0; k < 3; k++) {
-      v <<= 8;
-      if (i < n) {
-        v |= (unsigned char)s[i++];
-        bytes++;
-      }
-    }
-    int pad = 3 - bytes;
-    o[w++] = B64TAB[(v >> 18) & 63];
-    o[w++] = B64TAB[(v >> 12) & 63];
-    o[w++] = pad >= 2 ? '=' : B64TAB[(v >> 6) & 63];
-    o[w++] = pad >= 1 ? '=' : B64TAB[v & 63];
-  }
-  o[w] = 0;
-  vl_push_string(S, o);
-  free(o);
-  return 1;
-}
-static int vm_str_b64_dec(VL_State *S) {
-  const char *b = st_check_str(S, 1);
-  size_t n = strlen(b);
-  if (n % 4) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-  char *o = (char *)malloc((n / 4) * 3 + 1);
-  if (!o) {
-    vl_push_nil(S);
-    vl_push_string(S, "ENOMEM");
-    return 2;
-  }
-  size_t w = 0;
-  for (size_t i = 0; i < n; i += 4) {
-    int v0 = b64_val(b[i]), v1 = b64_val(b[i + 1]);
-    int v2 = b[i + 2] == '=' ? -2 : b64_val(b[i + 2]);
-    int v3 = b[i + 3] == '=' ? -2 : b64_val(b[i + 3]);
-    if (v0 < 0 || v1 < 0 || v2 < -2 || v3 < -2) {
-      free(o);
-      vl_push_nil(S);
-      vl_push_string(S, "EINVAL");
-      return 2;
-    }
-    uint32_t v = ((uint32_t)v0 << 18) | ((uint32_t)v1 << 12) |
-                 ((uint32_t)((v2 < 0) ? 0 : v2) << 6) |
-                 (uint32_t)((v3 < 0) ? 0 : v3);
-    o[w++] = (char)((v >> 16) & 0xFF);
-    if (v2 >= 0) o[w++] = (char)((v >> 8) & 0xFF);
-    if (v3 >= 0) o[w++] = (char)(v & 0xFF);
-  }
-  vl_push_lstring(S, o, (int)w);
-  free(o);
-  return 1;
-}
-
-// UTF-8
-static int vm_utf8_len(VL_State *S) {
-  const unsigned char *s = (const unsigned char *)st_check_str(S, 1);
-  size_t n = strlen((const char *)s);
-  size_t i = 0, cnt = 0;
-  while (i < n) {
-    size_t c = utf8_next(s + i, n - i, NULL);
-    if (c == 0) {  // invalid, treat as single byte
-      i++;
-      cnt++;
-      continue;
-    }
-    i += c;
-    cnt++;
-  }
-  vl_push_int(S, (int64_t)cnt);
-  return 1;
-}
-
-static int vm_utf8_sub(VL_State *S) {
-  const unsigned char *s = (const unsigned char *)st_check_str(S, 1);
-  size_t n = strlen((const char *)s);
-  int have_j = (vl_get(S, 3) != NULL);
-  int64_t I = st_check_int(S, 2);
-  int64_t J = have_j ? st_check_int(S, 3) : (int64_t)1e9;
-
-  // map codepoint indexes to byte offsets
-  // 1-based; negatives from end
-  // First, collect cp starts
-  size_t cps = 0;
-  // Count total cps and maybe record positions lazily
-  // For efficiency, do two passes:
-  size_t i = 0;
-  while (i < n) {
-    size_t c = utf8_next(s + i, n - i, NULL);
-    if (!c) c = 1;
-    i += c;
-    cps++;
-  }
-  if (cps == 0) {
-    vl_push_string(S, "");
     return 1;
-  }
-
-  auto size_t cp_to_abs = [&](int64_t k) -> size_t {
-    if (k < 0) k = (int64_t)cps + k + 1;
-    if (k < 1) k = 1;
-    if ((uint64_t)k > cps) k = (int64_t)cps;
-    return (size_t)k;
-  };
-  size_t a_cp = cp_to_abs(I);
-  size_t b_cp = cp_to_abs(have_j ? J : (int64_t)cps);
-  if (b_cp < a_cp) {
-    vl_push_string(S, "");
+}
+STR_API int str_endswith(const char* s, const char* suf){
+    if (!s||!suf) return 0;
+    size_t ls=strlen(s), lu=strlen(suf);
+    if (lu>ls) return 0;
+    return memcmp(s+ls-lu,suf,lu)==0;
+}
+STR_API int str_endswith_ci(const char* s, const char* suf){
+    if (!s||!suf) return 0;
+    size_t ls=strlen(s), lu=strlen(suf);
+    if (lu>ls) return 0;
+    for (size_t i=0;i<lu;i++)
+        if (!_eq_ci((unsigned char)s[ls-lu+i], (unsigned char)suf[i])) return 0;
     return 1;
-  }
-
-  // Walk again to find byte offsets
-  size_t a_byte = 0, b_byte = 0;
-  size_t cp = 1;
-  i = 0;
-  while (i < n && cp < a_cp) {
-    size_t c = utf8_next(s + i, n - i, NULL);
-    if (!c) c = 1;
-    i += c;
-    cp++;
-  }
-  a_byte = i;
-  while (i < n && cp <= b_cp) {
-    size_t c = utf8_next(s + i, n - i, NULL);
-    if (!c) c = 1;
-    i += c;
-    cp++;
-  }
-  b_byte = i;
-  vl_push_lstring(S, (const char *)s + a_byte, (int)(b_byte - a_byte));
-  return 1;
+}
+STR_API int str_icmp(const char* a, const char* b){
+    if (!a||!b) return a?1:b?-1:0;
+    while(*a && *b){
+        int da=tolower((unsigned char)*a), db=tolower((unsigned char)*b);
+        if (da!=db) return da-db;
+        a++; b++;
+    }
+    return (unsigned char)*a - (unsigned char)*b;
+}
+STR_API char* str_strstr_ci(const char* hay, const char* needle){
+    if (!hay||!needle||!*needle) return (char*)hay;
+    size_t ln=strlen(needle);
+    for (const char* p=hay; *p; p++){
+        size_t i=0;
+        while (i<ln && p[i] && _eq_ci((unsigned char)p[i], (unsigned char)needle[i])) i++;
+        if (i==ln) return (char*)p;
+        if (!p[i]) break;
+    }
+    return NULL;
 }
 
-// ---------------------------------------------------------------------
-// Registration
-// ---------------------------------------------------------------------
-static const VL_Reg strlib[] = {{"len", vm_str_len},
-                                {"byte_at", vm_str_byte_at},
-                                {"sub", vm_str_sub},
-                                {"find", vm_str_find},
-                                {"replace", vm_str_replace},
-                                {"split", vm_str_split},
+/* ===================== Case convert (ASCII) ===================== */
 
-                                {"lower", vm_str_lower},
-                                {"upper", vm_str_upper},
-                                {"trim", vm_str_trim},
-                                {"ltrim", vm_str_ltrim},
-                                {"rtrim", vm_str_rtrim},
-                                {"starts_with", vm_str_starts_with},
-                                {"ends_with", vm_str_ends_with},
-                                {"repeat", vm_str_repeat},
-                                {"reverse", vm_str_reverse},
-                                {"pad_left", vm_str_pad_left},
-                                {"pad_right", vm_str_pad_right},
-                                {"cmp", vm_str_cmp},
-                                {"hash32", vm_str_hash32},
+STR_API void str_tolower_inplace(char* s){ if(!s) return; for (;*s;s++) *s=(char)tolower((unsigned char)*s); }
+STR_API void str_toupper_inplace(char* s){ if(!s) return; for (;*s;s++) *s=(char)toupper((unsigned char)*s); }
 
-                                {"hex", vm_str_hex},
-                                {"unhex", vm_str_unhex},
-                                {"base64_encode", vm_str_b64_enc},
-                                {"base64_decode", vm_str_b64_dec},
+/* ===================== Split / Join ===================== */
 
-                                {"utf8_len", vm_utf8_len},
-                                {"utf8_sub", vm_utf8_sub},
+typedef struct { char** v; size_t n; } str_vec;
 
-                                {NULL, NULL}};
+STR_API void str_vec_free(str_vec* sv){
+    if (!sv) return;
+    for (size_t i=0;i<sv->n;i++) free(sv->v[i]);
+    free(sv->v); sv->v=NULL; sv->n=0;
+}
 
-void vl_open_strlib(VL_State *S) { vl_register_lib(S, "str", strlib); }
+/* keep_empty: 0 ignore empty, 1 conserve éléments vides */
+STR_API int str_split(const char* s, const char* seps, int keep_empty, str_vec* out){
+    if (!s||!seps||!out) return -1;
+    out->v=NULL; out->n=0;
+    size_t cap=0;
+    const char* p=s; const char* start=p;
+    while (*p){
+        if (_issep((unsigned char)*p, seps)){
+            size_t frag_len=(size_t)(p-start);
+            if (keep_empty || frag_len){
+                if (out->n==cap){
+                    size_t nc=cap?cap*2:8;
+                    char** nv=(char**)realloc(out->v,nc*sizeof *nv);
+                    if(!nv){ str_vec_free(out); return -1; }
+                    out->v=nv; cap=nc;
+                }
+                char* frag=(char*)malloc(frag_len+1);
+                if(!frag){ str_vec_free(out); return -1; }
+                memcpy(frag,start,frag_len); frag[frag_len]=0;
+                out->v[out->n++]=frag;
+            }
+            p++; start=p; continue;
+        }
+        p++;
+    }
+    size_t frag_len=(size_t)(p-start);
+    if (keep_empty || frag_len){
+        if (out->n==cap){
+            size_t nc=cap?cap*2:8;
+            char** nv=(char**)realloc(out->v,nc*sizeof *nv);
+            if(!nv){ str_vec_free(out); return -1; }
+            out->v=nv; cap=nc;
+        }
+        char* frag=(char*)malloc(frag_len+1);
+        if(!frag){ str_vec_free(out); return -1; }
+        memcpy(frag,start,frag_len); frag[frag_len]=0;
+        out->v[out->n++]=frag;
+    }
+    return 0;
+}
+
+STR_API char* str_join(const char* sep, const str_vec* sv){
+    if (!sv || sv->n==0){ char* z=(char*)malloc(1); if(z) z[0]=0; return z; }
+    size_t sl = sep?strlen(sep):0, tot=0;
+    for (size_t i=0;i<sv->n;i++){ tot += strlen(sv->v[i]); if (i+1<sv->n) tot += sl; }
+    char* out=(char*)malloc(tot+1); if(!out) return NULL;
+    char* w=out;
+    for (size_t i=0;i<sv->n;i++){
+        size_t L=strlen(sv->v[i]); memcpy(w, sv->v[i], L); w+=L;
+        if (i+1<sv->n && sl){ memcpy(w, sep, sl); w+=sl; }
+    }
+    *w=0; return out;
+}
+
+/* ===================== Replace / Spaces ===================== */
+
+STR_API char* str_replace_all(const char* s, const char* what, const char* with){
+    if (!s||!what||!*what) return s?strdup(s):NULL;
+    if (!with) with="";
+    size_t lw=strlen(what), lrep=strlen(with);
+    size_t cnt=0;
+    for (const char* p=s; (p=strstr(p,what)); p+=lw) cnt++;
+    if (!cnt) return strdup(s);
+    size_t base=strlen(s);
+    size_t outlen = base + cnt*(lrep-lw);
+    char* out=(char*)malloc(outlen+1); if(!out) return NULL;
+    char* w=out; const char* p=s;
+    while (1){
+        const char* q=strstr(p,what);
+        if (!q){ size_t L=strlen(p); memcpy(w,p,L); w+=L; break; }
+        size_t L=(size_t)(q-p); memcpy(w,p,L); w+=L;
+        memcpy(w,with,lrep); w+=lrep; p=q+lw;
+    }
+    *w=0; return out;
+}
+
+STR_API void str_collapse_spaces_inplace(char* s){
+    if (!s) return;
+    char* r=s; int in_space=0;
+    for (char* p=s; *p; p++){
+        if (_is_space((unsigned char)*p)){
+            if (!in_space){ *r++=' '; in_space=1; }
+        } else { *r++=*p; in_space=0; }
+    }
+    *r=0;
+}
+
+/* ===================== Escape / Unescape (C-like) ===================== */
+
+STR_API char* str_escape_c(const char* s){
+    if (!s) return NULL;
+    size_t cap=16, n=0;
+    char* out=(char*)malloc(cap); if(!out) return NULL;
+    for (const unsigned char* p=(const unsigned char*)s; *p; p++){
+        char buf[5]; size_t k=0;
+        switch (*p){
+            case '\n': buf[0]='\\'; buf[1]='n'; k=2; break;
+            case '\r': buf[0]='\\'; buf[1]='r'; k=2; break;
+            case '\t': buf[0]='\\'; buf[1]='t'; k=2; break;
+            case '\\': buf[0]='\\'; buf[1]='\\'; k=2; break;
+            case '\"': buf[0]='\\'; buf[1]='\"'; k=2; break;
+            default:
+                if (*p<32 || *p==127){ snprintf(buf,sizeof buf,"\\x%02X", (unsigned)*p); k=4; }
+                else { buf[0]=(char)*p; k=1; }
+        }
+        if (n+k+1>cap){
+            while (cap<n+k+1) cap*=2;
+            char* nb=(char*)realloc(out,cap); if(!nb){ free(out); return NULL; }
+            out=nb;
+        }
+        memcpy(out+n, buf, k); n+=k;
+    }
+    out[n]=0; return out;
+}
+
+STR_API char* str_unescape_c(const char* s){
+    if (!s) return NULL;
+    size_t cap=strlen(s)+1;
+    char* out=(char*)malloc(cap); if(!out) return NULL;
+    size_t n=0;
+    for (const char* p=s; *p; p++){
+        if (*p!='\\'){ out[n++]=*p; continue; }
+        p++;
+        if (!*p){ out[n++]='\\'; break; }
+        switch (*p){
+            case 'n': out[n++]='\n'; break;
+            case 'r': out[n++]='\r'; break;
+            case 't': out[n++]='\t'; break;
+            case '\\': out[n++]='\\'; break;
+            case '\"': out[n++]='\"'; break;
+            case 'x': {
+                int h1=_hexval((unsigned char)p[1]), h2=(h1>=0)?_hexval((unsigned char)p[2]):-1;
+                if (h1>=0 && h2>=0){ out[n++]=(char)((h1<<4)|h2); p+=2; }
+                else out[n++]='x';
+            } break;
+            default: out[n++]=*p; break;
+        }
+        if (n+1>cap){ cap*=2; char* nb=(char*)realloc(out,cap); if(!nb){ free(out); return NULL; } out=nb; }
+    }
+    out[n]=0; return out;
+}
+
+/* ===================== Hex ===================== */
+
+STR_API char* str_hex_encode(const void* data, size_t n, int uppercase){
+    if (!data && n) return NULL;
+    const unsigned char* b=(const unsigned char*)data;
+    const char* hex = uppercase? "0123456789ABCDEF" : "0123456789abcdef";
+    char* out=(char*)malloc(n*2+1); if(!out) return NULL;
+    for (size_t i=0;i<n;i++){ out[2*i]=hex[b[i]>>4]; out[2*i+1]=hex[b[i]&0xF]; }
+    out[2*n]=0; return out;
+}
+STR_API int str_hex_decode(const char* hex, void** out_data, size_t* out_n){
+    if (!hex||!out_data||!out_n) return -1;
+    size_t L=strlen(hex); if (L%2) return -1;
+    unsigned char* out=(unsigned char*)malloc(L/2); if(!out) return -1;
+    for (size_t i=0;i<L; i+=2){
+        int h1=_hexval((unsigned char)hex[i]), h2=_hexval((unsigned char)hex[i+1]);
+        if (h1<0||h2<0){ free(out); return -1; }
+        out[i/2]=(unsigned char)((h1<<4)|h2);
+    }
+    *out_data=out; *out_n=L/2; return 0;
+}
+
+/* ===================== Base64 ===================== */
+
+static const char _b64tab[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+static inline int _b64val(int c){
+    if (c>='A'&&c<='Z') return c-'A';
+    if (c>='a'&&c<='z') return 26 + c-'a';
+    if (c>='0'&&c<='9') return 52 + c-'0';
+    if (c=='+') return 62; if (c=='/') return 63;
+    if (c=='=') return -2; return -1;
+}
+STR_API char* str_base64_encode(const void* data, size_t n){
+    if (!data && n) return NULL;
+    const unsigned char* in=(const unsigned char*)data;
+    size_t outlen = ((n+2)/3)*4;
+    char* out=(char*)malloc(outlen+1); if(!out) return NULL;
+    size_t i=0,o=0;
+    while (i<n){
+        uint32_t v=0; size_t left=n-i;
+        v  = (uint32_t)in[i]<<16;
+        if (left>1) v |= (uint32_t)in[i+1]<<8;
+        if (left>2) v |= (uint32_t)in[i+2];
+        out[o++] = _b64tab[(v>>18)&63];
+        out[o++] = _b64tab[(v>>12)&63];
+        out[o++] = (left>1)? _b64tab[(v>>6)&63] : '=';
+        out[o++] = (left>2)? _b64tab[v&63]      : '=';
+        i += 3;
+    }
+    out[o]=0; return out;
+}
+STR_API int str_base64_decode(const char* s, void** out_data, size_t* out_n){
+    if (!s||!out_data||!out_n) return -1;
+    size_t L=strlen(s);
+    /* trim trailing ws */
+    while (L && (s[L-1]=='\n'||s[L-1]=='\r'||s[L-1]==' '||s[L-1]=='\t')) L--;
+    size_t cap=(L/4)*3; if (!cap) cap=1;
+    unsigned char* out=(unsigned char*)malloc(cap); if(!out) return -1;
+    size_t o=0; uint32_t buf=0; int pad=0; int n=0;
+    for (size_t i=0;i<L;i++){
+        int v=_b64val((unsigned char)s[i]);
+        if (v==-1) continue; /* ignore whitespace/invalids */
+        if (v==-2){ v=0; pad++; }
+        buf=(buf<<6) | (uint32_t)v; n++;
+        if (n==4){
+            if (o+3>cap){ size_t nc=cap+3; unsigned char* nb=(unsigned char*)realloc(out,nc); if(!nb){ free(out); return -1; } out=nb; cap=nc; }
+            out[o++] = (unsigned char)((buf>>16)&0xFF);
+            if (pad<2) out[o++] = (unsigned char)((buf>>8)&0xFF);
+            if (pad<1) out[o++] = (unsigned char)(buf&0xFF);
+            buf=0; n=0; pad=0;
+        }
+    }
+    *out_data=out; *out_n=o; return 0;
+}
+
+/* ===================== StringBuilder ===================== */
+
+typedef struct {
+    char*  buf;
+    size_t len;
+    size_t cap;
+} str_sb;
+
+STR_API void sb_init(str_sb* sb){ if(!sb) return; sb->buf=NULL; sb->len=0; sb->cap=0; }
+STR_API void sb_free(str_sb* sb){ if(!sb) return; free(sb->buf); sb->buf=NULL; sb->len=sb->cap=0; }
+STR_API void sb_clear(str_sb* sb){ if(!sb) return; sb->len=0; if(sb->buf) sb->buf[0]=0; }
+static int _sb_ensure(str_sb* sb, size_t need){
+    if (need<=sb->cap) return 0;
+    size_t nc = sb->cap? sb->cap:64; while (nc<need) nc*=2;
+    char* nb=(char*)realloc(sb->buf,nc); if(!nb) return -1; sb->buf=nb; sb->cap=nc; return 0;
+}
+STR_API int sb_appendn(str_sb* sb, const void* data, size_t n){
+    if(!sb||(!data&&n)) return -1; if (_sb_ensure(sb, sb->len+n+1)!=0) return -1;
+    memcpy(sb->buf+sb->len, data, n); sb->len+=n; sb->buf[sb->len]=0; return 0;
+}
+STR_API int sb_append(str_sb* sb, const char* s){ return sb_appendn(sb, s?s:"", s?strlen(s):0); }
+STR_API int sb_appendf(str_sb* sb, const char* fmt, ...){
+    if(!sb||!fmt) return -1; va_list ap; va_start(ap,fmt);
+    char tmp[1024];
+#if defined(_WIN32)
+    int n=_vsnprintf(tmp,sizeof tmp,fmt,ap);
+#else
+    int n=vsnprintf(tmp,sizeof tmp,fmt,ap);
+#endif
+    va_end(ap);
+    if (n<0) return -1;
+    if ((size_t)n < sizeof tmp) return sb_appendn(sb, tmp, (size_t)n);
+    size_t need=(size_t)n+1; char* big=(char*)malloc(need); if(!big) return -1;
+    va_start(ap,fmt);
+#if defined(_WIN32)
+    _vsnprintf(big,need,fmt,ap);
+#else
+    vsnprintf(big,need,fmt,ap);
+#endif
+    va_end(ap);
+    int rc=sb_appendn(sb,big,(size_t)n); free(big); return rc;
+}
+STR_API const char* sb_data(const str_sb* sb){ return sb && sb->buf? sb->buf : ""; }
+STR_API size_t sb_len(const str_sb* sb){ return sb? sb->len : 0; }
+
+/* ===================== Tests ===================== */
+#ifdef STR_TEST
+static void _assert(int cond, const char* msg){ if(!cond){ fprintf(stderr,"ASSERT: %s\n", msg); exit(1);} }
+int main(void){
+    char a1[64]="  Hello  "; _assert(strcmp(str_strip(a1),"Hello")==0,"strip");
+
+    _assert(str_startswith("foobar","foo"),"starts"); _assert(str_endswith_ci("AbC","bc"),"ends ci");
+    _assert(str_icmp("aBc","Abc")==0,"icmp");
+
+    str_vec v; _assert(str_split("a,,b,c", ",", 0, &v)==0, "split"); _assert(v.n==3,"split cnt");
+    char* j=str_join("-", &v); _assert(strcmp(j,"a-b-c")==0,"join"); free(j); str_vec_free(&v);
+
+    char* r = str_replace_all("xx--xx--","--","="); _assert(strcmp(r,"xx=xx=")==0,"repl"); free(r);
+
+    char* esc=str_escape_c("hi\t\n"); char* un=str_unescape_c(esc); _assert(strcmp(un,"hi\t\n")==0,"esc/un"); free(esc); free(un);
+
+    const unsigned char dat[]={0,1,0xFE,0xFF}; char* hx=str_hex_encode(dat,sizeof dat,0);
+    void* back=NULL; size_t bn=0; _assert(str_hex_decode(hx,&back,&bn)==0 && bn==4 && ((unsigned char*)back)[2]==0xFE,"hex"); free(hx); free(back);
+
+    char* b64=str_base64_encode("hello",5); void* db=NULL; size_t dn=0; _assert(str_base64_decode(b64,&db,&dn)==0 && dn==5 && memcmp(db,"hello",5)==0,"b64"); free(b64); free(db);
+
+    str_sb sb; sb_init(&sb); sb_append(&sb,"Hello "); sb_appendf(&sb,"%d",123); _assert(strcmp(sb_data(&sb),"Hello 123")==0,"sb"); sb_free(&sb);
+
+    puts("ok");
+    return 0;
+}
+#endif

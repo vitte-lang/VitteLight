@@ -1,432 +1,220 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// ffi.c — Portable FFI layer for Vitte Light (C17)
-// -------------------------------------------------
-// Features (with libffi):
-//   - Type model: void, integers (i/u8/16/32/64), floats (f32/f64), ptr
-//   - ABI selection: default, sysv, unix64, win64 (mapped to ffi_abi)
-//   - CIF builder: prepare call interface from arrays or signature string
-//   - Calls: vl_ffi_call(cif, fn_ptr, argv, retbuf)
-//   - Helpers: size/alignment for types, dl-symbol lookup helpers
-//   - Optional signature parser: e.g. "i32(i64, f64, ptr)"
-// Fallback without libffi (-DVL_HAVE_LIBFFI not set): stubs return AUX_ENOSYS.
-//
-// Depends: includes/auxlib.h, dl.h (for symbol loading), optional
-// includes/ffi.h
+// ffi.c — Minimal FFI helpers for Vitte Light (C17, portable)
+// Namespace: "ffi"
 //
 // Build:
-//   cc -std=c17 -O2 -Wall -Wextra -pedantic -DVL_HAVE_LIBFFI -c ffi.c
-//   cc ... ffi.o -lffi
+//   POSIX:   cc -std=c17 -O2 -Wall -Wextra -pedantic -c ffi.c -ldl
+//   Windows: cl /std:c17 /O2 /W4 /c ffi.c
 //
+// Scope:
+//   - Dynamic open/sym/close with last-error string.
+//   - Trivial cdecl call shims for common signatures.
+//   - No libffi. Portable but limited. You must pick a shim that matches
+//     the real C signature. UB if you mismatch.
+//   - Pointers are passed as void*. Integers as int64_t. FP as double.
+//
+// API:
+//   typedef struct ffi_lib ffi_lib;
+//
+//   // Library handling
+//   ffi_lib*     ffi_open(const char* path);  // NULL on error
+//   void         ffi_close(ffi_lib* lib);     // safe on NULL
+//   void*        ffi_sym(ffi_lib* lib, const char* name); // NULL on error
+//   const char*  ffi_error(void);             // thread-local buffer or static
+//
+//   // Integer return (int64_t), up to 4 integer args
+//   int64_t ffi_call_i64_0(void* fn);
+//   int64_t ffi_call_i64_1(void* fn, int64_t a0);
+//   int64_t ffi_call_i64_2(void* fn, int64_t a0, int64_t a1);
+//   int64_t ffi_call_i64_3(void* fn, int64_t a0, int64_t a1, int64_t a2);
+//   int64_t ffi_call_i64_4(void* fn, int64_t a0, int64_t a1, int64_t a2, int64_t a3);
+//
+//   // Pointer args variants (common cases)
+//   int64_t ffi_call_i64_p1(void* fn, void* p0);
+//   int64_t ffi_call_i64_p2(void* fn, void* p0, void* p1);
+//   int64_t ffi_call_i64_p3(void* fn, void* p0, void* p1, void* p2);
+//
+//   // Double return, up to 4 double args
+//   double  ffi_call_f64_0(void* fn);
+//   double  ffi_call_f64_1(void* fn, double a0);
+//   double  ffi_call_f64_2(void* fn, double a0, double a1);
+//   double  ffi_call_f64_3(void* fn, double a0, double a1, double a2);
+//   double  ffi_call_f64_4(void* fn, double a0, double a1, double a2, double a3);
+//
+//   // Void return, pointer args (setup/free patterns)
+//   void    ffi_call_void_p1(void* fn, void* p0);
+//   void    ffi_call_void_p2(void* fn, void* p0, void* p1);
+//   void    ffi_call_void_p3(void* fn, void* p0, void* p1, void* p2);
+//
+// Notes:
+//   - cdecl assumed. On Windows this matches default C. For stdcall etc. add shims.
+//   - Variadic C functions are not supported.
+//   - On ARM/RISCV/x86_64 LP64/LLP64, int64_t/double mapping works as expected.
 
-#include <ctype.h>
-#include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
+#include <errno.h>
 
-#include "auxlib.h"
-#include "dl.h"
-
-#ifdef VL_HAVE_LIBFFI
-#include <ffi.h>
-#endif
-
-// ======================================================================
-// Public header fallback (if includes/ffi.h is not present)
-// ======================================================================
-#ifndef VITTE_LIGHT_INCLUDES_FFI_H
-#define VITTE_LIGHT_INCLUDES_FFI_H 1
-
-typedef enum {
-  VL_FFI_VOID = 0,
-  VL_FFI_I8,
-  VL_FFI_U8,
-  VL_FFI_I16,
-  VL_FFI_U16,
-  VL_FFI_I32,
-  VL_FFI_U32,
-  VL_FFI_I64,
-  VL_FFI_U64,
-  VL_FFI_F32,
-  VL_FFI_F64,
-  VL_FFI_PTR
-} VlFfiType;
-
-typedef enum {
-  VL_FFI_ABI_DEFAULT = 0,
-  VL_FFI_ABI_SYSV,
-  VL_FFI_ABI_UNIX64,
-  VL_FFI_ABI_WIN64
-} VlFfiAbi;
-
-typedef struct VlFfiCif VlFfiCif;
-
-// CIF lifecycle
-AuxStatus vl_ffi_cif_new(VlFfiAbi abi, VlFfiType ret, const VlFfiType *args,
-                         int nargs, VlFfiCif **out);
-void vl_ffi_cif_free(VlFfiCif *cif);
-
-// Call
-AuxStatus vl_ffi_call(const VlFfiCif *cif, void *fn_ptr, void **argv,
-                      void *retbuf /* sized for ret type, NULL if void */);
-
-// Helpers
-size_t vl_ffi_type_size(VlFfiType t);
-size_t vl_ffi_type_align(VlFfiType t);
-
-// Signature parsing: "ret(arg1, arg2, ...)"
-// tokens: void,i8,u8,i16,u16,i32,u32,i64,u64,f32,f64,ptr
-AuxStatus vl_ffi_parse_sig(const char *sig, VlFfiType *out_ret,
-                           VlFfiType *out_args, int max_args, int *out_nargs);
-
-// Dynamic loading helpers
-AuxStatus vl_ffi_open_sym(const char *lib_stem_or_path, const char *symbol,
-                          int dl_flags, VlDl **out_lib, void **out_sym);
-
-#endif  // VITTE_LIGHT_INCLUDES_FFI_H
-
-// ======================================================================
-// Internal representation
-// ======================================================================
-
-struct VlFfiCif {
-#ifdef VL_HAVE_LIBFFI
-  ffi_cif cif;
-  ffi_type **arg_types;  // array[nargs]
-  ffi_type *ret_type;
-  int nargs;
-  VlFfiType v_ret;
-  VlFfiType *v_args;  // array[nargs] for convenience
+#if defined(_WIN32)
+  #define WIN32_LEAN_AND_MEAN
+  #include <windows.h>
+  #define FFI_CDECL __cdecl
+  typedef HMODULE ffi_handle_t;
 #else
-  int nargs;
-  VlFfiType v_ret;
-  VlFfiType *v_args;
+  #include <dlfcn.h>
+  #define FFI_CDECL
+  typedef void*   ffi_handle_t;
 #endif
-  VlFfiAbi abi;
-};
 
-// ----------------------------------------------------------------------
-// Utilities
-// ----------------------------------------------------------------------
+// ---------- Error buffer ----------
 
-static inline int min_int(int a, int b) { return a < b ? a : b; }
-
-size_t vl_ffi_type_size(VlFfiType t) {
-  switch (t) {
-    case VL_FFI_VOID:
-      return 0;
-    case VL_FFI_I8:
-    case VL_FFI_U8:
-      return 1;
-    case VL_FFI_I16:
-    case VL_FFI_U16:
-      return 2;
-    case VL_FFI_I32:
-    case VL_FFI_U32:
-    case VL_FFI_F32:
-      return 4;
-    case VL_FFI_I64:
-    case VL_FFI_U64:
-    case VL_FFI_F64:
-      return 8;
-    case VL_FFI_PTR:
-    default:
-      return sizeof(void *);
-  }
-}
-
-size_t vl_ffi_type_align(VlFfiType t) {
-  // conservative equals size up to 8
-  size_t s = vl_ffi_type_size(t);
-  if (s == 0) return 1;
-  if (s > alignof(max_align_t)) return alignof(max_align_t);
-  return s;
-}
-
-static int tok_eq(const char *s, int n, const char *kw) {
-  return (int)strlen(kw) == n && strncasecmp(s, kw, n) == 0;
-}
-
-AuxStatus vl_ffi_parse_sig(const char *sig, VlFfiType *out_ret,
-                           VlFfiType *out_args, int max_args, int *out_nargs) {
-  if (!sig || !out_ret || !out_args || max_args < 0 || !out_nargs)
-    return AUX_EINVAL;
-  const char *p = sig;
-  while (isspace((unsigned char)*p)) p++;
-
-  // parse type token
-  const char *t0 = p;
-  while (*p && (isalnum((unsigned char)*p) || *p == '_')) p++;
-  int n = (int)(p - t0);
-  if (n <= 0) return AUX_EINVAL;
-
-  VlFfiType ret = VL_FFI_VOID;
-#define MAPTOK(name, TT)   \
-  if (tok_eq(t0, n, name)) \
-    ret = TT;              \
-  else
-  MAPTOK("void", VL_FFI_VOID)
-  MAPTOK("i8", VL_FFI_I8)
-  MAPTOK("u8", VL_FFI_U8) MAPTOK("i16", VL_FFI_I16) MAPTOK("u16", VL_FFI_U16)
-      MAPTOK("i32", VL_FFI_I32) MAPTOK("u32", VL_FFI_U32)
-          MAPTOK("i64", VL_FFI_I64) MAPTOK("u64", VL_FFI_U64)
-              MAPTOK("f32", VL_FFI_F32) MAPTOK("f64", VL_FFI_F64)
-                  MAPTOK("ptr", VL_FFI_PTR) {
-    return AUX_EINVAL;
-  }
-#undef MAPTOK
-
-  while (isspace((unsigned char)*p)) p++;
-  if (*p != '(') return AUX_EINVAL;
-  p++;  // skip '('
-
-  int argc = 0;
-  while (1) {
-    while (isspace((unsigned char)*p)) p++;
-    if (*p == ')') {
-      p++;
-      break;
-    }
-    if (argc >= max_args) return AUX_ERANGE;
-
-    const char *a0 = p;
-    while (*p && (isalnum((unsigned char)*p) || *p == '_')) p++;
-    int m = (int)(p - a0);
-    if (m <= 0) return AUX_EINVAL;
-
-    VlFfiType at = VL_FFI_VOID;
-#define MAPA(name, TT)     \
-  if (tok_eq(a0, m, name)) \
-    at = TT;               \
-  else
-    MAPA("void", VL_FFI_VOID)  // only valid if first and only arg
-    MAPA("i8", VL_FFI_I8)
-    MAPA("u8", VL_FFI_U8) MAPA("i16", VL_FFI_I16) MAPA("u16", VL_FFI_U16)
-        MAPA("i32", VL_FFI_I32) MAPA("u32", VL_FFI_U32) MAPA("i64", VL_FFI_I64)
-            MAPA("u64", VL_FFI_U64) MAPA("f32", VL_FFI_F32)
-                MAPA("f64", VL_FFI_F64) MAPA("ptr", VL_FFI_PTR) {
-      return AUX_EINVAL;
-    }
-#undef MAPA
-
-    if (at == VL_FFI_VOID) {
-      // only allowed as the sole argument
-      while (isspace((unsigned char)*p)) p++;
-      if (*p != ')') return AUX_EINVAL;
-      p++;
-      argc = 0;
-      break;
-    }
-
-    out_args[argc++] = at;
-
-    while (isspace((unsigned char)*p)) p++;
-    if (*p == ',') {
-      p++;
-      continue;
-    }
-    if (*p == ')') {
-      p++;
-      break;
-    }
-    return AUX_EINVAL;
-  }
-
-  *out_ret = ret;
-  *out_nargs = argc;
-  return AUX_OK;
-}
-
-// ======================================================================
-// libffi-backed implementation
-// ======================================================================
-#ifdef VL_HAVE_LIBFFI
-
-static ffi_abi map_abi(VlFfiAbi abi) {
-#if defined(_WIN32) && defined(_M_X64)
-  (void)abi;
-  return FFI_WIN64;
+#if defined(_WIN32)
+static __declspec(thread) char g_err[256];
 #else
-  switch (abi) {
-    case VL_FFI_ABI_SYSV:
-      return FFI_SYSV;
-#ifdef FFI_UNIX64
-    case VL_FFI_ABI_UNIX64:
-      return FFI_UNIX64;
+static __thread char g_err[256];
 #endif
-#ifdef FFI_WIN64
-    case VL_FFI_ABI_WIN64:
-      return FFI_WIN64;
+
+static void set_err(const char* s) {
+    if (!s) { g_err[0] = '\0'; return; }
+    snprintf(g_err, sizeof(g_err), "%s", s);
+}
+
+const char* ffi_error(void) {
+    return g_err[0] ? g_err : NULL;
+}
+
+// ---------- Library wrapper ----------
+
+typedef struct ffi_lib {
+    ffi_handle_t h;
+} ffi_lib;
+
+ffi_lib* ffi_open(const char* path) {
+    set_err(NULL);
+    if (!path) { set_err("null path"); errno = EINVAL; return NULL; }
+#if defined(_WIN32)
+    HMODULE h = LoadLibraryA(path);
+    if (!h) {
+        DWORD e = GetLastError();
+        FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM|FORMAT_MESSAGE_IGNORE_INSERTS, NULL, e,
+                       MAKELANGID(LANG_NEUTRAL,SUBLANG_DEFAULT), g_err, (DWORD)sizeof(g_err), NULL);
+        return NULL;
+    }
+#else
+    void* h = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+    if (!h) {
+        const char* e = dlerror();
+        set_err(e ? e : "dlopen failed");
+        return NULL;
+    }
 #endif
-    case VL_FFI_ABI_DEFAULT:
-    default:
-      return FFI_DEFAULT_ABI;
-  }
+    ffi_lib* lib = (ffi_lib*)calloc(1, sizeof(*lib));
+    if (!lib) {
+#if defined(_WIN32)
+        FreeLibrary(h);
+#else
+        dlclose(h);
+#endif
+        set_err("oom");
+        return NULL;
+    }
+    lib->h = h;
+    return lib;
+}
+
+void ffi_close(ffi_lib* lib) {
+    if (!lib) return;
+#if defined(_WIN32)
+    if (lib->h) FreeLibrary(lib->h);
+#else
+    if (lib->h) dlclose(lib->h);
+#endif
+    free(lib);
+}
+
+void* ffi_sym(ffi_lib* lib, const char* name) {
+    set_err(NULL);
+    if (!lib || !lib->h || !name) { set_err("bad args"); errno = EINVAL; return NULL; }
+#if defined(_WIN32)
+    FARPROC p = GetProcAddress(lib->h, name);
+    if (!p) {
+        DWORD e = GetLastError();
+        FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM|FORMAT_MESSAGE_IGNORE_INSERTS, NULL, e,
+                       MAKELANGID(LANG_NEUTRAL,SUBLANG_DEFAULT), g_err, (DWORD)sizeof(g_err), NULL);
+        return NULL;
+    }
+    return (void*)p;
+#else
+    dlerror(); // clear
+    void* p = dlsym(lib->h, name);
+    const char* e = dlerror();
+    if (e) { set_err(e); return NULL; }
+    return p;
 #endif
 }
 
-static ffi_type *map_type(VlFfiType t) {
-  switch (t) {
-    case VL_FFI_VOID:
-      return &ffi_type_void;
-    case VL_FFI_I8:
-      return &ffi_type_sint8;
-    case VL_FFI_U8:
-      return &ffi_type_uint8;
-    case VL_FFI_I16:
-      return &ffi_type_sint16;
-    case VL_FFI_U16:
-      return &ffi_type_uint16;
-    case VL_FFI_I32:
-      return &ffi_type_sint32;
-    case VL_FFI_U32:
-      return &ffi_type_uint32;
-    case VL_FFI_I64:
-      return &ffi_type_sint64;
-    case VL_FFI_U64:
-      return &ffi_type_uint64;
-    case VL_FFI_F32:
-      return &ffi_type_float;
-    case VL_FFI_F64:
-      return &ffi_type_double;
-    case VL_FFI_PTR:
-      return &ffi_type_pointer;
-    default:
-      return NULL;
-  }
+// ---------- Call shims (cdecl) ----------
+// CAUTION: the function pointer type must match the real symbol signature.
+// Using the wrong shim is undefined behavior.
+
+typedef int64_t (FFI_CDECL *fn_i64_0)(void);
+typedef int64_t (FFI_CDECL *fn_i64_1)(int64_t);
+typedef int64_t (FFI_CDECL *fn_i64_2)(int64_t,int64_t);
+typedef int64_t (FFI_CDECL *fn_i64_3)(int64_t,int64_t,int64_t);
+typedef int64_t (FFI_CDECL *fn_i64_4)(int64_t,int64_t,int64_t,int64_t);
+
+typedef int64_t (FFI_CDECL *fn_i64_p1)(void*);
+typedef int64_t (FFI_CDECL *fn_i64_p2)(void*,void*);
+typedef int64_t (FFI_CDECL *fn_i64_p3)(void*,void*,void*);
+
+typedef double  (FFI_CDECL *fn_f64_0)(void);
+typedef double  (FFI_CDECL *fn_f64_1)(double);
+typedef double  (FFI_CDECL *fn_f64_2)(double,double);
+typedef double  (FFI_CDECL *fn_f64_3)(double,double,double);
+typedef double  (FFI_CDECL *fn_f64_4)(double,double,double,double);
+
+typedef void    (FFI_CDECL *fn_void_p1)(void*);
+typedef void    (FFI_CDECL *fn_void_p2)(void*,void*);
+typedef void    (FFI_CDECL *fn_void_p3)(void*,void*,void*);
+
+// Integer returns
+int64_t ffi_call_i64_0(void* fn)                                           { return ((fn_i64_0)fn)(); }
+int64_t ffi_call_i64_1(void* fn, int64_t a0)                               { return ((fn_i64_1)fn)(a0); }
+int64_t ffi_call_i64_2(void* fn, int64_t a0, int64_t a1)                   { return ((fn_i64_2)fn)(a0,a1); }
+int64_t ffi_call_i64_3(void* fn, int64_t a0, int64_t a1, int64_t a2)       { return ((fn_i64_3)fn)(a0,a1,a2); }
+int64_t ffi_call_i64_4(void* fn, int64_t a0, int64_t a1, int64_t a2, int64_t a3) { return ((fn_i64_4)fn)(a0,a1,a2,a3); }
+
+// Pointer arg variants
+int64_t ffi_call_i64_p1(void* fn, void* p0)                                { return ((fn_i64_p1)fn)(p0); }
+int64_t ffi_call_i64_p2(void* fn, void* p0, void* p1)                      { return ((fn_i64_p2)fn)(p0,p1); }
+int64_t ffi_call_i64_p3(void* fn, void* p0, void* p1, void* p2)            { return ((fn_i64_p3)fn)(p0,p1,p2); }
+
+// Double returns
+double  ffi_call_f64_0(void* fn)                                           { return ((fn_f64_0)fn)(); }
+double  ffi_call_f64_1(void* fn, double a0)                                 { return ((fn_f64_1)fn)(a0); }
+double  ffi_call_f64_2(void* fn, double a0, double a1)                      { return ((fn_f64_2)fn)(a0,a1); }
+double  ffi_call_f64_3(void* fn, double a0, double a1, double a2)           { return ((fn_f64_3)fn)(a0,a1,a2); }
+double  ffi_call_f64_4(void* fn, double a0, double a1, double a2, double a3){ return ((fn_f64_4)fn)(a0,a1,a2,a3); }
+
+// Void returns, pointer args
+void    ffi_call_void_p1(void* fn, void* p0)                                { ((fn_void_p1)fn)(p0); }
+void    ffi_call_void_p2(void* fn, void* p0, void* p1)                      { ((fn_void_p2)fn)(p0,p1); }
+void    ffi_call_void_p3(void* fn, void* p0, void* p1, void* p2)            { ((fn_void_p3)fn)(p0,p1,p2); }
+
+// ---------- Tiny self-test (optional) ----------
+#ifdef FFI_DEMO
+#include <stdio.h>
+static int64_t FFI_CDECL add2(int64_t a, int64_t b){ return a+b; }
+static double  FFI_CDECL mul3(double a,double b,double c){ return a*b*c; }
+static void    FFI_CDECL touch(void* p){ if(p) *(int*)p += 7; }
+
+int main(void){
+    printf("i64: %lld\n",(long long)ffi_call_i64_2((void*)add2, 10, 32));
+    printf("f64: %.3f\n",ffi_call_f64_3((void*)mul3, 1.5, 2.0, 3.0));
+    int x=1; ffi_call_void_p1((void*)touch, &x); printf("x=%d\n",x);
+    return 0;
 }
-
-AuxStatus vl_ffi_cif_new(VlFfiAbi abi, VlFfiType ret, const VlFfiType *args,
-                         int nargs, VlFfiCif **out) {
-  if (!out || nargs < 0) return AUX_EINVAL;
-  *out = NULL;
-
-  VlFfiCif *c = (VlFfiCif *)calloc(1, sizeof *c);
-  if (!c) return AUX_ENOMEM;
-
-  c->abi = abi;
-  c->v_ret = ret;
-  c->nargs = nargs;
-
-  if (nargs > 0) {
-    c->v_args = (VlFfiType *)malloc(sizeof(VlFfiType) * (size_t)nargs);
-    c->arg_types = (ffi_type **)malloc(sizeof(ffi_type *) * (size_t)nargs);
-    if (!c->v_args || !c->arg_types) {
-      free(c->v_args);
-      free(c->arg_types);
-      free(c);
-      return AUX_ENOMEM;
-    }
-    for (int i = 0; i < nargs; i++) {
-      c->v_args[i] = args[i];
-      c->arg_types[i] = map_type(args[i]);
-      if (!c->arg_types[i]) {
-        vl_ffi_cif_free(c);
-        return AUX_EINVAL;
-      }
-    }
-  }
-
-  c->ret_type = map_type(ret);
-  if (!c->ret_type) {
-    vl_ffi_cif_free(c);
-    return AUX_EINVAL;
-  }
-
-  ffi_status fs = ffi_prep_cif(&c->cif, map_abi(abi), (unsigned)nargs,
-                               c->ret_type, c->arg_types);
-  if (fs != FFI_OK) {
-    vl_ffi_cif_free(c);
-    return AUX_EIO;
-  }
-
-  *out = c;
-  return AUX_OK;
-}
-
-void vl_ffi_cif_free(VlFfiCif *c) {
-  if (!c) return;
-  free(c->v_args);
-  free(c->arg_types);
-  free(c);
-}
-
-AuxStatus vl_ffi_call(const VlFfiCif *cif, void *fn_ptr, void **argv,
-                      void *retbuf) {
-  if (!cif || !fn_ptr) return AUX_EINVAL;
-  if (cif->v_ret != VL_FFI_VOID && !retbuf) return AUX_EINVAL;
-  ffi_call((ffi_cif *)&cif->cif, FFI_FN(fn_ptr), retbuf, argv);
-  return AUX_OK;
-}
-
-#else  // !VL_HAVE_LIBFFI
-
-AuxStatus vl_ffi_cif_new(VlFfiAbi abi, VlFfiType ret, const VlFfiType *args,
-                         int nargs, VlFfiCif **out) {
-  if (!out || nargs < 0) return AUX_EINVAL;
-  VlFfiCif *c = (VlFfiCif *)calloc(1, sizeof *c);
-  if (!c) return AUX_ENOMEM;
-  c->abi = abi;
-  c->v_ret = ret;
-  c->nargs = nargs;
-  if (nargs > 0) {
-    c->v_args = (VlFfiType *)malloc(sizeof(VlFfiType) * (size_t)nargs);
-    if (!c->v_args) {
-      free(c);
-      return AUX_ENOMEM;
-    }
-    memcpy(c->v_args, args, sizeof(VlFfiType) * (size_t)nargs);
-  }
-  *out = c;
-  return AUX_OK;
-}
-
-void vl_ffi_cif_free(VlFfiCif *c) {
-  if (!c) return;
-  free(c->v_args);
-  free(c);
-}
-
-AuxStatus vl_ffi_call(const VlFfiCif *cif, void *fn_ptr, void **argv,
-                      void *retbuf) {
-  (void)cif;
-  (void)fn_ptr;
-  (void)argv;
-  (void)retbuf;
-  return AUX_ENOSYS;
-}
-
-#endif  // VL_HAVE_LIBFFI
-
-// ======================================================================
-// Dynamic loading helpers
-// ======================================================================
-
-AuxStatus vl_ffi_open_sym(const char *lib_stem_or_path, const char *symbol,
-                          int dl_flags, VlDl **out_lib, void **out_sym) {
-  if (!lib_stem_or_path || !symbol || !out_lib || !out_sym) return AUX_EINVAL;
-  *out_lib = NULL;
-  *out_sym = NULL;
-
-  VlDl *h = NULL;
-  AuxStatus s;
-  // Try exact path first, then platform-specific candidates
-  s = vl_dl_open(lib_stem_or_path, dl_flags, &h);
-  if (s != AUX_OK) {
-    s = vl_dl_open_ext(lib_stem_or_path, dl_flags, &h);
-    if (s != AUX_OK) return s;
-  }
-  void *sym = vl_dl_sym_ptr(h, symbol);
-  if (!sym) {
-    vl_dl_close(h);
-    return AUX_EIO;
-  }
-
-  *out_lib = h;
-  *out_sym = sym;
-  return AUX_OK;
-}
-
-// ======================================================================
-// End
-// ======================================================================
+#endif

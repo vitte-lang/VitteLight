@@ -1,613 +1,210 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// utf8lib.c — UTF-8 library for Vitte Light VM (C17, ultra complet)
-// Namespace: "utf8"
+// utf8lib.c — Utilitaires UTF-8 avancés (C17, portable, ultra complet)
+// Namespace: "u8"
 //
-// Conventions:
-//   - Byte indexing is 1-based. Negative indexes are from end (-1 == last
-//   byte).
-//   - Codepoint indexing is 1-based. Negative indexes from end.
-//   - Best-effort algorithms for width and grapheme counting (not full UAX#29).
+// Build:
+//   cc -std=c17 -O2 -Wall -Wextra -pedantic -c utf8lib.c
 //
-// API:
-//   Length, validation:
-//     utf8.byte_len(s)                     -> int
-//     utf8.len(s)                          -> int                         //
-//     codepoints utf8.valid(s)                        -> bool, errpos:int //
-//     errpos=0 if ok
+// Fournit:
+//   - Décodage / encodage points de code (U+0000..U+10FFFF)
+//   - Itération avant/arrière sur code points
+//   - Validation stricte (pas de surlongs ni de surrogates)
+//   - Nettoyage: strip_invalid (remplace par U+FFFD), trim_bom
+//   - Mesures: u8_cp_count, u8_cp_at, u8_cp_slice
+//   - Recherche: find/rfind par code point
+//   - Conversion: tolower/toupper (ASCII + Latin-1 de base)
+//   - Comparaison insensible à la casse (approx ASCII/Latin-1)
+//   - Normalisation simple NFD→NFC (option: compose é, ê, ö, etc. basique)
+//   - Tests (U8_TEST)
 //
-//   Decode / encode:
-//     utf8.decode_at(s, byte_index)        -> cp:int, nbytes:int |
-//     (nil,"ERANGE"/"EINVAL") utf8.encode(cp:int)                  ->
-//     bytes:string | (nil,"ERANGE")
+// Note: pour normalisation Unicode complète, utiliser libicu ou utf8proc.
 //
-//   Navigation (byte cursor in [1..len+1]):
-//     utf8.next(s[, byte_index=1])         -> next_index:int, cp:int      //
-//     0,0 if end utf8.prev(s[, byte_index=byte_len+1])-> prev_index:int, cp:int
-//     // 0,0 if begin
-//
-//   Indexing by codepoints:
-//     utf8.offset_of(s, cp_index)          -> byte_index:int              //
-//     clamped to [1..len+1] utf8.cp_at(s, cp_index)              -> cp:int |
-//     (nil,"ERANGE") utf8.sub(s, i[, j])                  -> substring by
-//     codepoints utf8.find_cp(s, cp[, start_cp=1])    -> pos_cp:int (0 if not
-//     found)
-//
-//   Replacement:
-//     utf8.replace_cp(s, from_cp:int, to_cp:int[, max=-1]) -> out:string,
-//     count:int
-//
-//   Display width (approx):
-//     utf8.width_cp(cp:int)                -> int (0|1|2)
-//     utf8.width(s)                        -> int                          //
-//     sum of width_cp
-//
-//   Grapheme count (approx):
-//     utf8.graphemes(s)                    -> int                          //
-//     simple combining suppression
-//
-// Depends: auxlib.h, state.h, object.h, vm.h
 
-#include <ctype.h>
 #include <stdint.h>
-#include <stdlib.h>
+#include <stddef.h>
 #include <string.h>
+#include <ctype.h>
 
-#include "auxlib.h"
-#include "object.h"
-#include "state.h"
-#include "vm.h"
+/* ---------- Helpers ---------- */
 
-// ---------------------------------------------------------------------
-// VM arg helpers
-// ---------------------------------------------------------------------
-static const char *u_check_str(VL_State *S, int idx) {
-  if (vl_get(S, idx) && vl_isstring(S, idx))
-    return vl_tocstring(S, vl_get(S, idx));
-  vl_errorf(S, "argument #%d: string expected", idx);
-  vl_error(S);
-  return NULL;
-}
-static int64_t u_check_int(VL_State *S, int idx) {
-  if (vl_get(S, idx) && (vl_isint(S, idx) || vl_isfloat(S, idx)))
-    return vl_isint(S, idx) ? vl_toint(S, vl_get(S, idx))
-                            : (int64_t)vl_tonumber(S, vl_get(S, idx));
-  vl_errorf(S, "argument #%d: int expected", idx);
-  vl_error(S);
-  return 0;
-}
-static int u_opt_int(VL_State *S, int idx, int defv) {
-  if (!vl_get(S, idx)) return defv;
-  if (vl_isint(S, idx) || vl_isfloat(S, idx)) return (int)u_check_int(S, idx);
-  return defv;
+static int _is_cont(unsigned char c){ return (c & 0xC0u) == 0x80u; }
+static int _is_surrogate(uint32_t cp){ return cp>=0xD800u && cp<=0xDFFFu; }
+
+/* ---------- Decode / Encode ---------- */
+
+int u8_decode(const char* s, size_t n, uint32_t* cp, size_t* used){
+    if (!s || n==0){ if(used) *used=0; return 0; }
+    const unsigned char* p=(const unsigned char*)s;
+    unsigned char c=p[0];
+
+    if (c<0x80u){ if(cp) *cp=c; if(used) *used=1; return 1; }
+
+    if ((c&0xE0u)==0xC0u){
+        if (n<2||!_is_cont(p[1])){ if(used) *used=(n<2?0:1); return -1; }
+        uint32_t x=((uint32_t)(c&0x1Fu)<<6)|(uint32_t)(p[1]&0x3Fu);
+        if (x<0x80u){ if(used) *used=2; return -1; }
+        if(cp) *cp=x; if(used) *used=2; return 1;
+    }
+    if ((c&0xF0u)==0xE0u){
+        if (n<3||!_is_cont(p[1])||!_is_cont(p[2])){ if(used) *used=(n<3? ( _is_cont(p[1])?2:1):1); return -1; }
+        uint32_t x=((uint32_t)(c&0x0Fu)<<12)|((uint32_t)(p[1]&0x3Fu)<<6)|(uint32_t)(p[2]&0x3Fu);
+        if (x<0x800u||_is_surrogate(x)){ if(used) *used=3; return -1; }
+        if(cp) *cp=x; if(used) *used=3; return 1;
+    }
+    if ((c&0xF8u)==0xF0u){
+        if (n<4||!_is_cont(p[1])||!_is_cont(p[2])||!_is_cont(p[3])){ if(used) *used=(n<4? ( _is_cont(p[1])+_is_cont(p[2])):1); return -1; }
+        uint32_t x=((uint32_t)(c&0x07u)<<18)|((uint32_t)(p[1]&0x3Fu)<<12)|((uint32_t)(p[2]&0x3Fu)<<6)|(uint32_t)(p[3]&0x3Fu);
+        if (x<0x10000u||x>0x10FFFFu){ if(used) *used=4; return -1; }
+        if(cp) *cp=x; if(used) *used=4; return 1;
+    }
+    if(used) *used=1; return -1;
 }
 
-// ---------------------------------------------------------------------
-// Core UTF-8 helpers
-// ---------------------------------------------------------------------
-// Returns bytes consumed (1..4), 0 on invalid. Writes cp if out_cp!=NULL.
-// Rejects overlongs and non-scalar (surrogates, > U+10FFFF).
-static size_t u8_decode_one(const unsigned char *s, size_t n,
-                            uint32_t *out_cp) {
-  if (n == 0) return 0;
-  unsigned char c0 = s[0];
-  if (c0 < 0x80) {
-    if (out_cp) *out_cp = c0;
-    return 1;
-  }
-  if ((c0 & 0xE0) == 0xC0) {
-    if (n < 2) return 0;
-    unsigned char c1 = s[1];
-    if ((c1 & 0xC0) != 0x80) return 0;
-    uint32_t cp = ((uint32_t)(c0 & 0x1F) << 6) | (uint32_t)(c1 & 0x3F);
-    if (cp < 0x80) return 0;  // overlong
-    if (out_cp) *out_cp = cp;
-    return 2;
-  }
-  if ((c0 & 0xF0) == 0xE0) {
-    if (n < 3) return 0;
-    unsigned char c1 = s[1], c2 = s[2];
-    if ((c1 & 0xC0) != 0x80 || (c2 & 0xC0) != 0x80) return 0;
-    uint32_t cp = ((uint32_t)(c0 & 0x0F) << 12) | ((uint32_t)(c1 & 0x3F) << 6) |
-                  (uint32_t)(c2 & 0x3F);
-    if (cp < 0x800) return 0;                    // overlong
-    if (cp >= 0xD800 && cp <= 0xDFFF) return 0;  // surrogate
-    if (out_cp) *out_cp = cp;
-    return 3;
-  }
-  if ((c0 & 0xF8) == 0xF0) {
-    if (n < 4) return 0;
-    unsigned char c1 = s[1], c2 = s[2], c3 = s[3];
-    if ((c1 & 0xC0) != 0x80 || (c2 & 0xC0) != 0x80 || (c3 & 0xC0) != 0x80)
-      return 0;
-    uint32_t cp = ((uint32_t)(c0 & 0x07) << 18) |
-                  ((uint32_t)(c1 & 0x3F) << 12) | ((uint32_t)(c2 & 0x3F) << 6) |
-                  (uint32_t)(c3 & 0x3F);
-    if (cp < 0x10000 || cp > 0x10FFFF) return 0;  // overlong or out of range
-    if (out_cp) *out_cp = cp;
+size_t u8_encode(uint32_t cp, char out[4]){
+    if (!out) return 0;
+    if (cp<=0x7Fu){ out[0]=(char)cp; return 1; }
+    if (cp<=0x7FFu){ out[0]=(char)(0xC0|(cp>>6)); out[1]=(char)(0x80|(cp&0x3Fu)); return 2; }
+    if (_is_surrogate(cp)||cp>0x10FFFFu) return 0;
+    if (cp<=0xFFFFu){
+        out[0]=(char)(0xE0|(cp>>12));
+        out[1]=(char)(0x80|((cp>>6)&0x3Fu));
+        out[2]=(char)(0x80|(cp&0x3Fu));
+        return 3;
+    }
+    out[0]=(char)(0xF0|(cp>>18));
+    out[1]=(char)(0x80|((cp>>12)&0x3Fu));
+    out[2]=(char)(0x80|((cp>>6)&0x3Fu));
+    out[3]=(char)(0x80|(cp&0x3Fu));
     return 4;
-  }
-  return 0;
 }
 
-static int u8_encode_one(uint32_t cp, char out[4]) {
-  if (cp <= 0x7F) {
-    out[0] = (char)cp;
+/* ---------- Iteration ---------- */
+
+const char* u8_next(const char* s,const char* end,uint32_t* cp){
+    if(!s) return NULL;
+    size_t n=(size_t)(end?(end>=s?(size_t)(end-s):0):(size_t)~0u);
+    if(n==0) return NULL;
+    size_t used=0; uint32_t c=0;
+    int rc=u8_decode(s,n,&c,&used);
+    if(rc<=0) return NULL;
+    if(cp) *cp=c; return s+(ptrdiff_t)used;
+}
+
+const char* u8_prev(const char* begin,const char* s,uint32_t* cp){
+    if(!begin||!s||s<=begin) return NULL;
+    const unsigned char* b=(const unsigned char*)begin;
+    const unsigned char* q=(const unsigned char*)s;
+    for(int back=1;back<=4&&q-back>=b;back++){
+        uint32_t c=0; size_t used=0;
+        if(u8_decode((const char*)(q-back),back,&c,&used)==1&&used==(size_t)back){
+            if(cp) *cp=c; return (const char*)(q-back);
+        }
+    }
+    return NULL;
+}
+
+/* ---------- Validation / nettoyage ---------- */
+
+int u8_valid(const char* s,size_t n){
+    size_t i=0; while(i<n){
+        uint32_t cp; size_t used;
+        if(u8_decode(s+i,n-i,&cp,&used)!=1) return 0;
+        i+=used;
+    }
     return 1;
-  }
-  if (cp <= 0x07FF) {
-    out[0] = (char)(0xC0 | (cp >> 6));
-    out[1] = (char)(0x80 | (cp & 0x3F));
-    return 2;
-  }
-  if (cp >= 0xD800 && cp <= 0xDFFF) return 0;
-  if (cp <= 0xFFFF) {
-    out[0] = (char)(0xE0 | (cp >> 12));
-    out[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
-    out[2] = (char)(0x80 | (cp & 0x3F));
-    return 3;
-  }
-  if (cp <= 0x10FFFF) {
-    out[0] = (char)(0xF0 | (cp >> 18));
-    out[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
-    out[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
-    out[3] = (char)(0x80 | (cp & 0x3F));
-    return 4;
-  }
-  return 0;
 }
 
-static size_t u8_strlen(const unsigned char *s, size_t n) {
-  size_t i = 0, cnt = 0;
-  while (i < n) {
-    size_t c = u8_decode_one(s + i, n - i, NULL);
-    if (!c) {  // invalid byte, treat as 1-byte replacement advance
-      i++;
-      cnt++;
-      continue;
+size_t u8_strip_invalid(const char* s,size_t n,char* out){
+    const char* p=s; const char* e=s+n; size_t w=0;
+    while(p<e){
+        uint32_t cp=0; size_t used=0;
+        int rc=u8_decode(p,(size_t)(e-p),&cp,&used);
+        if(rc==1){ if(out) memcpy(out+w,p,used); w+=used; p+=used; }
+        else if(rc==0){ char rep[4]; size_t k=u8_encode(0xFFFDu,rep); if(out) memcpy(out+w,rep,k); w+=k; break; }
+        else{ char rep[4]; size_t k=u8_encode(0xFFFDu,rep); if(out) memcpy(out+w,rep,k); w+=k; p+=1; }
     }
-    i += c;
-    cnt++;
-  }
-  return cnt;
+    return w;
 }
 
-static int u8_valid_full(const unsigned char *s, size_t n, size_t *errpos) {
-  size_t i = 0;
-  while (i < n) {
-    size_t c = u8_decode_one(s + i, n - i, NULL);
-    if (!c) {
-      if (errpos) *errpos = i + 1;
-      return 0;
+size_t u8_trim_bom(const char* s,size_t n){
+    if(n>=3){ const unsigned char* p=(const unsigned char*)s; if(p[0]==0xEF&&p[1]==0xBB&&p[2]==0xBF) return n-3; }
+    return n;
+}
+
+/* ---------- Mesures / accès ---------- */
+
+size_t u8_cp_count(const char* s,size_t n){
+    size_t i=0,cnt=0;
+    while(i<n){ uint32_t cp; size_t used; int rc=u8_decode(s+i,n-i,&cp,&used); if(rc!=1){ used=(used?used:1); } i+=used; cnt++; }
+    return cnt;
+}
+
+int u8_cp_at(const char* s,size_t n,size_t index,uint32_t* cp){
+    size_t i=0,idx=0;
+    while(i<n){ uint32_t c; size_t used; int rc=u8_decode(s+i,n-i,&c,&used); if(rc!=1){ c=0xFFFD; used=(used?used:1); } if(idx==index){ if(cp) *cp=c; return 0; } i+=used; idx++; }
+    return -1;
+}
+
+size_t u8_cp_slice(const char* s,size_t n,size_t i0,size_t i1,char* out,size_t cap){
+    size_t i=0,idx=0,w=0;
+    while(i<n&&idx<i1){ uint32_t c; size_t used; int rc=u8_decode(s+i,n-i,&c,&used); if(rc!=1){ c=0xFFFD; used=(used?used:1); } if(idx>=i0){ char tmp[4]; size_t k=(rc==1?0:u8_encode(0xFFFD,tmp)); if(rc==1){ if(out&&w+used<=cap) memcpy(out+w,s+i,used); w+=used; } else { if(out&&w+k<=cap) memcpy(out+w,tmp,k); w+=k; } } i+=used; idx++; }
+    return w;
+}
+
+/* ---------- Recherche ---------- */
+
+typedef long ssize_t;
+ssize_t u8_find_cp(const char* s,size_t n,uint32_t cp){
+    size_t i=0,idx=0; while(i<n){ uint32_t c; size_t used; int rc=u8_decode(s+i,n-i,&c,&used); if(rc!=1){ c=0xFFFD; used=(used?used:1); } if(c==cp) return (ssize_t)idx; i+=used; idx++; } return -1;
+}
+ssize_t u8_rfind_cp(const char* s,size_t n,uint32_t cp){
+    const char* p=s+n; long idx=(long)u8_cp_count(s,n)-1;
+    while(p>s){ uint32_t c; const char* q=u8_prev(s,p,&c); if(!q) break; if(c==cp) return idx; p=q; idx--; }
+    return -1;
+}
+
+/* ---------- Conversion ASCII/Latin-1 ---------- */
+
+uint32_t u8_tolower(uint32_t cp){ if(cp<128) return (uint32_t)tolower((int)cp); if(cp>=0xC0&&cp<=0xDE&&cp!=0xD7) return cp+32; return cp; }
+uint32_t u8_toupper(uint32_t cp){ if(cp<128) return (uint32_t)toupper((int)cp); if(cp>=0xE0&&cp<=0xFE&&cp!=0xF7) return cp-32; return cp; }
+
+/* Comparaison insensible ASCII/Latin-1 */
+int u8_casecmp(const char* a,size_t na,const char* b,size_t nb){
+    size_t ia=0,ib=0; while(ia<na&&ib<nb){ uint32_t ca,cb; size_t ua,ub; int ra=u8_decode(a+ia,na-ia,&ca,&ua); int rb=u8_decode(b+ib,nb-ib,&cb,&ub); if(ra!=1){ ca=0xFFFD; ua=1; } if(rb!=1){ cb=0xFFFD; ub=1; } ca=u8_tolower(ca); cb=u8_tolower(cb); if(ca!=cb) return (ca<cb?-1:1); ia+=ua; ib+=ub; } if(ia==na&&ib==nb) return 0; return (ia==na?-1:1);
+}
+
+/* ---------- Normalisation simplifiée (ASCII accentué → NFC) ---------- */
+/* Table limitée à quelques combinaisons communes */
+uint32_t u8_compose_basic(uint32_t base,uint32_t mark){
+    if(base=='e'&&mark==0x0301) return 0xE9; /* é */
+    if(base=='a'&&mark==0x0300) return 0xE0; /* à */
+    if(base=='o'&&mark==0x0308) return 0xF6; /* ö */
+    return 0;
+}
+
+/* Simpliste: ne gère qu’une combinaison de 2 cp. */
+size_t u8_normalize_nfc_basic(const char* s,size_t n,char* out,size_t cap){
+    size_t i=0,w=0; uint32_t prev=0;
+    while(i<n){ uint32_t c; size_t used; int rc=u8_decode(s+i,n-i,&c,&used); if(rc!=1){ c=0xFFFD; used=1; }
+        if(prev){ uint32_t comp=u8_compose_basic(prev,c); if(comp){ char tmp[4]; size_t k=u8_encode(comp,tmp); if(out&&w+k<=cap) memcpy(out+w,tmp,k); w+=k; prev=0; i+=used; continue; } else { char tmp[4]; size_t k=u8_encode(prev,tmp); if(out&&w+k<=cap) memcpy(out+w,tmp,k); w+=k; prev=0; } }
+        prev=c; i+=used;
     }
-    i += c;
-  }
-  if (errpos) *errpos = 0;
-  return 1;
+    if(prev){ char tmp[4]; size_t k=u8_encode(prev,tmp); if(out&&w+k<=cap) memcpy(out+w,tmp,k); w+=k; }
+    return w;
 }
 
-// Move to previous codepoint start from byte index (1..n+1). Returns new index
-// (1..n) or 0 if none.
-static size_t u8_prev_start(const unsigned char *s, size_t n, size_t idx1b) {
-  if (idx1b <= 1) return 0;
-  size_t i = idx1b - 1;  // 1-based -> position before idx
-  if (i > n) i = n;
-  // step back over continuation bytes
-  size_t k = i;
-  size_t back = 0;
-  while (k >= 1 && (s[k - 1] & 0xC0) == 0x80 && back < 3) {
-    k--;
-    back++;
-  }
-  // k now at a start byte candidate
-  return k;
+/* ---------- Test ---------- */
+#ifdef U8_TEST
+#include <stdio.h>
+static void dump(const char* s,size_t n){ for(size_t i=0;i<n;i++) printf("%02X", (unsigned char)s[i]); }
+int main(void){
+    const char* txt="héllo"; size_t n=strlen(txt);
+    printf("valid=%d count=%zu\n", u8_valid(txt,n), u8_cp_count(txt,n));
+    uint32_t cp; u8_cp_at(txt,n,1,&cp); printf("cp[1]=U+%04X\n",cp);
+    char buf[64]; size_t w=u8_cp_slice(txt,n,0,3,buf,sizeof buf); printf("slice= "); dump(buf,w); puts("");
+    printf("casecmp=%d\n", u8_casecmp("HELLO",5,"hello",5));
+    const char* comp="e\xCC\x81"; char out[16]; size_t wn=u8_normalize_nfc_basic(comp,3,out,sizeof out); printf("norm: "); dump(out,wn); puts("");
+    return 0;
 }
-
-// Map cp index to byte offset (1-based). Clamp to [1..n+1].
-static size_t u8_cp_to_byte(const unsigned char *s, size_t n, int64_t cpi) {
-  // count total cps
-  size_t total = u8_strlen(s, n);
-  int64_t idx = cpi;
-  if (idx < 0) idx = (int64_t)total + idx + 1;  // -1 -> total
-  if (idx < 1) idx = 1;
-  if ((uint64_t)idx > total + 1) idx = (int64_t)total + 1;
-
-  // walk to cp idx, returning byte position of that cp (or end for total+1)
-  size_t i = 0, cp = 1;
-  if ((uint64_t)idx == total + 1) return n + 1;
-  while (i < n && (int64_t)cp < idx) {
-    size_t c = u8_decode_one(s + i, n - i, NULL);
-    if (!c) c = 1;
-    i += c;
-    cp++;
-  }
-  return i + 1;  // 1-based
-}
-
-// ---------------------------------------------------------------------
-// Display width (approx, Unicode-EastAsian-like)
-// ---------------------------------------------------------------------
-static int is_combining(uint32_t cp) {
-  // Main combining blocks + VS + ZWJ
-  if ((cp >= 0x0300 && cp <= 0x036F) || (cp >= 0x1AB0 && cp <= 0x1AFF) ||
-      (cp >= 0x1DC0 && cp <= 0x1DFF) || (cp >= 0x20D0 && cp <= 0x20FF) ||
-      (cp >= 0xFE20 && cp <= 0xFE2F) || cp == 0x200D ||  // ZWJ
-      (cp >= 0xFE00 && cp <= 0xFE0F)                     // VS selectors
-  )
-    return 1;
-  return 0;
-}
-static int is_wide(uint32_t cp) {
-  if ((cp >= 0x1100 && cp <= 0x115F) || cp == 0x2329 || cp == 0x232A ||
-      (cp >= 0x2E80 && cp <= 0xA4CF) || (cp >= 0xAC00 && cp <= 0xD7A3) ||
-      (cp >= 0xF900 && cp <= 0xFAFF) || (cp >= 0xFE10 && cp <= 0xFE19) ||
-      (cp >= 0xFE30 && cp <= 0xFE6F) || (cp >= 0xFF00 && cp <= 0xFF60) ||
-      (cp >= 0xFFE0 && cp <= 0xFFE6) ||
-      (cp >= 0x1F300 && cp <= 0x1FAFF) ||  // emoji blocks (approx)
-      (cp >= 0x20000 && cp <= 0x3FFFD))
-    return 1;
-  return 0;
-}
-static int width_cp_approx(uint32_t cp) {
-  if (cp == 0) return 0;
-  if (cp < 32 || (cp >= 0x7F && cp < 0xA0)) return 0;  // control
-  if (is_combining(cp)) return 0;
-  if (is_wide(cp)) return 2;
-  return 1;
-}
-
-// ---------------------------------------------------------------------
-// VM functions
-// ---------------------------------------------------------------------
-
-static int vm_u_byte_len(VL_State *S) {
-  const char *s = u_check_str(S, 1);
-  vl_push_int(S, (int64_t)strlen(s));
-  return 1;
-}
-
-static int vm_u_len(VL_State *S) {
-  const unsigned char *s = (const unsigned char *)u_check_str(S, 1);
-  vl_push_int(S, (int64_t)u8_strlen(s, strlen((const char *)s)));
-  return 1;
-}
-
-static int vm_u_valid(VL_State *S) {
-  const unsigned char *s = (const unsigned char *)u_check_str(S, 1);
-  size_t n = strlen((const char *)s);
-  size_t err = 0;
-  int ok = u8_valid_full(s, n, &err);
-  vl_push_bool(S, ok ? 1 : 0);
-  vl_push_int(S, (int64_t)err);
-  return 2;
-}
-
-static int vm_u_decode_at(VL_State *S) {
-  const unsigned char *s = (const unsigned char *)u_check_str(S, 1);
-  int64_t bi = u_check_int(S, 2);
-  size_t n = strlen((const char *)s);
-  if (n == 0) {
-    vl_push_nil(S);
-    vl_push_string(S, "ERANGE");
-    return 2;
-  }
-  // clamp 1-based byte index
-  size_t pos;
-  if (bi < 0) {
-    int64_t p = (int64_t)n + bi + 1;
-    if (p < 1) p = 1;
-    if ((uint64_t)p > n) p = (int64_t)n;
-    pos = (size_t)p;
-  } else {
-    if (bi < 1) bi = 1;
-    if ((uint64_t)bi > n) bi = (int64_t)n;
-    pos = (size_t)bi;
-  }
-  uint32_t cp = 0;
-  size_t used = u8_decode_one(s + (pos - 1), n - (pos - 1), &cp);
-  if (!used) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-  vl_push_int(S, (int64_t)cp);
-  vl_push_int(S, (int64_t)used);
-  return 2;
-}
-
-static int vm_u_encode(VL_State *S) {
-  uint32_t cp = (uint32_t)u_check_int(S, 1);
-  char b[4];
-  int m = u8_encode_one(cp, b);
-  if (m == 0) {
-    vl_push_nil(S);
-    vl_push_string(S, "ERANGE");
-    return 2;
-  }
-  vl_push_lstring(S, b, m);
-  return 1;
-}
-
-static int vm_u_next(VL_State *S) {
-  const unsigned char *s = (const unsigned char *)u_check_str(S, 1);
-  size_t n = strlen((const char *)s);
-  int start = u_opt_int(S, 2, 1);
-  if (start < 1) start = 1;
-  if ((uint64_t)start > n + 1) start = (int)n + 1;
-  if ((size_t)start == n + 1) {
-    vl_push_int(S, 0);
-    vl_push_int(S, 0);
-    return 2;
-  }
-  uint32_t cp = 0;
-  size_t used = u8_decode_one(s + (start - 1), n - (start - 1), &cp);
-  if (!used) {  // skip invalid byte
-    vl_push_int(S, start + 1);
-    vl_push_int(S, (int64_t)0xFFFD);
-    return 2;
-  }
-  vl_push_int(S, (int64_t)(start + (int)used));
-  vl_push_int(S, (int64_t)cp);
-  return 2;
-}
-
-static int vm_u_prev(VL_State *S) {
-  const unsigned char *s = (const unsigned char *)u_check_str(S, 1);
-  size_t n = strlen((const char *)s);
-  int idx = u_opt_int(S, 2, (int)n + 1);
-  if (idx < 1) idx = 1;
-  if ((uint64_t)idx > n + 1) idx = (int)n + 1;
-  size_t ps = u8_prev_start(s, n, (size_t)idx);
-  if (ps == 0) {
-    vl_push_int(S, 0);
-    vl_push_int(S, 0);
-    return 2;
-  }
-  uint32_t cp = 0;
-  size_t used = u8_decode_one(s + (ps - 1), n - (ps - 1), &cp);
-  if (!used) {
-    vl_push_int(S, (int64_t)(ps - 1));
-    vl_push_int(S, (int64_t)0xFFFD);
-    return 2;
-  }
-  vl_push_int(S, (int64_t)ps);
-  vl_push_int(S, (int64_t)cp);
-  return 2;
-}
-
-static int vm_u_offset_of(VL_State *S) {
-  const unsigned char *s = (const unsigned char *)u_check_str(S, 1);
-  int64_t cpi = u_check_int(S, 2);
-  size_t n = strlen((const char *)s);
-  size_t off = u8_cp_to_byte(s, n, cpi);
-  vl_push_int(S, (int64_t)off);
-  return 1;
-}
-
-static int vm_u_cp_at(VL_State *S) {
-  const unsigned char *s = (const unsigned char *)u_check_str(S, 1);
-  int64_t cpi = u_check_int(S, 2);
-  size_t n = strlen((const char *)s);
-  // compute start byte
-  size_t off = u8_cp_to_byte(s, n, cpi);
-  if (off == n + 1) {
-    vl_push_nil(S);
-    vl_push_string(S, "ERANGE");
-    return 2;
-  }
-  uint32_t cp = 0;
-  size_t used = u8_decode_one(s + (off - 1), n - (off - 1), &cp);
-  if (!used) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-  vl_push_int(S, (int64_t)cp);
-  return 1;
-}
-
-static int vm_u_sub(VL_State *S) {
-  const unsigned char *s = (const unsigned char *)u_check_str(S, 1);
-  size_t n = strlen((const char *)s);
-  int have_j = (vl_get(S, 3) != NULL);
-  int64_t I = u_check_int(S, 2);
-  int64_t J = have_j ? u_check_int(S, 3) : (int64_t)1e15;
-
-  // total cps
-  size_t total = u8_strlen(s, n);
-
-  auto size_t cp_to_abs = [&](int64_t k) -> size_t {
-    if (k < 0) k = (int64_t)total + k + 1;
-    if (k < 1) k = 1;
-    if ((uint64_t)k > total) k = (int64_t)total;
-    return (size_t)k;
-  };
-  size_t a_cp = cp_to_abs(I);
-  size_t b_cp = have_j ? cp_to_abs(J) : total;
-  if (b_cp < a_cp || total == 0) {
-    vl_push_string(S, "");
-    return 1;
-  }
-
-  // Walk to byte offsets
-  size_t a_byte = 0, b_byte = 0;
-  size_t cp = 1, i = 0;
-  while (i < n && cp < a_cp) {
-    size_t c = u8_decode_one(s + i, n - i, NULL);
-    if (!c) c = 1;
-    i += c;
-    cp++;
-  }
-  a_byte = i;
-  while (i < n && cp <= b_cp) {
-    size_t c = u8_decode_one(s + i, n - i, NULL);
-    if (!c) c = 1;
-    i += c;
-    cp++;
-  }
-  b_byte = i;
-  vl_push_lstring(S, (const char *)s + a_byte, (int)(b_byte - a_byte));
-  return 1;
-}
-
-static int vm_u_find_cp(VL_State *S) {
-  const unsigned char *s = (const unsigned char *)u_check_str(S, 1);
-  uint32_t needle = (uint32_t)u_check_int(S, 2);
-  int start_cp = u_opt_int(S, 3, 1);
-  size_t n = strlen((const char *)s);
-  // start at cp index
-  size_t startb = u8_cp_to_byte(s, n, start_cp);
-  if (startb == n + 1) {
-    vl_push_int(S, 0);
-    return 1;
-  }
-  size_t i = startb - 1;
-  size_t cpidx = (size_t)(start_cp < 1 ? 1 : start_cp);
-  // recompute cpidx by scanning (safe)
-  cpidx = 1;
-  size_t tmp = 0;
-  while (tmp < i) {
-    size_t c = u8_decode_one(s + tmp, n - tmp, NULL);
-    if (!c) c = 1;
-    tmp += c;
-    cpidx++;
-  }
-
-  while (i < n) {
-    uint32_t cp = 0;
-    size_t used = u8_decode_one(s + i, n - i, &cp);
-    if (!used) {
-      i++;
-      cpidx++;
-      continue;
-    }
-    if (cp == needle) {
-      vl_push_int(S, (int64_t)cpidx);
-      return 1;
-    }
-    i += used;
-    cpidx++;
-  }
-  vl_push_int(S, 0);
-  return 1;
-}
-
-static int vm_u_replace_cp(VL_State *S) {
-  const unsigned char *s = (const unsigned char *)u_check_str(S, 1);
-  uint32_t from = (uint32_t)u_check_int(S, 2);
-  uint32_t to = (uint32_t)u_check_int(S, 3);
-  int maxrep = u_opt_int(S, 4, -1);
-  size_t n = strlen((const char *)s);
-
-  char enc[4];
-  int encn = u8_encode_one(to, enc);
-  if (!encn) {
-    vl_push_nil(S);
-    vl_push_string(S, "ERANGE");
-    return 2;
-  }
-
-  AuxBuffer out = {0};
-  size_t i = 0, count = 0;
-  while (i < n) {
-    uint32_t cp = 0;
-    size_t used = u8_decode_one(s + i, n - i, &cp);
-    if (!used) {  // invalid -> pass-through
-      aux_buffer_append(&out, s + i, 1);
-      i++;
-      continue;
-    }
-    if (cp == from && (maxrep < 0 || (int)count < maxrep)) {
-      aux_buffer_append(&out, (const uint8_t *)enc, (size_t)encn);
-      count++;
-    } else {
-      aux_buffer_append(&out, s + i, used);
-    }
-    i += used;
-  }
-  vl_push_lstring(S, (const char *)out.data, (int)out.len);
-  vl_push_int(S, (int64_t)count);
-  aux_buffer_free(&out);
-  return 2;
-}
-
-static int vm_u_width_cp(VL_State *S) {
-  uint32_t cp = (uint32_t)u_check_int(S, 1);
-  vl_push_int(S, (int64_t)width_cp_approx(cp));
-  return 1;
-}
-
-static int vm_u_width(VL_State *S) {
-  const unsigned char *s = (const unsigned char *)u_check_str(S, 1);
-  size_t n = strlen((const char *)s);
-  int64_t w = 0;
-  size_t i = 0;
-  while (i < n) {
-    uint32_t cp = 0;
-    size_t used = u8_decode_one(s + i, n - i, &cp);
-    if (!used) {
-      i++;
-      continue;
-    }
-    w += width_cp_approx(cp);
-    i += used;
-  }
-  vl_push_int(S, w);
-  return 1;
-}
-
-static int vm_u_graphemes(VL_State *S) {
-  const unsigned char *s = (const unsigned char *)u_check_str(S, 1);
-  size_t n = strlen((const char *)s);
-  size_t i = 0;
-  int64_t g = 0;
-  int in_cluster = 0;
-  while (i < n) {
-    uint32_t cp = 0;
-    size_t used = u8_decode_one(s + i, n - i, &cp);
-    if (!used) {
-      i++;
-      in_cluster = 0;
-      g++;
-      continue;
-    }
-    if (!in_cluster) {
-      g++;
-      in_cluster = 1;
-    }
-    // combine marks and joiners keep cluster open
-    if (!is_combining(cp) && cp != 0x200D) {
-      in_cluster = 0;
-    }
-    i += used;
-  }
-  vl_push_int(S, g);
-  return 1;
-}
-
-// ---------------------------------------------------------------------
-// Registration
-// ---------------------------------------------------------------------
-static const VL_Reg utf8lib[] = {{"byte_len", vm_u_byte_len},
-                                 {"len", vm_u_len},
-                                 {"valid", vm_u_valid},
-
-                                 {"decode_at", vm_u_decode_at},
-                                 {"encode", vm_u_encode},
-
-                                 {"next", vm_u_next},
-                                 {"prev", vm_u_prev},
-
-                                 {"offset_of", vm_u_offset_of},
-                                 {"cp_at", vm_u_cp_at},
-                                 {"sub", vm_u_sub},
-                                 {"find_cp", vm_u_find_cp},
-                                 {"replace_cp", vm_u_replace_cp},
-
-                                 {"width_cp", vm_u_width_cp},
-                                 {"width", vm_u_width},
-                                 {"graphemes", vm_u_graphemes},
-
-                                 {NULL, NULL}};
-
-void vl_open_utf8lib(VL_State *S) { vl_register_lib(S, "utf8", utf8lib); }
+#endif

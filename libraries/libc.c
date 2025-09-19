@@ -1,374 +1,366 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// libc.c — Minimal, portable libc bindings for Vitte Light (C17)
-// Namespace: "libc"
+// lib.c — Portable utilities for Vitte Light runtime (C17)
+// Namespace: "lib"
 //
-// Functions:
-//   libc.getenv(key)                    -> string|nil
-//   libc.setenv(key, value, [overwrite=true]) -> bool | (nil, errmsg)
-//   libc.unsetenv(key)                  -> bool | (nil, errmsg)
-//   libc.errno()                        -> int
-//   libc.strerror([err])                -> string
-//   libc.getpid()                       -> int
-//   libc.sleep_ms(ms)                   -> bool | (nil, errmsg)
-//   libc.time()                         -> int64  // seconds since epoch (UTC)
-//   libc.clock_mono_ms()                -> int64  // monotonic
-//   libc.clock_mono_ns()                -> int64  // monotonic
-//   libc.hostname()                     -> string | (nil, errmsg)
-//   libc.system(cmd)                    -> int    // process exit status (best
-//   effort) libc.rand_bytes(n)                  -> string(len=n) | (nil,
-//   errmsg) libc.gmtime_iso([secs])             -> string
-//   "YYYY-MM-DDThh:mm:ssZ" libc.localtime_iso([secs])          -> string
-//   "YYYY-MM-DDThh:mm:ss"
+// Build:
+//   cc -std=c17 -O2 -Wall -Wextra -pedantic -c lib.c
 //
-// Depends: includes/auxlib.h, state.h, object.h, vm.h
+// Provides (portable, no external deps):
+//   Version / platform:
+//     const char* lib_version(void);
+//     const char* lib_platform(void);
+//     int         lib_is_little_endian(void);
+//   Memory helpers (abort on OOM):
+//     void* lib_xmalloc(size_t); void* lib_xcalloc(size_t, size_t);
+//     void* lib_xrealloc(void*, size_t); char* lib_xstrdup(const char*);
+//   Time and sleep:
+//     uint64_t lib_time_ms(void); void lib_sleep_ms(uint32_t);
+//   Paths and environment:
+//     char     lib_path_sep(void); const char* lib_home_dir(char* buf, size_t n);
+//     const char* lib_temp_dir(char* buf, size_t n); const char* lib_getenv(const char*);
+//     int      lib_mkdir_p(const char* path); // 0 ok, -1 err (errno set)
+//     int      lib_join_path(char* out, size_t n, const char* a, const char* b);
+//     int      lib_dirname(char* out, size_t n, const char* path);
+//     int      lib_basename(char* out, size_t n, const char* path);
+//     int      lib_executable_path(char* out, size_t n);
+//   File I/O:
+//     int      lib_read_file(const char* path, void** data, size_t* size); // malloc buf
+//     int      lib_write_file(const char* path, const void* data, size_t size);
+//     int      lib_write_file_atomic(const char* path, const void* data, size_t size);
+//
+// Notes:
+//   - All functions return 0 on success unless documented otherwise.
+//   - lib_x* abort on allocation failure to keep call-sites simple.
 
-#include <errno.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
+#include <errno.h>
 #include <time.h>
 
-#include "auxlib.h"
-#include "object.h"
-#include "state.h"
-#include "vm.h"
-
 #if defined(_WIN32)
-#define WIN32_LEAN_AND_MEAN
-#include <process.h>
-#include <windows.h>
-#ifndef PATH_MAX
-#define PATH_MAX 260
-#endif
+  #define WIN32_LEAN_AND_MEAN
+  #include <windows.h>
+  #include <direct.h>  // _mkdir
+  #include <io.h>
+  #define LIB_PATH_SEP '\\'
+  #define mkdir_one(path,mode) _mkdir(path)
 #else
-#include <limits.h>
-#include <sys/wait.h>
-#include <unistd.h>
+  #include <unistd.h>
+  #include <sys/stat.h>
+  #include <sys/types.h>
+  #define LIB_PATH_SEP '/'
+  #define mkdir_one(path,mode) mkdir(path, mode)
 #endif
 
-// ---------------------------------------------------------------------
-// VM arg helpers
-// ---------------------------------------------------------------------
+#ifndef LIB_VERSION_STR
+#define LIB_VERSION_STR "0.1.0"
+#endif
 
-static const char *vlc_check_str(VL_State *S, int idx) {
-  if (vl_get(S, idx) && vl_isstring(S, idx))
-    return vl_tocstring(S, vl_get(S, idx));
-  vl_errorf(S, "argument #%d: string expected", idx);
-  vl_error(S);
-  return NULL;
-}
+// ---------------- Version / platform ----------------
 
-static int64_t vlc_check_int(VL_State *S, int idx) {
-  if (vl_get(S, idx) && vl_isint(S, idx)) return vl_toint(S, vl_get(S, idx));
-  vl_errorf(S, "argument #%d: int expected", idx);
-  vl_error(S);
-  return 0;
-}
+const char* lib_version(void) { return LIB_VERSION_STR; }
 
-static int vlc_opt_bool(VL_State *S, int idx, int defv) {
-  if (!vl_get(S, idx)) return defv;
-  return vl_tobool(vl_get(S, idx)) ? 1 : 0;
-}
-
-static int64_t vlc_opt_int(VL_State *S, int idx, int64_t defv) {
-  if (!vl_get(S, idx)) return defv;
-  if (vl_isint(S, idx)) return vl_toint(S, vl_get(S, idx));
-  return defv;
-}
-
-// ---------------------------------------------------------------------
-// getenv / setenv / unsetenv
-// ---------------------------------------------------------------------
-
-static int vlc_getenv(VL_State *S) {
-  const char *key = vlc_check_str(S, 1);
+const char* lib_platform(void) {
 #if defined(_WIN32)
-  // Use GetEnvironmentVariableA to avoid CRT static buffer edge cases
-  DWORD n = GetEnvironmentVariableA(key, NULL, 0);
-  if (n == 0) {
-    vl_push_nil(S);
-    return 1;
-  }
-  char *buf = (char *)malloc(n);
-  if (!buf) {
-    vl_push_nil(S);
-    return 1;
-  }
-  DWORD r = GetEnvironmentVariableA(key, buf, n);
-  if (r == 0 || r >= n) {
-    free(buf);
-    vl_push_nil(S);
-    return 1;
-  }
-  vl_push_string(S, buf);
-  free(buf);
-  return 1;
+    return "windows";
+#elif defined(__APPLE__)
+    return "apple";
+#elif defined(__linux__)
+    return "linux";
+#elif defined(__FreeBSD__)
+    return "freebsd";
 #else
-  const char *v = getenv(key);
-  if (!v) {
-    vl_push_nil(S);
-    return 1;
-  }
-  vl_push_string(S, v);
-  return 1;
+    return "unknown";
 #endif
 }
 
-static int vlc_setenv(VL_State *S) {
-  const char *key = vlc_check_str(S, 1);
-  const char *val = vlc_check_str(S, 2);
-  int overwrite = vlc_opt_bool(S, 3, 1);
+int lib_is_little_endian(void) {
+    uint16_t x = 1;
+    return *(uint8_t*)&x == 1;
+}
+
+// ---------------- OOM-safe memory ----------------
+
+static void lib_abort_oom(void) {
+    fputs("lib: fatal: out of memory\n", stderr);
+    abort();
+}
+
+void* lib_xmalloc(size_t n) {
+    void* p = malloc(n ? n : 1);
+    if (!p) lib_abort_oom();
+    return p;
+}
+void* lib_xcalloc(size_t n, size_t m) {
+    void* p = calloc(n ? n : 1, m ? m : 1);
+    if (!p) lib_abort_oom();
+    return p;
+}
+void* lib_xrealloc(void* p, size_t n) {
+    void* q = realloc(p, n ? n : 1);
+    if (!q) lib_abort_oom();
+    return q;
+}
+char* lib_xstrdup(const char* s) {
+    if (!s) return NULL;
+    size_t n = strlen(s) + 1;
+    char* p = (char*) lib_xmalloc(n);
+    memcpy(p, s, n);
+    return p;
+}
+
+// ---------------- Time and sleep ----------------
+
+uint64_t lib_time_ms(void) {
 #if defined(_WIN32)
-  if (!overwrite) {
-    DWORD n = GetEnvironmentVariableA(key, NULL, 0);
-    if (n > 0) {
-      vl_push_bool(S, 1);
-      return 1;
+    LARGE_INTEGER f, c;
+    QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&c);
+    return (uint64_t)((c.QuadPart * 1000ULL) / (uint64_t)f.QuadPart);
+#else
+    struct timespec ts;
+    // monotonic if possible
+    #if defined(CLOCK_MONOTONIC)
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    #else
+    clock_gettime(CLOCK_REALTIME, &ts);
+    #endif
+    return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)(ts.tv_nsec / 1000000ULL);
+#endif
+}
+
+void lib_sleep_ms(uint32_t ms) {
+#if defined(_WIN32)
+    Sleep(ms);
+#else
+    struct timespec ts;
+    ts.tv_sec  = ms / 1000u;
+    ts.tv_nsec = (long)(ms % 1000u) * 1000000L;
+    nanosleep(&ts, NULL);
+#endif
+}
+
+// ---------------- Env and dirs ----------------
+
+char lib_path_sep(void) { return LIB_PATH_SEP; }
+
+static int lib_is_sep(char c) { return c == '/' || c == '\\'; }
+
+const char* lib_getenv(const char* k) {
+    return k ? getenv(k) : NULL;
+}
+
+const char* lib_home_dir(char* buf, size_t n) {
+    if (!buf || n == 0) { errno = EINVAL; return NULL; }
+    buf[0] = '\0';
+#if defined(_WIN32)
+    const char* home = getenv("USERPROFILE");
+    if (!home) {
+        const char* h = getenv("HOMEDRIVE");
+        const char* p = getenv("HOMEPATH");
+        if (h && p) {
+            snprintf(buf, n, "%s%s", h, p);
+            return buf;
+        }
     }
-  }
-  int rc = _putenv_s(key, val);
-  if (rc != 0) {
-    vl_push_nil(S);
-    vl_push_string(S, "EIO");
-    return 2;
-  }
-  vl_push_bool(S, 1);
-  return 1;
 #else
-  if (setenv(key, val, overwrite ? 1 : 0) != 0) {
-    vl_push_nil(S);
-    vl_push_string(S, "EIO");
-    return 2;
-  }
-  vl_push_bool(S, 1);
-  return 1;
+    const char* home = getenv("HOME");
 #endif
+    if (!home) { errno = ENOENT; return NULL; }
+    snprintf(buf, n, "%s", home);
+    return buf;
 }
 
-static int vlc_unsetenv(VL_State *S) {
-  const char *key = vlc_check_str(S, 1);
+const char* lib_temp_dir(char* buf, size_t n) {
+    if (!buf || n == 0) { errno = EINVAL; return NULL; }
 #if defined(_WIN32)
-  // Remove by setting empty value
-  int rc = _putenv_s(key, "");
-  if (rc != 0) {
-    vl_push_nil(S);
-    vl_push_string(S, "EIO");
-    return 2;
-  }
-  vl_push_bool(S, 1);
-  return 1;
+    const char* t = getenv("TEMP");
+    if (!t) t = getenv("TMP");
+    if (!t) t = "C:\\Windows\\Temp";
 #else
-  if (unsetenv(key) != 0) {
-    vl_push_nil(S);
-    vl_push_string(S, "EIO");
-    return 2;
-  }
-  vl_push_bool(S, 1);
-  return 1;
+    const char* t = getenv("TMPDIR");
+    if (!t) t = "/tmp";
 #endif
+    snprintf(buf, n, "%s", t);
+    return buf;
 }
 
-// ---------------------------------------------------------------------
-// errno / strerror
-// ---------------------------------------------------------------------
+// mkdir -p
+int lib_mkdir_p(const char* path) {
+    if (!path || !*path) { errno = EINVAL; return -1; }
+    char* tmp = lib_xstrdup(path);
+    size_t len = strlen(tmp);
+    if (len == 0) { free(tmp); return 0; }
 
-static int vlc_errno(VL_State *S) {
-  vl_push_int(S, (int64_t)errno);
-  return 1;
-}
-
-static int vlc_strerror(VL_State *S) {
-  int64_t e = vlc_opt_int(S, 1, (int64_t)errno);
+    // skip drive on Windows like C:
 #if defined(_WIN32)
-  char buf[256];
-  strerror_s(buf, sizeof buf, (int)e);
-  vl_push_string(S, buf);
+    size_t i = (len >= 2 && tmp[1] == ':') ? 2 : 0;
 #else
-  vl_push_string(S, strerror((int)e));
+    size_t i = 0;
 #endif
-  return 1;
+
+    for (; i < len; ++i) {
+        if (lib_is_sep(tmp[i])) {
+            if (i == 0) continue;           // root
+            tmp[i] = '\0';
+            if (mkdir_one(tmp, 0777) != 0 && errno != EEXIST) {
+                free(tmp);
+                return -1;
+            }
+            tmp[i] = LIB_PATH_SEP;
+        }
+    }
+    if (mkdir_one(tmp, 0777) != 0 && errno != EEXIST) {
+        free(tmp);
+        return -1;
+    }
+    free(tmp);
+    return 0;
 }
 
-// ---------------------------------------------------------------------
-// pid, sleep, time, monotonic clocks
-// ---------------------------------------------------------------------
+// ---------------- Path helpers ----------------
 
-static int vlc_getpid(VL_State *S) {
+int lib_join_path(char* out, size_t n, const char* a, const char* b) {
+    if (!out || n == 0 || !a || !b) { errno = EINVAL; return -1; }
+    size_t la = strlen(a);
+    int need_sep = (la > 0 && !lib_is_sep(a[la-1]));
+    if (snprintf(out, n, "%s%s%s", a, need_sep ? (char[]){LIB_PATH_SEP,0} : "", b) >= (int)n) {
+        errno = ENAMETOOLONG; return -1;
+    }
+    return 0;
+}
+
+int lib_dirname(char* out, size_t n, const char* path) {
+    if (!out || n == 0 || !path) { errno = EINVAL; return -1; }
+    size_t len = strlen(path);
+    if (len == 0) { snprintf(out, n, "."); return 0; }
+    size_t i = len;
+    while (i > 0 && !lib_is_sep(path[i-1])) i--;
+    if (i == 0) { snprintf(out, n, "."); return 0; }
+    // remove trailing separators
+    while (i > 1 && lib_is_sep(path[i-1])) i--;
+    if (i >= n) { errno = ENAMETOOLONG; return -1; }
+    memcpy(out, path, i);
+    out[i] = '\0';
+    return 0;
+}
+
+int lib_basename(char* out, size_t n, const char* path) {
+    if (!out || n == 0 || !path) { errno = EINVAL; return -1; }
+    const char* p = path + strlen(path);
+    while (p > path && !lib_is_sep(*(p-1))) p--;
+    if (snprintf(out, n, "%s", p) >= (int)n) { errno = ENAMETOOLONG; return -1; }
+    return 0;
+}
+
+// ---------------- Executable path ----------------
+
+int lib_executable_path(char* out, size_t n) {
+    if (!out || n == 0) { errno = EINVAL; return -1; }
 #if defined(_WIN32)
-  vl_push_int(S, (int64_t)GetCurrentProcessId());
+    DWORD w = GetModuleFileNameA(NULL, out, (DWORD)n);
+    if (w == 0 || w >= n) { errno = ENAMETOOLONG; return -1; }
+    return 0;
+#elif defined(__APPLE__)
+    uint32_t sz = (uint32_t)n;
+    extern int _NSGetExecutablePath(char*, uint32_t*);
+    if (_NSGetExecutablePath(out, &sz) != 0) { errno = ENAMETOOLONG; return -1; }
+    return 0;
+#elif defined(__linux__)
+    ssize_t r = readlink("/proc/self/exe", out, n-1);
+    if (r < 0) return -1;
+    out[r] = '\0';
+    return 0;
 #else
-  vl_push_int(S, (int64_t)getpid());
+    errno = ENOSYS; return -1;
 #endif
-  return 1;
 }
 
-static int vlc_sleep_ms(VL_State *S) {
-  int64_t ms = vlc_check_int(S, 1);
-  if (ms < 0) ms = 0;
+// ---------------- File I/O ----------------
+
+int lib_read_file(const char* path, void** data, size_t* size) {
+    if (!path || !data || !size) { errno = EINVAL; return -1; }
+    *data = NULL; *size = 0;
+    FILE* f = fopen(path, "rb");
+    if (!f) return -1;
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return -1; }
+    long end = ftell(f);
+    if (end < 0) { fclose(f); errno = EIO; return -1; }
+    if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return -1; }
+
+    size_t n = (size_t) end;
+    void* buf = lib_xmalloc(n + 1);
+    size_t rd = fread(buf, 1, n, f);
+    fclose(f);
+    if (rd != n) { free(buf); errno = EIO; return -1; }
+    ((char*)buf)[n] = '\0'; // NUL-terminate for text convenience
+    *data = buf; *size = n;
+    return 0;
+}
+
+int lib_write_file(const char* path, const void* data, size_t size) {
+    if (!path || (!data && size)) { errno = EINVAL; return -1; }
+    FILE* f = fopen(path, "wb");
+    if (!f) return -1;
+    size_t wr = size ? fwrite(data, 1, size, f) : 0;
+    int rc = (wr == size && fflush(f) == 0 && fclose(f) == 0) ? 0 : -1;
+    if (rc != 0) { fclose(f); }
+    return rc;
+}
+
+int lib_write_file_atomic(const char* path, const void* data, size_t size) {
+    if (!path) { errno = EINVAL; return -1; }
+
+    char dir[1024], base[512], tmp[1536];
+    if (lib_dirname(dir, sizeof(dir), path) != 0) return -1;
+    if (lib_basename(base, sizeof(base), path) != 0) return -1;
+
 #if defined(_WIN32)
-  Sleep((DWORD)ms);
-  vl_push_bool(S, 1);
-  return 1;
+    // Use same directory
+    if (snprintf(tmp, sizeof(tmp), "%s%c.%s.tmp.%lu", dir, LIB_PATH_SEP, base, (unsigned long)GetCurrentProcessId()) >= (int)sizeof(tmp)) {
+        errno = ENAMETOOLONG; return -1;
+    }
 #else
-  struct timespec ts;
-  ts.tv_sec = (time_t)(ms / 1000);
-  ts.tv_nsec = (long)((ms % 1000) * 1000000L);
-  while (nanosleep(&ts, &ts) != 0 && errno == EINTR) { /* retry */
-  }
-  vl_push_bool(S, 1);
-  return 1;
+    if (snprintf(tmp, sizeof(tmp), "%s/%s.tmp.%ld", dir, base, (long)getpid()) >= (int)sizeof(tmp)) {
+        errno = ENAMETOOLONG; return -1;
+    }
 #endif
-}
 
-static int vlc_time(VL_State *S) {
-  (void)S;
-  vl_push_int(S, (int64_t)time(NULL));
-  return 1;
-}
+    if (lib_write_file(tmp, data, size) != 0) return -1;
 
-static int vlc_clock_mono_ms(VL_State *S) {
-  vl_push_int(S, (int64_t)aux_now_millis());
-  return 1;
-}
-
-static int vlc_clock_mono_ns(VL_State *S) {
-  vl_push_int(S, (int64_t)aux_now_nanos());
-  return 1;
-}
-
-// ---------------------------------------------------------------------
-// hostname
-// ---------------------------------------------------------------------
-
-static int vlc_hostname(VL_State *S) {
 #if defined(_WIN32)
-  char buf[256];
-  DWORD n = (DWORD)sizeof buf;
-  if (!GetComputerNameA(buf, &n)) {
-    vl_push_nil(S);
-    vl_push_string(S, "EIO");
-    return 2;
-  }
-  vl_push_string(S, buf);
-  return 1;
+    // Windows replace: MoveFileEx with MOVEFILE_REPLACE_EXISTING
+    if (!MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        (void)remove(tmp);
+        return -1;
+    }
 #else
-  char buf[256];
-  if (gethostname(buf, sizeof buf) != 0) {
-    vl_push_nil(S);
-    vl_push_string(S, "EIO");
-    return 2;
-  }
-  buf[sizeof(buf) - 1] = 0;
-  vl_push_string(S, buf);
-  return 1;
+    if (rename(tmp, path) != 0) {
+        (void)remove(tmp);
+        return -1;
+    }
 #endif
+    return 0;
 }
 
-// ---------------------------------------------------------------------
-// system(cmd) -> exit status
-// ---------------------------------------------------------------------
-
-static int vlc_system(VL_State *S) {
-  const char *cmd = vlc_check_str(S, 1);
-  int rc = system(cmd);
-#if defined(_WIN32)
-  // On Windows, return value is the exit code.
-  vl_push_int(S, (int64_t)rc);
-#else
-  int status = rc;
-  int code = -1;
-  if (status != -1) {
-    if (WIFEXITED(status))
-      code = WEXITSTATUS(status);
-    else if (WIFSIGNALED(status))
-      code = 128 + WTERMSIG(status);
-  }
-  vl_push_int(S, (int64_t)code);
+// ---------------- Demo ----------------
+#ifdef LIB_DEMO
+#include <stdio.h>
+int main(void) {
+    printf("lib %s on %s little=%d sep=%c\n",
+           lib_version(), lib_platform(), lib_is_little_endian(), lib_path_sep());
+    char home[512]; lib_home_dir(home, sizeof(home)); printf("home=%s\n", home);
+    char exe[1024]; if (lib_executable_path(exe, sizeof(exe))==0) printf("exe=%s\n", exe);
+    char j[1024]; lib_join_path(j, sizeof(j), home, "test.bin");
+    const char msg[] = "hello";
+    lib_mkdir_p(j); // harmless if file path; creates dirs along the way
+    lib_write_file_atomic(j, msg, sizeof msg);
+    void* data; size_t n; lib_read_file(j, &data, &n);
+    printf("read %zu: %.*s\n", n, (int)n, (char*)data);
+    free(data);
+    return 0;
+}
 #endif
-  return 1;
-}
-
-// ---------------------------------------------------------------------
-// rand_bytes(n) -> string
-// ---------------------------------------------------------------------
-
-static int vlc_rand_bytes(VL_State *S) {
-  int64_t n = vlc_check_int(S, 1);
-  if (n < 0 || n > 128 * 1024 * 1024) {
-    vl_push_nil(S);
-    vl_push_string(S, "ERANGE");
-    return 2;
-  }
-  uint8_t *buf = (uint8_t *)malloc((size_t)n);
-  if (!buf) {
-    vl_push_nil(S);
-    vl_push_string(S, "ENOMEM");
-    return 2;
-  }
-  AuxStatus st = aux_rand_bytes(buf, (size_t)n);
-  if (st != AUX_OK) {
-    free(buf);
-    vl_push_nil(S);
-    vl_push_string(S, aux_status_str(st));
-    return 2;
-  }
-  vl_push_lstring(S, (const char *)buf, (int)n);
-  free(buf);
-  return 1;
-}
-
-// ---------------------------------------------------------------------
-// ISO-8601 formatting helpers
-// ---------------------------------------------------------------------
-
-static int vlc_gmtime_iso(VL_State *S) {
-  time_t t = (time_t)vlc_opt_int(S, 1, (int64_t)time(NULL));
-  char buf[32];
-  size_t w = aux_time_iso8601(buf, sizeof buf, t, /*utc=*/true);
-  if (w == 0) {
-    vl_push_nil(S);
-    vl_push_string(S, "EIO");
-    return 2;
-  }
-  vl_push_string(S, buf);
-  return 1;
-}
-
-static int vlc_localtime_iso(VL_State *S) {
-  time_t t = (time_t)vlc_opt_int(S, 1, (int64_t)time(NULL));
-  char buf[32];
-  size_t w = aux_time_iso8601(buf, sizeof buf, t, /*utc=*/false);
-  if (w == 0) {
-    vl_push_nil(S);
-    vl_push_string(S, "EIO");
-    return 2;
-  }
-  vl_push_string(S, buf);
-  return 1;
-}
-
-// ---------------------------------------------------------------------
-// Registration
-// ---------------------------------------------------------------------
-
-static const VL_Reg libclib[] = {{"getenv", vlc_getenv},
-                                 {"setenv", vlc_setenv},
-                                 {"unsetenv", vlc_unsetenv},
-                                 {"errno", vlc_errno},
-                                 {"strerror", vlc_strerror},
-                                 {"getpid", vlc_getpid},
-                                 {"sleep_ms", vlc_sleep_ms},
-                                 {"time", vlc_time},
-                                 {"clock_mono_ms", vlc_clock_mono_ms},
-                                 {"clock_mono_ns", vlc_clock_mono_ns},
-                                 {"hostname", vlc_hostname},
-                                 {"system", vlc_system},
-                                 {"rand_bytes", vlc_rand_bytes},
-                                 {"gmtime_iso", vlc_gmtime_iso},
-                                 {"localtime_iso", vlc_localtime_iso},
-                                 {NULL, NULL}};
-
-// Prefer explicit name to avoid clashing with C libc symbol names.
-void vl_open_libclib(VL_State *S) { vl_register_lib(S, "libc", libclib); }

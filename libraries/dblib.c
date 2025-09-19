@@ -1,504 +1,333 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// dblib.c — SQLite wrapper C17 portable for Vitte Light
+// dblib.c — Minimal SQLite wrapper for Vitte Light (C17, portable)
+// Namespace: "db"
 //
-// Capacités:
-//   - Ouverture/fermeture de bases (fichier, :memory:)
-//   - Exec direct (DDL/DML), erreurs détaillées
-//   - Requêtes avec callback ligne par ligne
-//   - Statements préparés: bind (nil/int64/double/text/blob), step, getters,
-//   finalize
-//   - Transactions: BEGIN [IMMEDIATE|EXCLUSIVE], COMMIT, ROLLBACK
-//   - Helpers: last_insert_rowid, changes
+// Build:
+//   With SQLite (recommended):
+//     cc -std=c17 -O2 -Wall -Wextra -pedantic -DVL_HAVE_SQLITE3 dblib.c -lsqlite3 -c
 //
-// Dépendances:
-//   - includes/auxlib.h (AuxStatus + utils)
-//   - SQLite3 (optionnel). Si non présent, retourne AUX_ENOSYS.
+//   Without SQLite:
+//     cc -std=c17 -O2 -Wall -Wextra -pedantic -c dblib.c
+//     // All functions return ENOSYS and fail cleanly.
 //
-// Build exemple:
-//   cc -std=c17 -O2 -Wall -Wextra -pedantic -DVL_HAVE_SQLITE3 -c dblib.c
-//   cc ... dblib.o -lsqlite3
+// Provides:
+//   Opaque handle and error API:
+//     typedef struct db db_t;
+//     const char* db_errmsg(db_t*);         // last error, thread-local if db==NULL
 //
-// En-tête suggéré: includes/dblib.h (facultatif; API minimale redéclarée
-// ci-dessous).
+//   Open/close and pragmas:
+//     db_t* db_open(const char* path, int flags); // flags bitmask below
+//     void  db_close(db_t*);
+//     int   db_exec(db_t*, const char* sql);      // convenience exec (no results)
+//     int   db_begin(db_t*);                      // BEGIN IMMEDIATE
+//     int   db_commit(db_t*);
+//     int   db_rollback(db_t*);
+//
+//   Rowset query (small/medium results):
+//     typedef struct {
+//       int cols, rows;
+//       char** colname;   // cols strings
+//       char** cell;      // rows*cols strings (row-major). NULL allowed for SQL NULL.
+//     } db_rowset;
+//     void  db_rowset_free(db_rowset*);
+//     int   db_query(db_t*, const char* sql, db_rowset* out); // fills out on success
+//
+//   Scalar helpers:
+//     int   db_query_i64(db_t*, const char* sql, long long* out);
+//     int   db_query_f64(db_t*, const char* sql, double* out);
+//     int   db_query_str(db_t*, const char* sql, char** out); // malloc'd string
+//
+//   Meta / changes:
+//     long long db_last_rowid(db_t*);
+//     int        db_changes(db_t*);
+//
+// Flags:
+//   DB_OPEN_RW   = 1  (create if not exists)
+//   DB_OPEN_RO   = 2
+//   DB_OPEN_MEM  = 4  (":memory:" forced; path ignored)
+//
+// Notes:
+//   - Strings are UTF-8. All returned strings are heap-allocated with malloc and must be freed by caller via db_rowset_free()/free().
+//   - This wrapper is synchronous and single-connection per handle. No implicit threads.
 
-#include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 
-#include "auxlib.h"
+#define DB_OPEN_RW  1
+#define DB_OPEN_RO  2
+#define DB_OPEN_MEM 4
 
-#ifdef VL_HAVE_SQLITE3
-#include <sqlite3.h>
+typedef struct db db_t;
+
+#if defined(_WIN32)
+  #define DB_THREAD_LOCAL __declspec(thread)
+#else
+  #define DB_THREAD_LOCAL __thread
 #endif
 
-#ifndef VITTE_LIGHT_INCLUDES_DBLIB_H
-#define VITTE_LIGHT_INCLUDES_DBLIB_H 1
+static DB_THREAD_LOCAL char g_err[256];
 
-typedef struct VlDb VlDb;
-typedef struct VlDbStmt VlDbStmt;
-
-typedef enum {
-  VL_DB_OPEN_RO = 1 << 0,      // read-only
-  VL_DB_OPEN_RW = 1 << 1,      // read-write
-  VL_DB_OPEN_CREATE = 1 << 2,  // create if missing
-  VL_DB_OPEN_MEM = 1 << 3      // open :memory:
-} VlDbOpenFlags;
-
-typedef enum {
-  VL_DB_STEP_ROW = 1,
-  VL_DB_STEP_DONE = 0,
-  VL_DB_STEP_ERR = -1
-} VlDbStepRc;
-
-typedef int (*VlDbRowCb)(int ncol, const char *const *colnames,
-                         const char *const *values, void *ud);
-
-// Core
-AuxStatus vl_db_open(const char *path, int flags, VlDb **out_db);
-void vl_db_close(VlDb *db);
-
-// Exec and queries
-AuxStatus vl_db_exec(VlDb *db, const char *sql);
-AuxStatus vl_db_exec_query(VlDb *db, const char *sql, VlDbRowCb cb, void *ud);
-
-// Prepared statements
-AuxStatus vl_db_prepare(VlDb *db, const char *sql, VlDbStmt **out_stmt,
-                        const char **tail);
-AuxStatus vl_db_bind_null(VlDbStmt *st, int idx);
-AuxStatus vl_db_bind_int64(VlDbStmt *st, int idx, int64_t v);
-AuxStatus vl_db_bind_double(VlDbStmt *st, int idx, double v);
-AuxStatus vl_db_bind_text(VlDbStmt *st, int idx, const char *s);
-AuxStatus vl_db_bind_blob(VlDbStmt *st, int idx, const void *p, size_t n);
-AuxStatus vl_db_clear_bindings(VlDbStmt *st);
-AuxStatus vl_db_reset(VlDbStmt *st);
-int vl_db_bind_count(VlDbStmt *st);
-VlDbStepRc vl_db_step(VlDbStmt *st);
-int vl_db_column_count(VlDbStmt *st);
-const char *vl_db_column_name(VlDbStmt *st, int i);
-int vl_db_column_type(
-    VlDbStmt *st, int i);  // 1=NULL,2=INT,3=FLOAT,4=TEXT,5=BLOB (aligné sqlite)
-int64_t vl_db_column_int64(VlDbStmt *st, int i);
-double vl_db_column_double(VlDbStmt *st, int i);
-const char *vl_db_column_text(VlDbStmt *st, int i);
-const void *vl_db_column_blob(VlDbStmt *st, int i, int *out_size);
-AuxStatus vl_db_finalize(VlDbStmt *st);
-
-// Transactions + meta
-AuxStatus vl_db_begin(
-    VlDb *db,
-    const char *mode);  // mode: NULL|"DEFERRED"|"IMMEDIATE"|"EXCLUSIVE"
-AuxStatus vl_db_commit(VlDb *db);
-AuxStatus vl_db_rollback(VlDb *db);
-int64_t vl_db_last_insert_rowid(VlDb *db);
-int vl_db_changes(VlDb *db);
-
-// Error string (optionnel)
-const char *vl_db_errstr(VlDb *db);
-
-#endif  // VITTE_LIGHT_INCLUDES_DBLIB_H
-
-// ======================================================================
-// Implémentation
-// ======================================================================
-
-#ifdef VL_HAVE_SQLITE3
-
-struct VlDb {
-  sqlite3 *h;
-};
-struct VlDbStmt {
-  sqlite3_stmt *h;
-};
-
-static AuxStatus map_sqlite_err(int rc) {
-  if (rc == SQLITE_OK || rc == SQLITE_DONE || rc == SQLITE_ROW) return AUX_OK;
-  switch (rc) {
-    case SQLITE_NOMEM:
-      return AUX_ENOMEM;
-    case SQLITE_RANGE:
-      return AUX_ERANGE;
-    case SQLITE_MISUSE:
-      return AUX_EINVAL;
-    default:
-      return AUX_EIO;
-  }
+static void set_err(const char* s) {
+    if (!s) { g_err[0] = '\0'; return; }
+    snprintf(g_err, sizeof(g_err), "%s", s);
 }
 
-AuxStatus vl_db_open(const char *path, int flags, VlDb **out_db) {
-  if (!out_db) return AUX_EINVAL;
-  *out_db = NULL;
+const char* db_errmsg(db_t* db) {
+    (void)db;
+    return g_err[0] ? g_err : NULL;
+}
 
-  int oflags = 0;
-  if (flags & VL_DB_OPEN_MEM) path = ":memory:";
-  if (flags & VL_DB_OPEN_RO) oflags |= SQLITE_OPEN_READONLY;
-  if (flags & VL_DB_OPEN_RW) oflags |= SQLITE_OPEN_READWRITE;
-  if (flags & VL_DB_OPEN_CREATE) oflags |= SQLITE_OPEN_CREATE;
-  if (!oflags) oflags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE;
+// ---------- Rowset ----------
+typedef struct {
+    int cols, rows;
+    char** colname; // [cols]
+    char** cell;    // [rows * cols]
+} db_rowset;
 
-  sqlite3 *h = NULL;
-  int rc = sqlite3_open_v2(path ? path : ":memory:", &h, oflags, NULL);
-  if (rc != SQLITE_OK) {
-    if (h) {
-      sqlite3_close(h);
+static void* xmalloc(size_t n) { void* p = malloc(n ? n : 1); if (!p) { perror("oom"); abort(); } return p; }
+static char* xstrdup(const char* s) {
+    if (!s) return NULL;
+    size_t n = strlen(s) + 1;
+    char* p = (char*)xmalloc(n);
+    memcpy(p, s, n);
+    return p;
+}
+
+void db_rowset_free(db_rowset* rs) {
+    if (!rs) return;
+    if (rs->colname) {
+        for (int i=0;i<rs->cols;i++) free(rs->colname[i]);
+        free(rs->colname);
     }
-    return map_sqlite_err(rc);
-  }
-  // Tuning raisonnable
-  sqlite3_exec(h, "PRAGMA foreign_keys=ON;", NULL, NULL, NULL);
-  sqlite3_exec(h, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
-  sqlite3_exec(h, "PRAGMA synchronous=NORMAL;", NULL, NULL, NULL);
-
-  VlDb *db = (VlDb *)calloc(1, sizeof *db);
-  if (!db) {
-    sqlite3_close(h);
-    return AUX_ENOMEM;
-  }
-  db->h = h;
-  *out_db = db;
-  return AUX_OK;
-}
-
-void vl_db_close(VlDb *db) {
-  if (!db) return;
-  if (db->h) sqlite3_close(db->h);
-  free(db);
-}
-
-const char *vl_db_errstr(VlDb *db) {
-  return db && db->h ? sqlite3_errmsg(db->h) : "db=NULL";
-}
-
-AuxStatus vl_db_exec(VlDb *db, const char *sql) {
-  if (!db || !db->h || !sql) return AUX_EINVAL;
-  char *err = NULL;
-  int rc = sqlite3_exec(db->h, sql, NULL, NULL, &err);
-  if (rc != SQLITE_OK) {
-    if (err) {
-      AUX_LOG_ERROR("sqlite exec: %s", err);
-      sqlite3_free(err);
+    if (rs->cell) {
+        int n = rs->rows * rs->cols;
+        for (int i=0;i<n;i++) free(rs->cell[i]);
+        free(rs->cell);
     }
-    return map_sqlite_err(rc);
-  }
-  return AUX_OK;
+    memset(rs, 0, sizeof(*rs));
 }
 
-static int row_tramp(void *ud, int ncol, char **vals, char **cols) {
-  VlDbRowCb cb = (VlDbRowCb)ud;
-  if (!cb) return 0;
-  // cast to const
-  const char *const *cvals = (const char *const *)vals;
-  const char *const *cnames = (const char *const *)cols;
-  return cb(ncol, cnames, cvals, NULL);
-}
+// ---------- SQLite-backed implementation ----------
+#if defined(VL_HAVE_SQLITE3)
+  #include <sqlite3.h>
 
-AuxStatus vl_db_exec_query(VlDb *db, const char *sql, VlDbRowCb cb, void *ud) {
-  if (!db || !db->h || !sql) return AUX_EINVAL;
-  (void)ud;  // cb n’a pas d’userdata param dans cette signature; si besoin,
-             // changez l’API.
-  char *err = NULL;
-  int rc = sqlite3_exec(db->h, sql, cb ? row_tramp : NULL, (void *)cb, &err);
-  if (rc != SQLITE_OK) {
-    if (err) {
-      AUX_LOG_ERROR("sqlite query: %s", err);
-      sqlite3_free(err);
-    }
-    return map_sqlite_err(rc);
-  }
-  return AUX_OK;
-}
-
-// Prepared statements
-AuxStatus vl_db_prepare(VlDb *db, const char *sql, VlDbStmt **out_stmt,
-                        const char **tail) {
-  if (!db || !db->h || !sql || !out_stmt) return AUX_EINVAL;
-  *out_stmt = NULL;
-  sqlite3_stmt *st = NULL;
-  const char *ztail = NULL;
-  int rc = sqlite3_prepare_v2(db->h, sql, -1, &st, &ztail);
-  if (rc != SQLITE_OK) return map_sqlite_err(rc);
-  VlDbStmt *S = (VlDbStmt *)calloc(1, sizeof *S);
-  if (!S) {
-    sqlite3_finalize(st);
-    return AUX_ENOMEM;
-  }
-  S->h = st;
-  *out_stmt = S;
-  if (tail) *tail = ztail;
-  return AUX_OK;
-}
-
-AuxStatus vl_db_bind_null(VlDbStmt *st, int idx) {
-  if (!st || !st->h) return AUX_EINVAL;
-  return map_sqlite_err(sqlite3_bind_null(st->h, idx));
-}
-
-AuxStatus vl_db_bind_int64(VlDbStmt *st, int idx, int64_t v) {
-  if (!st || !st->h) return AUX_EINVAL;
-  return map_sqlite_err(sqlite3_bind_int64(st->h, idx, (sqlite3_int64)v));
-}
-
-AuxStatus vl_db_bind_double(VlDbStmt *st, int idx, double v) {
-  if (!st || !st->h) return AUX_EINVAL;
-  return map_sqlite_err(sqlite3_bind_double(st->h, idx, v));
-}
-
-AuxStatus vl_db_bind_text(VlDbStmt *st, int idx, const char *s) {
-  if (!st || !st->h || !s) return AUX_EINVAL;
-  return map_sqlite_err(sqlite3_bind_text(st->h, idx, s, -1, SQLITE_TRANSIENT));
-}
-
-AuxStatus vl_db_bind_blob(VlDbStmt *st, int idx, const void *p, size_t n) {
-  if (!st || !st->h || (!p && n)) return AUX_EINVAL;
-  return map_sqlite_err(
-      sqlite3_bind_blob(st->h, idx, p, (int)n, SQLITE_TRANSIENT));
-}
-
-AuxStatus vl_db_clear_bindings(VlDbStmt *st) {
-  if (!st || !st->h) return AUX_EINVAL;
-  return map_sqlite_err(sqlite3_clear_bindings(st->h));
-}
-
-AuxStatus vl_db_reset(VlDbStmt *st) {
-  if (!st || !st->h) return AUX_EINVAL;
-  return map_sqlite_err(sqlite3_reset(st->h));
-}
-
-int vl_db_bind_count(VlDbStmt *st) {
-  if (!st || !st->h) return 0;
-  return sqlite3_bind_parameter_count(st->h);
-}
-
-VlDbStepRc vl_db_step(VlDbStmt *st) {
-  if (!st || !st->h) return VL_DB_STEP_ERR;
-  int rc = sqlite3_step(st->h);
-  if (rc == SQLITE_ROW) return VL_DB_STEP_ROW;
-  if (rc == SQLITE_DONE) return VL_DB_STEP_DONE;
-  return VL_DB_STEP_ERR;
-}
-
-int vl_db_column_count(VlDbStmt *st) {
-  if (!st || !st->h) return 0;
-  return sqlite3_column_count(st->h);
-}
-
-const char *vl_db_column_name(VlDbStmt *st, int i) {
-  if (!st || !st->h) return NULL;
-  return sqlite3_column_name(st->h, i);
-}
-
-int vl_db_column_type(VlDbStmt *st, int i) {
-  if (!st || !st->h) return 0;
-  return sqlite3_column_type(st->h, i);  // 1..5 comme SQLite
-}
-
-int64_t vl_db_column_int64(VlDbStmt *st, int i) {
-  if (!st || !st->h) return 0;
-  return (int64_t)sqlite3_column_int64(st->h, i);
-}
-
-double vl_db_column_double(VlDbStmt *st, int i) {
-  if (!st || !st->h) return 0.0;
-  return sqlite3_column_double(st->h, i);
-}
-
-const char *vl_db_column_text(VlDbStmt *st, int i) {
-  if (!st || !st->h) return NULL;
-  return (const char *)sqlite3_column_text(st->h, i);
-}
-
-const void *vl_db_column_blob(VlDbStmt *st, int i, int *out_size) {
-  if (!st || !st->h) return NULL;
-  if (out_size) *out_size = sqlite3_column_bytes(st->h, i);
-  return sqlite3_column_blob(st->h, i);
-}
-
-AuxStatus vl_db_finalize(VlDbStmt *st) {
-  if (!st) return AUX_OK;
-  if (st->h) {
-    int rc = sqlite3_finalize(st->h);
-    free(st);
-    return map_sqlite_err(rc);
-  }
-  free(st);
-  return AUX_OK;
-}
-
-// Transactions + meta
-AuxStatus vl_db_begin(VlDb *db, const char *mode) {
-  if (!db || !db->h) return AUX_EINVAL;
-  const char *m = (mode && *mode) ? mode : "DEFERRED";
-  char sql[64];
-  snprintf(sql, sizeof sql, "BEGIN %s TRANSACTION;", m);
-  return vl_db_exec(db, sql);
-}
-
-AuxStatus vl_db_commit(VlDb *db) {
-  if (!db || !db->h) return AUX_EINVAL;
-  return vl_db_exec(db, "COMMIT;");
-}
-
-AuxStatus vl_db_rollback(VlDb *db) {
-  if (!db || !db->h) return AUX_EINVAL;
-  return vl_db_exec(db, "ROLLBACK;");
-}
-
-int64_t vl_db_last_insert_rowid(VlDb *db) {
-  if (!db || !db->h) return 0;
-  return (int64_t)sqlite3_last_insert_rowid(db->h);
-}
-
-int vl_db_changes(VlDb *db) {
-  if (!db || !db->h) return 0;
-  return sqlite3_changes(db->h);
-}
-
-#else  // VL_HAVE_SQLITE3
-
-// Stubs si SQLite absent
-struct VlDb {
-  int _;
-};
-struct VlDbStmt {
-  int _;
+struct db {
+    sqlite3* h;
 };
 
-AuxStatus vl_db_open(const char *path, int flags, VlDb **out_db) {
-  (void)path;
-  (void)flags;
-  (void)out_db;
-  return AUX_ENOSYS;
-}
-void vl_db_close(VlDb *db) { (void)db; }
-const char *vl_db_errstr(VlDb *db) {
-  (void)db;
-  return "sqlite3 not available";
-}
-AuxStatus vl_db_exec(VlDb *db, const char *sql) {
-  (void)db;
-  (void)sql;
-  return AUX_ENOSYS;
-}
-AuxStatus vl_db_exec_query(VlDb *db, const char *sql, VlDbRowCb cb, void *ud) {
-  (void)db;
-  (void)sql;
-  (void)cb;
-  (void)ud;
-  return AUX_ENOSYS;
-}
-AuxStatus vl_db_prepare(VlDb *db, const char *sql, VlDbStmt **out_stmt,
-                        const char **tail) {
-  (void)db;
-  (void)sql;
-  (void)out_stmt;
-  (void)tail;
-  return AUX_ENOSYS;
-}
-AuxStatus vl_db_bind_null(VlDbStmt *st, int idx) {
-  (void)st;
-  (void)idx;
-  return AUX_ENOSYS;
-}
-AuxStatus vl_db_bind_int64(VlDbStmt *st, int idx, int64_t v) {
-  (void)st;
-  (void)idx;
-  (void)v;
-  return AUX_ENOSYS;
-}
-AuxStatus vl_db_bind_double(VlDbStmt *st, int idx, double v) {
-  (void)st;
-  (void)idx;
-  (void)v;
-  return AUX_ENOSYS;
-}
-AuxStatus vl_db_bind_text(VlDbStmt *st, int idx, const char *s) {
-  (void)st;
-  (void)idx;
-  (void)s;
-  return AUX_ENOSYS;
-}
-AuxStatus vl_db_bind_blob(VlDbStmt *st, int idx, const void *p, size_t n) {
-  (void)st;
-  (void)idx;
-  (void)p;
-  (void)n;
-  return AUX_ENOSYS;
-}
-AuxStatus vl_db_clear_bindings(VlDbStmt *st) {
-  (void)st;
-  return AUX_ENOSYS;
-}
-AuxStatus vl_db_reset(VlDbStmt *st) {
-  (void)st;
-  return AUX_ENOSYS;
-}
-int vl_db_bind_count(VlDbStmt *st) {
-  (void)st;
-  return 0;
-}
-VlDbStepRc vl_db_step(VlDbStmt *st) {
-  (void)st;
-  return VL_DB_STEP_ERR;
-}
-int vl_db_column_count(VlDbStmt *st) {
-  (void)st;
-  return 0;
-}
-const char *vl_db_column_name(VlDbStmt *st, int i) {
-  (void)st;
-  (void)i;
-  return NULL;
-}
-int vl_db_column_type(VlDbStmt *st, int i) {
-  (void)st;
-  (void)i;
-  return 0;
-}
-int64_t vl_db_column_int64(VlDbStmt *st, int i) {
-  (void)st;
-  (void)i;
-  return 0;
-}
-double vl_db_column_double(VlDbStmt *st, int i) {
-  (void)st;
-  (void)i;
-  return 0.0;
-}
-const char *vl_db_column_text(VlDbStmt *st, int i) {
-  (void)st;
-  (void)i;
-  return NULL;
-}
-const void *vl_db_column_blob(VlDbStmt *st, int i, int *out_size) {
-  (void)st;
-  (void)i;
-  (void)out_size;
-  return NULL;
-}
-AuxStatus vl_db_finalize(VlDbStmt *st) {
-  (void)st;
-  return AUX_ENOSYS;
-}
-AuxStatus vl_db_begin(VlDb *db, const char *mode) {
-  (void)db;
-  (void)mode;
-  return AUX_ENOSYS;
-}
-AuxStatus vl_db_commit(VlDb *db) {
-  (void)db;
-  return AUX_ENOSYS;
-}
-AuxStatus vl_db_rollback(VlDb *db) {
-  (void)db;
-  return AUX_ENOSYS;
-}
-int64_t vl_db_last_insert_rowid(VlDb *db) {
-  (void)db;
-  return 0;
-}
-int vl_db_changes(VlDb *db) {
-  (void)db;
-  return 0;
+static int sql_err(db_t* db, int rc) {
+    if (db && db->h) {
+        const char* e = sqlite3_errmsg(db->h);
+        set_err(e ? e : "sqlite error");
+    } else {
+        set_err("sqlite error");
+    }
+    errno = EIO;
+    return rc;
 }
 
-#endif  // VL_HAVE_SQLITE3
+db_t* db_open(const char* path, int flags) {
+    set_err(NULL);
+    sqlite3* h = NULL;
+
+    int of = 0;
+    if (flags & DB_OPEN_MEM) {
+        path = ":memory:";
+        of = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE;
+    } else if (flags & DB_OPEN_RO) {
+        of = SQLITE_OPEN_READONLY;
+    } else { // default RW
+        of = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE;
+    }
+
+#if SQLITE_VERSION_NUMBER >= 3005000
+    int rc = sqlite3_open_v2(path ? path : ":memory:", &h, of, NULL);
+#else
+    int rc = sqlite3_open(path ? path : ":memory:", &h);
+#endif
+    if (rc != SQLITE_OK) {
+        set_err(h ? sqlite3_errmsg(h) : "sqlite open failed");
+        if (h) sqlite3_close(h);
+        errno = EIO;
+        return NULL;
+    }
+
+    // Pragmas for safer defaults
+    sqlite3_exec(h, "PRAGMA foreign_keys=ON;", NULL, NULL, NULL);
+    sqlite3_exec(h, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
+    sqlite3_exec(h, "PRAGMA synchronous=NORMAL;", NULL, NULL, NULL);
+
+    db_t* db = (db_t*)xmalloc(sizeof(*db));
+    db->h = h;
+    return db;
+}
+
+void db_close(db_t* db) {
+    if (!db) return;
+    if (db->h) sqlite3_close(db->h);
+    free(db);
+}
+
+int db_exec(db_t* db, const char* sql) {
+    if (!db || !db->h || !sql) { errno = EINVAL; return -1; }
+    set_err(NULL);
+    char* em = NULL;
+    int rc = sqlite3_exec(db->h, sql, NULL, NULL, &em);
+    if (rc != SQLITE_OK) {
+        set_err(em ? em : sqlite3_errmsg(db->h));
+        if (em) sqlite3_free(em);
+        errno = EIO;
+        return -1;
+    }
+    if (em) sqlite3_free(em);
+    return 0;
+}
+
+int db_begin(db_t* db)    { return db_exec(db, "BEGIN IMMEDIATE;"); }
+int db_commit(db_t* db)   { return db_exec(db, "COMMIT;"); }
+int db_rollback(db_t* db) { return db_exec(db, "ROLLBACK;"); }
+
+static int cb_collect(void* u, int ncol, char** vals, char** names) {
+    db_rowset* rs = (db_rowset*)u;
+    if (rs->cols == 0) {
+        rs->cols = ncol;
+        rs->colname = (char**)xmalloc((size_t)ncol * sizeof(char*));
+        for (int i=0;i<ncol;i++) rs->colname[i] = xstrdup(names[i] ? names[i] : "");
+    } else if (rs->cols != ncol) {
+        // inconsistent; bail
+        return 1;
+    }
+    // push one row
+    int old = rs->rows;
+    rs->rows++;
+    rs->cell = (char**)realloc(rs->cell, (size_t)rs->rows * (size_t)rs->cols * sizeof(char*));
+    if (!rs->cell) return 1;
+    for (int i=0;i<ncol;i++) {
+        char* v = vals && vals[i] ? xstrdup(vals[i]) : NULL;
+        rs->cell[old * rs->cols + i] = v;
+    }
+    return 0;
+}
+
+int db_query(db_t* db, const char* sql, db_rowset* out) {
+    if (!db || !db->h || !sql || !out) { errno = EINVAL; return -1; }
+    set_err(NULL);
+    memset(out, 0, sizeof(*out));
+    char* em = NULL;
+    int rc = sqlite3_exec(db->h, sql, cb_collect, out, &em);
+    if (rc != SQLITE_OK) {
+        if (em) { set_err(em); sqlite3_free(em); }
+        else set_err(sqlite3_errmsg(db->h));
+        db_rowset_free(out);
+        errno = EIO;
+        return -1;
+    }
+    if (em) sqlite3_free(em);
+    return 0;
+}
+
+int db_query_i64(db_t* db, const char* sql, long long* out) {
+    if (!out) { errno = EINVAL; return -1; }
+    db_rowset rs; if (db_query(db, sql, &rs) != 0) return -1;
+    int rc = -1;
+    if (rs.rows > 0 && rs.cols > 0 && rs.cell[0]) {
+        char* end = NULL;
+        long long v = strtoll(rs.cell[0], &end, 10);
+        if (end && *end == '\0') { *out = v; rc = 0; }
+        else { set_err("not an integer"); errno = EINVAL; }
+    } else { set_err("no rows"); errno = ENOENT; }
+    db_rowset_free(&rs);
+    return rc;
+}
+
+int db_query_f64(db_t* db, const char* sql, double* out) {
+    if (!out) { errno = EINVAL; return -1; }
+    db_rowset rs; if (db_query(db, sql, &rs) != 0) return -1;
+    int rc = -1;
+    if (rs.rows > 0 && rs.cols > 0 && rs.cell[0]) {
+        char* end = NULL;
+        double v = strtod(rs.cell[0], &end);
+        if (end && *end == '\0') { *out = v; rc = 0; }
+        else { set_err("not a float"); errno = EINVAL; }
+    } else { set_err("no rows"); errno = ENOENT; }
+    db_rowset_free(&rs);
+    return rc;
+}
+
+int db_query_str(db_t* db, const char* sql, char** out) {
+    if (!out) { errno = EINVAL; return -1; }
+    *out = NULL;
+    db_rowset rs; if (db_query(db, sql, &rs) != 0) return -1;
+    int rc = -1;
+    if (rs.rows > 0 && rs.cols > 0) {
+        *out = rs.cell[0] ? xstrdup(rs.cell[0]) : NULL;
+        rc = 0;
+    } else { set_err("no rows"); errno = ENOENT; }
+    db_rowset_free(&rs);
+    return rc;
+}
+
+long long db_last_rowid(db_t* db) { return (db && db->h) ? (long long)sqlite3_last_insert_rowid(db->h) : 0; }
+int        db_changes(db_t* db)   { return (db && db->h) ? sqlite3_changes(db->h) : 0; }
+
+#else  // -------- Stubs when SQLite not available --------
+
+struct db { int _; };
+
+db_t* db_open(const char* path, int flags) {
+    (void)path; (void)flags;
+    set_err("SQLite support not built (define VL_HAVE_SQLITE3)");
+    errno = ENOSYS; return NULL;
+}
+void db_close(db_t* db) { (void)db; }
+int  db_exec(db_t* db, const char* sql) { (void)db; (void)sql; set_err("ENOSYS"); errno=ENOSYS; return -1; }
+int  db_begin(db_t* db){ (void)db; set_err("ENOSYS"); errno=ENOSYS; return -1; }
+int  db_commit(db_t* db){ (void)db; set_err("ENOSYS"); errno=ENOSYS; return -1; }
+int  db_rollback(db_t* db){ (void)db; set_err("ENOSYS"); errno=ENOSYS; return -1; }
+
+int  db_query(db_t* db, const char* sql, db_rowset* out){ (void)db; (void)sql; (void)out; set_err("ENOSYS"); errno=ENOSYS; return -1; }
+void db_rowset_free(db_rowset* rs){ if(rs) memset(rs,0,sizeof(*rs)); }
+int  db_query_i64(db_t* db, const char* sql, long long* out){ (void)db;(void)sql;(void)out; set_err("ENOSYS"); errno=ENOSYS; return -1; }
+int  db_query_f64(db_t* db, const char* sql, double* out){ (void)db;(void)sql;(void)out; set_err("ENOSYS"); errno=ENOSYS; return -1; }
+int  db_query_str(db_t* db, const char* sql, char** out){ (void)db;(void)sql;(void)out; set_err("ENOSYS"); errno=ENOSYS; return -1; }
+long long db_last_rowid(db_t* db){ (void)db; return 0; }
+int        db_changes(db_t* db){ (void)db; return 0; }
+
+#endif
+
+// ---------- Optional demo ----------
+#ifdef DBLIB_DEMO
+#include <stdio.h>
+int main(void) {
+#if !defined(VL_HAVE_SQLITE3)
+    puts("No SQLite compiled in.");
+    return 0;
+#else
+    db_t* db = db_open(":memory:", DB_OPEN_MEM);
+    if (!db) { fprintf(stderr, "open: %s\n", db_errmsg(NULL)); return 1; }
+    if (db_exec(db, "create table t(id integer primary key, name text);") != 0)
+        fprintf(stderr, "exec: %s\n", db_errmsg(db));
+    db_begin(db);
+    db_exec(db, "insert into t(name) values ('alice'),('bob'),('carol');");
+    db_commit(db);
+
+    db_rowset rs;
+    if (db_query(db, "select id,name from t order by id;", &rs)==0) {
+        for (int r=0;r<rs.rows;r++) {
+            printf("%s=%s, %s=%s\n",
+                rs.colname[0], rs.cell[r*rs.cols+0]?rs.cell[r*rs.cols+0]:"NULL",
+                rs.colname[1], rs.cell[r*rs.cols+1]?rs.cell[r*rs.cols+1]:"NULL");
+        }
+        db_rowset_free(&rs);
+    } else {
+        fprintf(stderr, "query: %s\n", db_errmsg(db));
+    }
+    long long n=0; if (db_query_i64(db, "select count(*) from t;", &n)==0) printf("count=%lld\n", n);
+    db_close(db);
+    return 0;
+#endif
+}
+#endif
