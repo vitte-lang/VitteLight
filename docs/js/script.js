@@ -5,7 +5,7 @@
   const CRAWL_LIMIT = 500;
   const FETCH_CONCURRENCY = 8;
   const INDEX_TTL_MS = 24 * 3600 * 1000;
-  const INDEX_KEY = "vl.site.index.v3";
+  const INDEX_KEY = "vl.site.index.v4";
   const STOP_FR = ["le","la","les","de","des","du","un","une","et","ou","au","aux","a","à","en","dans","pour","par","avec","sans","sur","sous","chez","est","sont","être","été","avoir","que","qui","quoi","dont","où","ne","pas","plus","moins","ce","cet","cette","ces","se","sa","son","ses","nos","vos","leurs","il","elle","on","nous","vous","ils","elles","d","l","n"];
   const STOP_EN = ["the","a","an","and","or","to","in","of","for","on","at","as","is","are","be","been","was","were","by","from","this","that","these","those","it","its","with","without","not"];
   const STOP = new Set([...STOP_FR, ...STOP_EN]);
@@ -35,13 +35,25 @@
   hitsEl?.setAttribute("aria-live","polite");
   q && q.setAttribute("inputmode","search");
   q && q.setAttribute("enterkeyhint","search");
+  // scroll CSS global cohérent
+  html.style.scrollBehavior = scrollBehavior;
 
-  // style pour le match courant + scroll-margin
+  // style: surlignage jaune + focus courant + scroll-margin
   (function addFindStyle(){
     const st=document.createElement("style");
     st.textContent=`
-      mark[data-cur]{outline:2px solid var(--accent,#5da0ff);border-radius:3px}
+      mark[data-hl]{background:#fff59d;color:inherit;padding:0 .05em;border-radius:2px}
+      mark[data-cur]{outline:2px solid var(--accent,#2563eb);border-radius:3px}
       [id],h1[id],h2[id],h3[id]{scroll-margin-top:calc(var(--tbH,48px)+8px)}
+      #suggestions{font:inherit}
+      .sugg-item{display:flex;align-items:center;justify-content:space-between;width:100%;text-align:left;padding:8px;border-radius:8px}
+      .sugg-item[aria-selected="true"]{outline:2px solid var(--accent,#2563eb)}
+      .group-h{font-weight:600;padding:6px 8px}
+      .chipbar{display:flex;flex-wrap:wrap;gap:6px;padding:6px}
+      .chip{border:1px solid var(--line,#202938);padding:4px 8px;border-radius:999px}
+      .pill{border:1px solid var(--line,#202938);padding:4px 8px;border-radius:999px}
+      .tag{font-size:.75em;opacity:.8;margin-left:6px}
+      .tag.emph{opacity:1}
     `;
     document.head.appendChild(st);
   })();
@@ -155,6 +167,30 @@
   const norm = s => (s||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
   const rxToken = /[a-z0-9_]+/gi;
 
+  // stemming très léger FR/EN pour améliorer le rappel
+  function stem(t){
+    if(!t || t.length<3) return t;
+    // EN
+    if(/(ings|ed|ing|ers|er|ies|s)$/i.test(t)){
+      t = t.replace(/(ings|ing|ers|er|ies|ed|s)$/i, m => {
+        if(m==="ies") return "y";
+        if(m==="ing"||m==="ings") return "";
+        if(m==="ed") return "";
+        if(m==="ers"||m==="er") return "";
+        if(m==="s") return "";
+        return "";
+      });
+    }
+    // FR
+    t = t
+      .replace(/(euses|euse|eaux)$/i, s=> s==="eaux"?"eau":s.replace(/euses?$/i,"eux"))
+      .replace(/(tions?|ments?)$/i,"")
+      .replace(/(rices?|teurs?)$/i,"")
+      .replace(/(ales|aux|aux)$/i, s=> s==="aux"?"al":"al")
+      .replace(/(ées|ée|és|é|er|ez|ent)$/i,"");
+    return t || t;
+  }
+
   function siteBase(){
     const parts = location.pathname.split("/").filter(Boolean);
     const baseFolder = parts.length ? parts[0] : "";
@@ -174,9 +210,9 @@
   async function pagesFromSitemap(){
     try{
       const xml = await fetchText(SITEMAP_URL);
-      const doc = new DOMParser().parseFromString(xml,"application/xml");
-      const locs = [...doc.querySelectorAll("url > loc")].map(n=>n.textContent.trim()).filter(Boolean);
-      const urls = locs.filter(isInternal).filter(isHtmlLike).map(canonical);
+      const doc=new DOMParser().parseFromString(xml,"application/xml");
+      const locs=[...doc.querySelectorAll("url > loc")].map(n=>n.textContent.trim()).filter(Boolean);
+      const urls=locs.filter(isInternal).filter(isHtmlLike).map(canonical);
       return Array.from(new Set(urls));
     }catch{ return null; }
   }
@@ -250,7 +286,7 @@
     const postings=new Map();
     docs.forEach(d=>{
       const textNorm=norm(d.text); d.textNorm=textNorm;
-      const tokens=(textNorm.match(rxToken)||[]).filter(t=>!STOP.has(t));
+      const tokens=(textNorm.match(rxToken)||[]).filter(t=>!STOP.has(t)).map(stem);
       const tf=new Map(); tokens.forEach(t=> tf.set(t,(tf.get(t)||0)+1));
       tf.forEach((f,t)=>{
         if(!postings.has(t)) postings.set(t,new Map());
@@ -266,7 +302,7 @@
     const titleBonus=new Map();
     docs.filter(d=>d.type==="heading").forEach(d=>{
       (d.textNorm.match(rxToken)||[]).forEach(tok=>{
-        if(STOP.has(tok)) return;
+        tok=stem(tok); if(STOP.has(tok)) return;
         titleBonus.set(tok,(titleBonus.get(tok)||0)+1.5);
       });
     });
@@ -319,7 +355,7 @@
     await Promise.all(Array.from({length:FETCH_CONCURRENCY}, async()=>{ while(true){ const idx=i++; if(idx>=pages.length) break; await fetchOne(pages[idx]); } }));
 
     const index=buildIndex(bundles);
-    const meta={ ts:Date.now(), base:SITE_BASE, version:3, pagesCount:bundles.length };
+    const meta={ ts:Date.now(), base:SITE_BASE, version:4, pagesCount:bundles.length };
     const pageList=bundles.map(b=>({ url:b.url, title:b.title, id:relPath(b.url) }));
     return { index, meta, pages:pageList };
   }
@@ -369,7 +405,8 @@
       if(!t) continue;
       if(t.length===1 && !STOP.has(t)){ if(isNeg) neg.push(t); else chars.push(t); continue; }
       if(STOP.has(t)) continue;
-      if(isNeg) neg.push(t); else if(isWild) wild.push(t); else pos.push(t);
+      const base = stem(t);
+      if(isNeg) neg.push(base); else if(isWild) wild.push(base); else pos.push(base);
     }
     return { phrases,pos,neg,wild,chars,filters,raw };
   }
@@ -440,7 +477,10 @@
 
   /* ========== HIGHLIGHT ==========\ */
   let marks=[], curMark=-1;
-  function clearMarks(){ marks.forEach(m=>{ const t=document.createTextNode(m.textContent); m.replaceWith(t); }); marks=[]; curMark=-1; }
+  function clearMarks(){
+    marks.forEach(m=>{ const t=document.createTextNode(m.textContent); m.replaceWith(t); });
+    marks=[]; curMark=-1;
+  }
   function markAll(needles){
     if(!needles.length || !content) return 0;
     const targets=content.querySelectorAll("section, p, li, pre, code, h1, h2, h3");
@@ -454,7 +494,9 @@
       return best;
     };
     targets.forEach(el=>{
-      const tw=document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null);
+      const tw=document.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
+        acceptNode(node){ return node.parentElement?.tagName==="MARK" ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT; }
+      });
       const local=[];
       while(tw.nextNode()){
         const node=tw.currentNode; const src=node.nodeValue; const low=norm(src);
@@ -463,7 +505,8 @@
         while(true){
           const f=findOne(low, from);
           if(f.i===-1) break;
-          const realStart=f.i + (src.slice(0,f.i).length - low.slice(0,f.i).length);
+          const delta = src.length - low.length;
+          const realStart=f.i + Math.max(0, delta);
           if(realStart>from) out.push(document.createTextNode(src.slice(from,realStart)));
           const marked=document.createElement("mark"); marked.setAttribute("data-hl","");
           const rawSlice=src.slice(realStart, realStart+(f.t.raw.length||f.t.n.length));
@@ -480,7 +523,7 @@
     return marks.length;
   }
 
-  // NAVIGATION: index du 1er match visible + focus amélioré
+  // NAVIGATION
   function firstMatchIndexBelowViewport(){
     if(!marks.length) return -1;
     const tb = toolbar?.getBoundingClientRect().height || 0;
