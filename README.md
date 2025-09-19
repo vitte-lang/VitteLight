@@ -112,6 +112,7 @@ Résultat:
 ```
 ──────────────────────────────────────────────────────────────────────────────
 ## GRAMMAIRE RÉSUMÉE (EBNF)
+``` markdown
   Module    = "module", Ident, {".", Ident} ;
   Import    = "import", Path, [ "{" , Idents , "}" ] ;
   Const     = "const", Ident, ":", Type, "=", Expr ;
@@ -122,7 +123,7 @@ Résultat:
   Impl      = "impl", Ident, Block ;
   Block     = "{" , {Stmt} , "}" ;
   Stmt      = Let | Expr | Return | If | While | For | Match ;
-
+```
 ──────────────────────────────────────────────────────────────────────────────
 ## STDLIB DISPONIBLE
 - std.io    : print, println, eprint, eprintln
