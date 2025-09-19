@@ -7,12 +7,13 @@
  */
 
 #include "core/code.h"
+#include "core/api.h"   // pour VEC(u32), Err, vec_init, vec_push, etc.
+#include "core/utf8.h"  // si utf8_decode_1 est dans un fichier séparé
 
-#include <ctype.h>
-#include <stdio.h>
+#include <string.h>     // strlen
 #include <stdlib.h>
-#include <string.h>
-
+#include <stdio.h>
+#include <ctype.h>
 /* Accès interne à la hash-map pour itération (concordant avec /core/api.c) */
 struct HSlot {
   char* key;
@@ -165,15 +166,19 @@ Err code_emit_demo_json(int argc, char** argv, const char* out_path,
   return api_ok();
 }
 
-Err code_utf8_list_cps(const char* s, VEC(u32) * out) {
+Err code_utf8_list_cps(const char* s, struct vec_u32* out) {
   if (!s || !out) return api_errf(CODE_EINVAL, "args");
   vec_init(out);
-  usize n = strlen(s), i = 0;
+
+  size_t n = strlen(s);
+  size_t i = 0;
+
   while (i < n) {
-    usize adv = 0;
-    u32 cp = utf8_decode_1(s + i, n - i, &adv);
+    size_t adv = 0;
+    u32 cp = utf8_decode_1((const char*)s + i, n - i, &adv);
+
     if (adv == 0) { /* octet isolé */
-      vec_push(out, (u32)(unsigned char)s[i]);
+      vec_push(out, (u32)((const unsigned char*)s)[i]);
       i += 1;
     } else {
       vec_push(out, cp);
