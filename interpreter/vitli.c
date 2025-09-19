@@ -34,6 +34,7 @@
 #include "string.h"
 #include "tm.h"
 #include "undump.h"
+#include "vl_compat.h"
 #include "vm.h"
 #include "zio.h"
 
