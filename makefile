@@ -1,261 +1,293 @@
-# Makefile — Vitte Light
-# Usage:
-#   make [all|debug|release]
-#   make install PREFIX=/usr/local
-#   make print-flags
-#
-# Outputs:
-#   build/bin/vitli, build/bin/vitlc
-#   build/lib/libvitl.a, build/lib/libvitl.so
+# =========================================
+# VitteLight - Makefile (v0.1.0)
+# =========================================
 
-# -------------------------------------------------------------------
-# Toolchain + install dirs
-# -------------------------------------------------------------------
+# ---- Projet / version ----
+APP          ?= vitte-cli
+APP2         ?= vitlc           # autre binaire (compiler)
+ORG          ?= vitte-light
+VERSION      ?= 0.1.0
+DESC         ?= "VitteLight VM tooling & CLI"
+
+# ---- Répertoires ----
+SRC_DIRS     := core interpreter compiler
+BUILD_DIR    ?= build
+DIST_DIR     ?= dist
+INCLUDE_DIRS := core .
+PREFIX       ?= /usr/local
+BINDIR       ?= $(PREFIX)/bin
+LIBDIR       ?= $(PREFIX)/lib
+INCLUDEDIR   ?= $(PREFIX)/include/vittelight
+PKGCFGDIR    ?= $(LIBDIR)/pkgconfig
+FORMULADIR   ?= Formula
+
+# ---- Détection plateforme ----
+UNAME_S := $(shell uname -s)
+# Windows MSYS/MinGW/Cygwin ?
+ifeq ($(findstring MINGW,$(UNAME_S))$(findstring MSYS,$(UNAME_S))$(findstring CYGWIN,$(UNAME_S)),)
+  # Unix (macOS/Linux)
+  ifeq ($(UNAME_S),Darwin)
+    OS            := macos
+    EXE           :=
+    SHARED_EXT    := dylib
+    SHARED_FLAG   := -dynamiclib
+    LD_FRAMEWORKS := -framework CoreFoundation
+    SHA256        := shasum -a 256
+  else
+    OS            := linux
+    EXE           :=
+    SHARED_EXT    := so
+    SHARED_FLAG   := -shared
+    LD_FRAMEWORKS :=
+    SHA256        := sha256sum
+  endif
+  MKDIR_P   := mkdir -p
+  COPY_FILE := install -m 0644
+  COPY_BIN  := install -m 0755
+  RM        := rm -f
+  RMDIR_R   := rm -rf
+else
+  # Windows (MSYS2/MinGW/Cygwin)
+  OS            := windows
+  EXE           := .exe
+  SHARED_EXT    := dll
+  SHARED_FLAG   := -shared
+  LD_FRAMEWORKS :=
+  SHA256        := sha256sum
+  MKDIR_P   := mkdir -p
+  COPY_FILE := cp
+  COPY_BIN  := cp
+  RM        := rm -f
+  RMDIR_R   := rm -rf
+endif
+
+# Choix de sed (gsed si dispo, sinon sed)
+SED := $(shell command -v gsed 2>/dev/null || command -v sed)
+
+# ---- Compilateur / Flags ----
 CC      ?= cc
 AR      ?= ar
-PKG     ?= pkg-config
+RANLIB  ?= ranlib
 
-PREFIX  ?= /usr/local
-BINDIR  ?= $(PREFIX)/bin
-INCDIR  ?= $(PREFIX)/include/vitl
-
-# -------------------------------------------------------------------
-# Build mode
-# -------------------------------------------------------------------
-BUILD   ?= debug
-
+WARN    := -Wall -Wextra -Wpedantic
+VIS     := -fvisibility=hidden
 CSTD    := -std=c17
-WARN    := -Wall -Wextra -Wpedantic -Wundef -Wpointer-arith -Wformat=2 \
-           -Wshadow -Wstrict-prototypes -Wno-unused-parameter
-GEN     := -MMD -MP
-BASEC   := $(CSTD) $(WARN) $(GEN) -fPIC
+OPT_DBG := -O0 -g3
+OPT_REL := -O3 -DNDEBUG
+DEFS    := -DAPI_BUILD -D_FILE_OFFSET_BITS=64
 
-ifeq ($(BUILD),release)
-  OPT := -O3 -DNDEBUG
+INCFLAGS := $(addprefix -I,$(INCLUDE_DIRS))
+
+# Liens
+LDLIBS_BASE := -lm -lpthread
+ifeq ($(OS),macos)
+  LDLIBS := $(LDLIBS_BASE) $(LD_FRAMEWORKS)
 else
-  OPT := -O0 -g3 -fno-omit-frame-pointer
+  LDLIBS := $(LDLIBS_BASE) -ldl
 endif
 
-CPPFLAGS += -Iincludes -Icore -Ilibraries
-CFLAGS   += $(BASEC) $(OPT)
-LDFLAGS  +=
-LDLIBS   += -lm
+# ---- Sources (auto) ----
+CORE_SRCS      := $(wildcard core/*.c)
+INTERP_SRCS    := $(wildcard interpreter/*.c)
+COMPILER_SRCS  := $(wildcard compiler/*.c)
+ALL_SRCS       := $(CORE_SRCS) $(INTERP_SRCS) $(COMPILER_SRCS)
 
-# -------------------------------------------------------------------
-# Platform libs
-# -------------------------------------------------------------------
-UNAME_S := $(shell uname -s)
-ifeq ($(UNAME_S),Linux)
-  LDLIBS += -ldl -lpthread -lrt
-endif
-ifeq ($(UNAME_S),Darwin)
-  LDLIBS += -lpthread
-endif
+# ---- Objets ----
+OBJ_DIR  := $(BUILD_DIR)/obj
+BIN_DIR  := $(BUILD_DIR)/bin
+LIB_DIR  := $(BUILD_DIR)/lib
 
-# -------------------------------------------------------------------
-# pkg-config helpers
-# -------------------------------------------------------------------
-define have
-$(shell $(PKG) --exists $(1) && echo 1 || echo 0)
-endef
-define use
-CPPFLAGS += -D$(2) $(shell $(PKG) --cflags $(1))
-LDLIBS   += $(shell $(PKG) --libs   $(1))
-endef
+OBJS      := $(patsubst %.c,$(OBJ_DIR)/%.o,$(ALL_SRCS))
+CORE_OBJS := $(patsubst %.c,$(OBJ_DIR)/%.o,$(CORE_SRCS))
 
-# Core optional deps
-ifneq ($(call have,openssl),0)
-  $(eval $(call use,openssl,VL_HAVE_OPENSSL))
-endif
-ifneq ($(call have,sqlite3),0)
-  $(eval $(call use,sqlite3,VL_HAVE_SQLITE3))
-endif
-ifneq ($(call have,zlib),0)
-  $(eval $(call use,zlib,VL_HAVE_ZLIB))
-endif
-ifneq ($(call have,libcurl),0)
-  $(eval $(call use,libcurl,VL_HAVE_CURL))
-endif
-ifneq ($(call have,libarchive),0)
-  $(eval $(call use,libarchive,VL_HAVE_LIBARCHIVE))
-endif
-ifneq ($(call have,libavformat libavcodec libavutil libswresample libswscale),0)
-  CPPFLAGS += -DVL_HAVE_FFMPEG
-  CFLAGS   += $(shell $(PKG) --cflags libavformat libavcodec libavutil libswresample libswscale)
-  LDLIBS   += $(shell $(PKG) --libs   libavformat libavcodec libavutil libswresample libswscale)
-endif
-ifneq ($(call have,freetype2),0)
-  $(eval $(call use,freetype2,VL_HAVE_FREETYPE))
-endif
-ifneq ($(call have,harfbuzz),0)
-  $(eval $(call use,harfbuzz,VL_HAVE_HARFBUZZ))
-endif
-ifneq ($(call have,libpcre2-8),0)
-  $(eval $(call use,libpcre2-8,VL_HAVE_PCRE2))
-endif
-ifneq ($(call have,yyjson),0)
-  $(eval $(call use,yyjson,VL_HAVE_YYJSON))
-endif
-# yaml can be yaml-0.1 or libyaml-0.1
-ifneq ($(call have,libyaml-0.1),0)
-  $(eval $(call use,libyaml-0.1,VL_HAVE_YAML))
-else ifneq ($(call have,yaml-0.1),0)
-  $(eval $(call use,yaml-0.1,VL_HAVE_YAML))
-endif
-ifneq ($(call have,libxml-2.0),0)
-  $(eval $(call use,libxml-2.0,VL_HAVE_LIBXML2))
-endif
-ifneq ($(call have,lmdb),0)
-  $(eval $(call use,lmdb,VL_HAVE_LMDB))
-endif
-ifneq ($(call have,hiredis),0)
-  $(eval $(call use,hiredis,VL_HAVE_REDIS))
-endif
-ifneq ($(call have,libwebp),0)
-  $(eval $(call use,libwebp,VL_HAVE_WEBP))
-endif
-ifneq ($(call have,libzmq),0)
-  $(eval $(call use,libzmq,VL_HAVE_ZMQ))
-endif
-ifneq ($(call have,libssh2),0)
-  $(eval $(call use,libssh2,VL_HAVE_SSH2))
-endif
-ifneq ($(call have,libssh),0)
-  $(eval $(call use,libssh,VL_HAVE_SSH))
-endif
-ifneq ($(call have,libpq),0)
-  $(eval $(call use,libpq,VL_HAVE_PG))
-endif
-ifneq ($(call have,mariadb),0)
-  $(eval $(call use,mariadb,VL_HAVE_MYSQL))
-else ifneq ($(call have,libmysqlclient),0)
-  $(eval $(call use,libmysqlclient,VL_HAVE_MYSQL))
-endif
-ifneq ($(call have,rdkafka),0)
-  $(eval $(call use,rdkafka,VL_HAVE_RDKAFKA))
-endif
-ifneq ($(call have,libffi),0)
-  $(eval $(call use,libffi,VL_HAVE_FFI))
-endif
-ifneq ($(call have,libmosquitto),0)
-  $(eval $(call use,libmosquitto,VL_HAVE_MQTT))
-endif
-ifneq ($(call have,rabbitmq),0)
-  $(eval $(call use,rabbitmq,VL_HAVE_RABBITMQ_C))
-endif
-ifneq ($(call have,portaudio-2.0),0)
-  $(eval $(call use,portaudio-2.0,VL_HAVE_PORTAUDIO))
-endif
-ifneq ($(call have,ncurses),0)
-  $(eval $(call use,ncurses,VL_HAVE_NCURSES))
-endif
-ifneq ($(call have,sdl2),0)
-  $(eval $(call use,sdl2,VL_HAVE_SDL2))
-endif
-ifneq ($(call have,libprotobuf-c),0)
-  $(eval $(call use,libprotobuf-c,VL_HAVE_PROTOBUF_C))
-endif
-ifneq ($(call have,msgpack),0)
-  $(eval $(call use,msgpack,VL_HAVE_MSGPACK))
+# ---- Binaries / Libraries ----
+BIN_APP     := $(BIN_DIR)/$(APP)$(EXE)
+BIN_APP2    := $(BIN_DIR)/$(APP2)$(EXE)
+LIB_STATIC  := $(LIB_DIR)/libvittelight.a
+LIB_SHARED  := $(LIB_DIR)/libvittelight.$(SHARED_EXT)
+
+# ---- Profils ----
+CFLAGS_DEBUG   := $(CSTD) $(WARN) $(VIS) $(DEFS) $(INCFLAGS) $(OPT_DBG)
+CFLAGS_RELEASE := $(CSTD) $(WARN) $(VIS) $(DEFS) $(INCFLAGS) $(OPT_REL)
+
+# Profil courant (modifiable via `make MODE=release`)
+MODE ?= debug
+ifeq ($(MODE),release)
+  CFLAGS := $(CFLAGS_RELEASE)
+else
+  CFLAGS := $(CFLAGS_DEBUG)
 endif
 
-# Optional BLAKE3: pass BLAKE3_DIR=/path/to/BLAKE3 (provides blake3.o)
-ifdef BLAKE3_DIR
-  CPPFLAGS += -DVL_HAVE_BLAKE3 -I$(BLAKE3_DIR)
-  LDLIBS   += $(BLAKE3_DIR)/blake3.o
-endif
+# =========================================
+# Règles principales
+# =========================================
+.PHONY: all debug release clean distclean install uninstall test format lint \
+        lib static shared pkgconfig dist tar gz zip check env \
+        brew brew-tap brew-formula brew-archive
 
-# -------------------------------------------------------------------
-# Sources
-# -------------------------------------------------------------------
-SRC_CORE       := $(wildcard core/*.c)
-SRC_LIBS       := $(wildcard libraries/*.c)
-SRC_INTERP     := interpreter/vitli.c
-SRC_COMPILER   := compiler/vitlc.c
-
-OBJ_DIR        := build/obj
-BIN_DIR        := build/bin
-LIB_DIR        := build/lib
-
-OBJ_CORE       := $(patsubst core/%.c,$(OBJ_DIR)/core/%.o,$(SRC_CORE))
-OBJ_LIBS       := $(patsubst libraries/%.c,$(OBJ_DIR)/libraries/%.o,$(SRC_LIBS))
-OBJ_INTERP     := $(patsubst interpreter/%.c,$(OBJ_DIR)/interpreter/%.o,$(SRC_INTERP))
-OBJ_COMPILER   := $(patsubst compiler/%.c,$(OBJ_DIR)/compiler/%.o,$(SRC_COMPILER))
-
-ALL_OBJS       := $(OBJ_CORE) $(OBJ_LIBS)
-ALL_DEPS       := $(ALL_OBJS:.o=.d) $(OBJ_INTERP:.o=.d) $(OBJ_COMPILER:.o=.d)
-
-# -------------------------------------------------------------------
-# Targets
-# -------------------------------------------------------------------
-.PHONY: all debug release clean distclean install uninstall print-flags
-
-all: $(BIN_DIR)/vitli $(BIN_DIR)/vitlc
+all: env lib $(BIN_APP) $(BIN_APP2)
 
 debug:
-	@$(MAKE) all BUILD=debug
+	@$(MAKE) MODE=debug all
 
 release:
-	@$(MAKE) all BUILD=release
+	@$(MAKE) MODE=release all
 
-# Binaries
-$(BIN_DIR)/vitli: $(OBJ_INTERP) $(ALL_OBJS)
-	@mkdir -p $(BIN_DIR)
-	$(CC) $(CFLAGS) $^ $(LDFLAGS) $(LDLIBS) -o $@
+env:
+	@$(MKDIR_P) $(BUILD_DIR) $(BIN_DIR) $(LIB_DIR) $(DIST_DIR)
+	@:
 
-$(BIN_DIR)/vitlc: $(OBJ_COMPILER) $(ALL_OBJS)
-	@mkdir -p $(BIN_DIR)
-	$(CC) $(CFLAGS) $^ $(LDFLAGS) $(LDLIBS) -o $@
+# ---- Libs ----
+lib: static shared
 
-# Libraries
-$(LIB_DIR)/libvitl.a: $(ALL_OBJS)
-	@mkdir -p $(LIB_DIR)
-	$(AR) rcs $@ $^
+static: $(LIB_STATIC)
+shared: $(LIB_SHARED)
 
-$(LIB_DIR)/libvitl.so: $(ALL_OBJS)
-	@mkdir -p $(LIB_DIR)
-	$(CC) -shared $(CFLAGS) $^ $(LDFLAGS) $(LDLIBS) -o $@
+$(LIB_STATIC): $(CORE_OBJS) | $(LIB_DIR)
+	@echo "AR  $@"
+	@$(AR) rcs $@ $(CORE_OBJS)
+	@$(RANLIB) $@
 
-# Patterns
-$(OBJ_DIR)/core/%.o: core/%.c | $(OBJ_DIR)/core
-	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+$(LIB_SHARED): $(CORE_OBJS) | $(LIB_DIR)
+	@echo "LD  $@"
+	@$(CC) $(SHARED_FLAG) -o $@ $(CORE_OBJS) $(LDLIBS)
 
-$(OBJ_DIR)/libraries/%.o: libraries/%.c | $(OBJ_DIR)/libraries
-	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+# ---- Binaries ----
+# On lie le CLI principal contre la lib statique + l’objet code.o (si présent)
+$(BIN_APP): $(LIB_STATIC) $(OBJ_DIR)/core/code.o | $(BIN_DIR)
+	@echo "LD  $@"
+	@$(CC) -o $@ $(OBJ_DIR)/core/code.o $(LIB_STATIC) $(LDLIBS)
 
-$(OBJ_DIR)/interpreter/%.o: interpreter/%.c | $(OBJ_DIR)/interpreter
-	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+# Binaire 2 si la source existe
+$(BIN_APP2): $(LIB_STATIC) $(OBJ_DIR)/interpreter/vitlc.o | $(BIN_DIR)
+	@if [ -f interpreter/vitlc.c ]; then \
+	  echo "LD  $@"; \
+	  $(CC) -o $@ $(OBJ_DIR)/interpreter/vitlc.o $(LIB_STATIC) $(LDLIBS); \
+	else \
+	  echo "skip $(BIN_APP2) (interpreter/vitlc.c absent)"; \
+	fi
 
-$(OBJ_DIR)/compiler/%.o: compiler/%.c | $(OBJ_DIR)/compiler
-	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+# ---- Compilation objets ----
+$(OBJ_DIR)/%.o: %.c
+	@$(MKDIR_P) $(dir $@)
+	@echo "CC  $<"
+	@$(CC) $(CFLAGS) -c $< -o $@
 
-# Dirs
-$(OBJ_DIR)/core $(OBJ_DIR)/libraries $(OBJ_DIR)/interpreter $(OBJ_DIR)/compiler:
-	@mkdir -p $@
-
-# Deps
--include $(ALL_DEPS)
-
-# Housekeeping
-clean:
-	rm -rf $(OBJ_DIR)
-
-distclean: clean
-	rm -rf $(BIN_DIR) $(LIB_DIR)
-
-install: all
-	install -d $(DESTDIR)$(BINDIR)
-	install -m 0755 $(BIN_DIR)/vitli $(DESTDIR)$(BINDIR)/
-	install -m 0755 $(BIN_DIR)/vitlc $(DESTDIR)$(BINDIR)/
-	install -d $(DESTDIR)$(INCDIR)
-	cp -a includes/*.h core/*.h libraries/*.h $(DESTDIR)$(INCDIR) 2>/dev/null || true
+# ---- Install / Uninstall ----
+install: all pkgconfig
+	@echo "INSTALL bins → $(DESTDIR)$(BINDIR)"
+	@$(MKDIR_P) $(DESTDIR)$(BINDIR)
+	@[ -f $(BIN_APP) ]  && $(COPY_BIN)  $(BIN_APP)  $(DESTDIR)$(BINDIR)/$(APP)$(EXE)  || true
+	@[ -f $(BIN_APP2) ] && $(COPY_BIN)  $(BIN_APP2) $(DESTDIR)$(BINDIR)/$(APP2)$(EXE) || true
+	@echo "INSTALL libs → $(DESTDIR)$(LIBDIR)"
+	@$(MKDIR_P) $(DESTDIR)$(LIBDIR)
+	@[ -f $(LIB_STATIC) ] && $(COPY_FILE) $(LIB_STATIC) $(DESTDIR)$(LIBDIR)/ || true
+	@[ -f $(LIB_SHARED) ] && $(COPY_FILE) $(LIB_SHARED) $(DESTDIR)$(LIBDIR)/ || true
+	@echo "INSTALL headers → $(DESTDIR)$(INCLUDEDIR)"
+	@$(MKDIR_P) $(DESTDIR)$(INCLUDEDIR)
+	@cp -a core/*.h $(DESTDIR)$(INCLUDEDIR)/
 
 uninstall:
-	rm -f $(DESTDIR)$(BINDIR)/vitli $(DESTDIR)$(BINDIR)/vitlc
-	rm -rf $(DESTDIR)$(INCDIR)
+	@$(RM)       $(DESTDIR)$(BINDIR)/$(APP)$(EXE) $(DESTDIR)$(BINDIR)/$(APP2)$(EXE)
+	@$(RM)       $(DESTDIR)$(LIBDIR)/libvittelight.a
+	@$(RM)       $(DESTDIR)$(LIBDIR)/libvittelight.$(SHARED_EXT)
+	@$(RMDIR_R)  $(DESTDIR)$(INCLUDEDIR)
+	@$(RM)       $(DESTDIR)$(PKGCFGDIR)/vittelight.pc
 
-print-flags:
-	@echo "CPPFLAGS=$(CPPFLAGS)"
-	@echo "CFLAGS=$(CFLAGS)"
-	@echo "LDFLAGS=$(LDFLAGS)"
-	@echo "LDLIBS=$(LDLIBS)"
+# ---- Pkg-config ----
+pkgconfig: $(DIST_DIR)/vittelight.pc
+	@$(MKDIR_P) $(DESTDIR)$(PKGCFGDIR)
+	@install -m 0644 $(DIST_DIR)/vittelight.pc $(DESTDIR)$(PKGCFGDIR)/
+
+$(DIST_DIR)/vittelight.pc:
+	@$(MKDIR_P) $(DIST_DIR)
+	@echo "prefix=$(PREFIX)"                              >  $@
+	@echo "exec_prefix=\$${prefix}"                       >> $@
+	@echo "libdir=\$${prefix}/lib"                        >> $@
+	@echo "includedir=\$${prefix}/include"                >> $@
+	@echo ""                                              >> $@
+	@echo "Name: vittelight"                              >> $@
+	@echo "Description: $(DESC)"                          >> $@
+	@echo "Version: $(VERSION)"                           >> $@
+	@echo "Libs: -L\$${libdir} -lvittelight"              >> $@
+	@echo "Cflags: -I\$${includedir}/vittelight"          >> $@
+
+# ---- QA ----
+format:
+	@clang-format -i $(shell ls **/*.c **/*.h 2>/dev/null || true)
+
+lint:
+	@cppcheck --std=c11 --enable=warning,style,performance --quiet . || true
+
+test:
+	@echo "(TODO) add unit tests"
+	@:
+
+bench:
+	@$(BIN_APP) bench 1048576 200 || true
+
+# ---- Archives (release) ----
+tar: dist/$(ORG)-$(VERSION).tar.gz
+gz:  tar
+zip: dist/$(ORG)-$(VERSION).zip
+
+dist/$(ORG)-$(VERSION).tar.gz:
+	@$(MKDIR_P) dist
+	@git archive --format=tar --prefix=$(ORG)-$(VERSION)/ HEAD | gzip -9 > $@
+	@$(SHA256) $@
+
+dist/$(ORG)-$(VERSION).zip:
+	@$(MKDIR_P) dist
+	@git archive --format=zip --prefix=$(ORG)-$(VERSION)/ HEAD > $@
+	@$(SHA256) $@
+
+# ---- Nettoyage ----
+clean:
+	@rm -rf $(BUILD_DIR)
+
+distclean: clean
+	@rm -rf $(DIST_DIR) $(FORMULADIR)
+
+# =========================================
+# Homebrew helpers
+# =========================================
+
+REPO ?= https://github.com/$(USER)/VitteLight
+
+brew: brew-archive brew-formula
+	@echo "OK: Formula in $(FORMULADIR)/vittelight.rb"
+
+brew-archive: tar
+	@echo "Archive ready in dist/, computing SHA256…"
+	@$(SHA256) dist/$(ORG)-$(VERSION).tar.gz
+
+brew-formula: | $(FORMULADIR)
+	@ARCHIVE=dist/$(ORG)-$(VERSION).tar.gz; \
+	SHA=`$(SHA256) $$ARCHIVE | awk '{print $$1}'`; \
+	echo "Generating formula with sha256=$$SHA"; \
+	cat > $(FORMULADIR)/vittelight.rb <<'RUBY'; \
+class Vittelight < Formula
+  desc "$(DESC)"
+  homepage "$(REPO)"
+  url "$(REPO)/archive/refs/tags/v$(VERSION).tar.gz"
+  sha256 "SHA256_PLACEHOLDER"
+  license "MIT"
+
+  depends_on "pkg-config" => :build
+
+  def install
+    system "make", "release", "PREFIX=#{prefix}"
+    system "make", "install", "PREFIX=#{prefix}"
+  end
+
+  test do
+    system "#{bin}/vitte-cli", "help"
+  end
+end
+RUBY ; \
+	$(SED) -i'' -e "s|SHA256_PLACEHOLDER|$$SHA|" -e "s|v$(VERSION)|v$(VERSION)|" $(FORMULADIR)/vittelight.rb 2>/dev/null || \
+	$(SED) -i -e "s|SHA256_PLACEHOLDER|$$SHA|" -e "s|v$(VERSION)|v$(VERSION)|" $(FORMULADIR)/vittelight.rb; \
+	echo "Formula written."
+
+$(FORMULADIR):
+	@$(MKDIR_P) $(FORMULADIR)
