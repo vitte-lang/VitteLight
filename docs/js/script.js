@@ -23,18 +23,37 @@
   const hitsEl  = document.getElementById("hits");
   const toolbar = document.querySelector(".toolbar");
   const srchRoot= document.querySelector(".srch");
-  // const suggBox = document.getElementById("suggestions"); // ❌ inutile désormais
   const searchBtn = document.getElementById("searchBtn");
   const sommaire  = document.getElementById("sommaire");
   const fabToc    = document.getElementById("fabToc");
   const content   = document.getElementById("content");
 
-  // crée/garantit la box de suggestions (portée dans <body>)
+  /* ===== A11y & mobile ===== */
+  const prefersReduced = window.matchMedia?.("(prefers-reduced-motion: reduce)") ?? { matches:false };
+  const scrollBehavior = prefersReduced.matches ? "auto" : "smooth";
+  hitsEl?.setAttribute("role","status");
+  hitsEl?.setAttribute("aria-live","polite");
+  q && q.setAttribute("inputmode","search");
+  q && q.setAttribute("enterkeyhint","search");
+
+  // style pour le match courant + scroll-margin
+  (function addFindStyle(){
+    const st=document.createElement("style");
+    st.textContent=`
+      mark[data-cur]{outline:2px solid var(--accent,#5da0ff);border-radius:3px}
+      [id],h1[id],h2[id],h3[id]{scroll-margin-top:calc(var(--tbH,48px)+8px)}
+    `;
+    document.head.appendChild(st);
+  })();
+
+  // crée/garantit la box de suggestions (portée dans <body>) + ARIA
   function ensureSuggBox(){
     let box = document.getElementById("suggestions");
     if(!box){
       box = document.createElement("div");
       box.id = "suggestions";
+      box.setAttribute("role","listbox");
+      box.setAttribute("aria-label","Suggestions de recherche");
       document.body.appendChild(box);
     }
     Object.assign(box.style, {
@@ -47,12 +66,19 @@
       borderRadius: "8px",
       maxHeight: "50vh",
       overflow: "auto",
-      minWidth: "24rem",
+      minWidth: "20rem",
       maxWidth: "min(48rem, 95vw)",
       padding: "6px",
       boxShadow: "0 8px 24px rgba(0,0,0,.2)"
     });
     return box;
+  }
+
+  // VisualViewport-aware pour éviter le clavier virtuel
+  function viewportOffsets(){
+    const vv = window.visualViewport;
+    if(!vv) return {vx:0, vy:0};
+    return { vx: vv.offsetLeft||0, vy: vv.offsetTop||0 };
   }
 
   // place la box sous le champ de recherche
@@ -61,15 +87,15 @@
     if(!box || box.hasAttribute("hidden")) return;
     const anchor = (q && q.offsetParent) ? q : (srchRoot || toolbar || document.body);
     const r = anchor.getBoundingClientRect();
-    const width = Math.max(r.width || 0, 320);
+    const width = Math.max(r.width || 0, 280);
     box.style.width = width + "px";
-    // forcer un layout pour avoir offsetWidth à jour
     const bw = box.offsetWidth || width;
     const bh = box.offsetHeight || 0;
     const vw = Math.max(document.documentElement.clientWidth, window.innerWidth || 0);
     const vh = Math.max(document.documentElement.clientHeight, window.innerHeight || 0);
-    const x = Math.min(Math.max(8, r.left), vw - bw - 8);
-    const y = Math.min(Math.max(8, r.bottom + 6), vh - bh - 8);
+    const {vx,vy} = viewportOffsets();
+    const x = Math.min(Math.max(8 + vx, r.left + vx), vx + vw - bw - 8);
+    const y = Math.min(Math.max(8 + vy, r.bottom + 6 + vy), vy + vh - bh - 8);
     box.style.transform = `translate(${x}px, ${y}px)`;
   }
 
@@ -113,7 +139,7 @@
   function thresholdY(){ const s = sommaire ? (sommaire.offsetTop+sommaire.offsetHeight) : 0; return Math.min(innerHeight, s||innerHeight); }
   function onScroll(){ const y = scrollY || document.documentElement.scrollTop || 0; fabToc?.toggleAttribute("hidden", !(y>thresholdY())); }
   onScroll(); addEventListener("scroll", onScroll, {passive:true}); addEventListener("resize", onScroll);
-  fabToc?.addEventListener("click", ()=> (sommaire||document.body).scrollIntoView({behavior:"smooth",block:"start"}));
+  fabToc?.addEventListener("click", ()=> (sommaire||document.body).scrollIntoView({behavior:scrollBehavior,block:"start"}));
 
   // Shortcuts
   addEventListener("keydown", (e)=>{
@@ -453,14 +479,49 @@
     });
     return marks.length;
   }
+
+  // NAVIGATION: index du 1er match visible + focus amélioré
+  function firstMatchIndexBelowViewport(){
+    if(!marks.length) return -1;
+    const tb = toolbar?.getBoundingClientRect().height || 0;
+    const topLimit = tb + 8;
+    for(let i=0;i<marks.length;i++){
+      const r = marks[i].getBoundingClientRect();
+      if(r.top > topLimit) return i;
+    }
+    return 0;
+  }
   function focusCur(){
     marks.forEach(m=> m.removeAttribute("data-cur"));
-    if(curMark>=0 && marks[curMark]){ marks[curMark].setAttribute("data-cur",""); marks[curMark].scrollIntoView({behavior:"smooth",block:"center"}); }
-    hitsEl && (hitsEl.textContent = marks.length ? `${curMark+1}/${marks.length} correspondances` : "Aucun résultat");
+    if(curMark>=0 && marks[curMark]){
+      const m = marks[curMark];
+      m.setAttribute("data-cur","");
+      const y = m.getBoundingClientRect().top + (window.scrollY || document.documentElement.scrollTop || 0);
+      const tb = toolbar?.getBoundingClientRect().height || 0;
+      window.scrollTo({ top: Math.max(0, y - (innerHeight/2) - tb), behavior: scrollBehavior });
+      hitsEl && (hitsEl.textContent = `${curMark+1}/${marks.length} correspondances`);
+    }else{
+      hitsEl && (hitsEl.textContent = "Aucun résultat");
+    }
   }
   function gotoNext(){ if(!marks.length) return; curMark=(curMark+1)%marks.length; focusCur(); }
   function gotoPrev(){ if(!marks.length) return; curMark=(curMark-1+marks.length)%marks.length; focusCur(); }
   window.gotoNext=gotoNext; window.gotoPrev=gotoPrev;
+
+  // Boutons Préc./Suiv. dans la toolbar
+  (function ensureFindNav(){
+    if(!toolbar) return;
+    if(toolbar.querySelector(".find-nav")) return;
+    const box = document.createElement("div");
+    box.className = "find-nav";
+    Object.assign(box.style,{display:"flex",gap:"6px",alignItems:"center",marginLeft:"8px"});
+    const prev = Object.assign(document.createElement("button"),{type:"button",textContent:"Préc."});
+    const next = Object.assign(document.createElement("button"),{type:"button",textContent:"Suiv."});
+    prev.addEventListener("click", ()=> gotoPrev());
+    next.addEventListener("click", ()=> gotoNext());
+    box.appendChild(prev); box.appendChild(next);
+    toolbar.appendChild(box);
+  })();
 
   /* ========== SUGGESTIONS UI ==========\ */
   let selIndex=-1;
@@ -483,7 +544,8 @@
 
   function addItemToSugg(item){
     const { d } = item;
-    const btn=document.createElement("button"); btn.type="button"; btn.className="sugg-item"; btn.setAttribute("role","option");
+    const btn=document.createElement("button"); btn.type="button"; btn.className="sugg-item";
+    btn.setAttribute("role","option"); btn.setAttribute("aria-selected","false");
     const left=document.createElement("div"); left.className="sugg-left";
     const right=document.createElement("div"); right.className="sugg-right";
     const path=d.title || (d.type==="heading"?"Titre": String(d.type).startsWith("code")?"Code":"Contenu");
@@ -493,15 +555,24 @@
     right.appendChild(famTag(d.fam||"Content",true));
     right.appendChild(famTag(`file: ${d.file}`));
     btn.appendChild(left); btn.appendChild(right);
+    btn.addEventListener("focus", ()=> btn.setAttribute("aria-selected","true"));
+    btn.addEventListener("blur",  ()=> btn.setAttribute("aria-selected","false"));
     btn.addEventListener("click", ()=>{
       hideSugg(); clearMarks();
       const here=canonical(location.href), there=canonical(d.url);
       if(here===there){
         const target=d.anchor ? document.getElementById(d.anchor) : content;
-        (target||content)?.scrollIntoView({behavior:"smooth",block:"start"});
+        (target||content)?.scrollIntoView({behavior:scrollBehavior,block:"start"});
         const parsed=parseQuery(q?.value||"");
         const needles=[...parsed.phrases, ...parsed.pos, ...parsed.wild.map(w=>w), ...parsed.chars];
-        if(needles.length){ const total=markAll(needles); if(total){ curMark=0; focusCur(); } }
+        if(needles.length){
+          const total=markAll(needles);
+          if(total){
+            const idx = firstMatchIndexBelowViewport();
+            curMark = idx >= 0 ? idx : 0;
+            focusCur();
+          }
+        }
       }else{
         location.href = d.url + anchor;
       }
@@ -584,7 +655,14 @@
     const parsed  = parseQuery(term ?? "");
     const res     = matchAndScore(term ?? "");
     const needles = [...parsed.phrases, ...parsed.pos, ...parsed.wild.map(w=>w), ...parsed.chars];
-    if(needles.length){ const total=markAll(needles); if(total){ curMark=0; focusCur(); } }
+    if(needles.length){
+      const total=markAll(needles);
+      if(total){
+        const idx = firstMatchIndexBelowViewport();
+        curMark = idx >= 0 ? idx : 0;
+        focusCur();
+      }
+    }
     const parts=[];
     if(res.summary.heading) parts.push(`Titres: ${res.summary.heading}`);
     if(res.summary.text)    parts.push(`Texte: ${res.summary.text}`);
@@ -613,10 +691,9 @@
       }
       if(e.key==="Escape"){ hideSugg(); }
     });
-    q.addEventListener("focus", positionSuggBox);
+    q.addEventListener("focus", positionSuggBox, {passive:true});
   }
   searchBtn?.addEventListener("click", ()=> doSearch(q?.value || ""));
-  // ne pas fermer si on clique DANS la box de suggestions
   document.addEventListener("click", (e)=>{
     const box = document.getElementById("suggestions");
     if(!srchRoot) return;
@@ -625,11 +702,29 @@
 
   addEventListener("resize", positionSuggBox, { passive:true });
   addEventListener("scroll", positionSuggBox, { passive:true });
+  addEventListener("orientationchange", ()=>{ updateToolbarH(); positionSuggBox(); }, { passive:true });
+
+  if (window.visualViewport){
+    visualViewport.addEventListener("resize", positionSuggBox, {passive:true});
+    visualViewport.addEventListener("scroll", positionSuggBox, {passive:true});
+  }
 
   if (toolbar && "MutationObserver" in window){
     const mo=new MutationObserver(()=> onResize());
     mo.observe(document.body, {childList:true, subtree:true});
   }
+
+  // ouverture directe via ?q= ou #q=
+  (function autoQueryFromURL(){
+    const qs = new URLSearchParams(location.search);
+    const fromSearch = (qs.get("q")||"").trim();
+    const fromHash   = ((location.hash||"").match(/(^|[?#&])q=([^&]+)/)?.[2]||"").trim();
+    const term = decodeURIComponent(fromSearch || fromHash || "");
+    if(term){
+      q && (q.value = term);
+      doSearch(term);
+    }
+  })();
 
   (async function init(){
     try{ await ensureIndex(false); }catch{ await ensureIndex(true); }
@@ -637,3 +732,4 @@
   })();
 
 })();
+
