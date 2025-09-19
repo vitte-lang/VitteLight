@@ -1,65 +1,70 @@
-/* ============================================================================
-   vm.c — Machine virtuelle stack-based pour bytecode VTBC (C17, portable)
-   - Boucle d’exécution avec dispatch en switch
-   - Pile de valeurs, frames d’appel, globals, constantes
-   - Arithmétique entière/flottante, comparaisons, sauts, tables/strings
-   - Appels natifs (C) et fonctions bytecode, variadiques simples
-   - Chargement d’images via undump.{h,c} ("VTBC": CODE,KCON,STRS,SYMS,FUNC)
-   - Gestion des erreurs, pas de dépendances système non-portables
-   - Licence: MIT.
-   ============================================================================
- */
-#include <assert.h>
-#include <errno.h>
-#include <math.h>
-#include <stddef.h>
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// core/types.h — Définition des types de base pour VitteLight VM
+// Fournit VL_TypeTag, VL_Value, helpers, API publique.
+
+#pragma once
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include <errno.h>
 
-/* --- Headers du projet (tous optionnels mais recommandés) ----------------- */
-#if defined(__has_include)
-#if __has_include("debug.h")
-#include "debug.h"
-#endif
-#if __has_include("object.h")
-#include "object.h"
-#endif
-#if __has_include("string.h")
-#include "string.h"
-#endif
-#if __has_include("table.h")
-#include "table.h"
-#endif
-#if __has_include("gc.h")
-#include "gc.h"
-#endif
-#if __has_include("undump.h")
-#include "undump.h"
-#endif
-#if __has_include("opcodes.h")
-#include "opcodes.h"
-#endif
-#if __has_include("state.h")
-#include "state.h"
-#endif
+#ifdef __cplusplus
+extern "C" {
 #endif
 
-/* --- Fallbacks si certains headers ne sont pas encore disponibles ----------
- */
-#ifndef VT_DEBUG
-#define VT_TRACE(...) ((void)0)
-#define VT_DEBUG(...) ((void)0)
-#define VT_INFO(...) ((void)0)
-#define VT_WARN(...) ((void)0)
-#define VT_ERROR(...) ((void)0)
-#define VT_FATAL(...)                           \
-  do {                                          \
-    fprintf(stderr, "FATAL: vm: " __VA_ARGS__); \
-    fputc('\n', stderr);                        \
-    abort();                                    \
-  } while (0)
+/* ───────────── Enum Tag Types ───────────── */
+typedef enum {
+    VT_T_NIL = 0,
+    VT_T_BOOL,
+    VT_T_INT,
+    VT_T_FLOAT,
+    VT_T_STRING,
+    VT_T_TABLE,
+    VT_T_FUNC,
+    VT_T_NATIVE,
+    VT_T_USERDATA,
+    VT_T_MAX
+} VL_TypeTag;
+
+/* ───────────── VL_Value ───────────── */
+typedef struct {
+    VL_TypeTag t;
+    union {
+        int64_t i;
+        double f;
+        void*  p;
+    } v;
+} VL_Value;
+
+/* ───────────── Predicates ───────────── */
+int vl_is_int    (const VL_Value* v);
+int vl_is_float  (const VL_Value* v);
+int vl_is_bool   (const VL_Value* v);
+int vl_is_nil    (const VL_Value* v);
+int vl_is_string (const VL_Value* v);
+
+/* ───────────── Accessors ───────────── */
+int64_t vl_as_int   (const VL_Value* v);
+double  vl_as_float (const VL_Value* v);
+void*   vl_as_ptr   (const VL_Value* v);
+
+/* ───────────── Constructors ───────────── */
+VL_Value vl_make_int   (int64_t x);
+VL_Value vl_make_float (double x);
+VL_Value vl_make_bool  (int b);
+VL_Value vl_make_nil   (void);
+VL_Value vl_make_ptr   (VL_TypeTag t, void* p);
+
+/* ───────────── Utilities ───────────── */
+const char* vl_type_name(VL_TypeTag t);
+void        vl_print_value(const VL_Value* v, FILE* out);
+
+/* ───────────── Optional lifecycle helpers ───────────── */
+static inline VL_Value vl_value_copy(VL_Value v) { return v; }
+static inline void     vl_value_free(VL_Value* v) { (void)v; }
+
+#ifdef __cplusplus
+}
 #endif
 
 #ifndef VT_MALLOC
