@@ -1,131 +1,90 @@
-// vitte-light/core/opnames.h
-// Noms symboliques et helpers statiques pour le set d'opcodes VLBC.
-// Header-only. S'aligne sur core/opcodes.h et la VM (api.c / jumptab.c).
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// core/opnames.h — Noms et métadonnées d’opcodes VitteLight
+//
+// Fournit :
+//   - vl_op_name(op) → "ADD" / "UNKNOWN"
+//   - Table globale vl_opnames[VL_MAX_OPCODE]
+//   - (optionnel, si VL_OPMETA_ENABLE) : arité et catégorie par opcode
+//
+// Usage :
+//   #include "opnames.h"
+//   printf("%s\n", vl_op_name(bytecode[i]));
+//
+// Build : placer ce header avec opnames.c dans core/.
 
 #ifndef VITTE_LIGHT_CORE_OPNAMES_H
 #define VITTE_LIGHT_CORE_OPNAMES_H
+
+#include <stdint.h>
+#include <stddef.h>
+
+#ifndef VL_MAX_OPCODE
+#  define VL_MAX_OPCODE 256
+#endif
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#include <stdint.h>
-#include <string.h>
+/* ───────────── Noms d’opcodes ───────────── */
 
-#include "opcodes.h"  // définit OP_* si pas déjà défini
+/* Table indexée par code opcode. Entrées non utilisées = NULL. */
+extern const char *const vl_opnames[VL_MAX_OPCODE];
 
-// Taille utile du tableau (dernier opcode inclus)
-#ifndef VL_OP_MAX
-#define VL_OP_MAX OP_HALT
-#endif
+/* Retourne un nom lisible ou "UNKNOWN" si op inconnu. */
+const char *vl_op_name(uint8_t op);
 
-// Nom court d'un opcode. Retourne "?" si inconnu.
-static inline const char *vl_opname(uint8_t op) {
-  // Tableau indexé par code opcode.
-  static const char *const NAMES[VL_OP_MAX + 1] = {
-      [OP_NOP] = "NOP",     [OP_PUSHI] = "PUSHI",   [OP_PUSHF] = "PUSHF",
-      [OP_PUSHS] = "PUSHS", [OP_ADD] = "ADD",       [OP_SUB] = "SUB",
-      [OP_MUL] = "MUL",     [OP_DIV] = "DIV",       [OP_EQ] = "EQ",
-      [OP_NEQ] = "NEQ",     [OP_LT] = "LT",         [OP_GT] = "GT",
-      [OP_LE] = "LE",       [OP_GE] = "GE",         [OP_PRINT] = "PRINT",
-      [OP_POP] = "POP",     [OP_STOREG] = "STOREG", [OP_LOADG] = "LOADG",
-      [OP_CALLN] = "CALLN", [OP_HALT] = "HALT",
-  };
-  return (op <= VL_OP_MAX && NAMES[op]) ? NAMES[op] : "?";
-}
+/* ───────────── Métadonnées (optionnel) ─────────────
+ * Activez en définissant VL_OPMETA_ENABLE AVANT l’inclusion de ce header.
+ * Donne l’arité (nb d’opérandes encodés après l’opcode) et la catégorie.
+ */
+#ifdef VL_OPMETA_ENABLE
 
-// Lookup par nom (insensible à la casse optionnelle). -1 si inconnu.
-static inline int vl_opcode_from_name(const char *name) {
-  if (!name || !*name) return -1;
-  // Comparaison sensible à la casse d'abord
-  if (!strcmp(name, "NOP")) return OP_NOP;
-  if (!strcmp(name, "PUSHI")) return OP_PUSHI;
-  if (!strcmp(name, "PUSHF")) return OP_PUSHF;
-  if (!strcmp(name, "PUSHS")) return OP_PUSHS;
-  if (!strcmp(name, "ADD")) return OP_ADD;
-  if (!strcmp(name, "SUB")) return OP_SUB;
-  if (!strcmp(name, "MUL")) return OP_MUL;
-  if (!strcmp(name, "DIV")) return OP_DIV;
-  if (!strcmp(name, "EQ")) return OP_EQ;
-  if (!strcmp(name, "NEQ")) return OP_NEQ;
-  if (!strcmp(name, "LT")) return OP_LT;
-  if (!strcmp(name, "GT")) return OP_GT;
-  if (!strcmp(name, "LE")) return OP_LE;
-  if (!strcmp(name, "GE")) return OP_GE;
-  if (!strcmp(name, "PRINT")) return OP_PRINT;
-  if (!strcmp(name, "POP")) return OP_POP;
-  if (!strcmp(name, "STOREG")) return OP_STOREG;
-  if (!strcmp(name, "LOADG")) return OP_LOADG;
-  if (!strcmp(name, "CALLN")) return OP_CALLN;
-  if (!strcmp(name, "HALT")) return OP_HALT;
-// Variante insensible à la casse
-#define EQCI(a, b) (strcasecmp((a), (b)) == 0)
-  if (EQCI(name, "nop")) return OP_NOP;
-  if (EQCI(name, "pushi")) return OP_PUSHI;
-  if (EQCI(name, "pushf")) return OP_PUSHF;
-  if (EQCI(name, "pushs")) return OP_PUSHS;
-  if (EQCI(name, "add")) return OP_ADD;
-  if (EQCI(name, "sub")) return OP_SUB;
-  if (EQCI(name, "mul")) return OP_MUL;
-  if (EQCI(name, "div")) return OP_DIV;
-  if (EQCI(name, "eq")) return OP_EQ;
-  if (EQCI(name, "neq")) return OP_NEQ;
-  if (EQCI(name, "lt")) return OP_LT;
-  if (EQCI(name, "gt")) return OP_GT;
-  if (EQCI(name, "le")) return OP_LE;
-  if (EQCI(name, "ge")) return OP_GE;
-  if (EQCI(name, "print")) return OP_PRINT;
-  if (EQCI(name, "pop")) return OP_POP;
-  if (EQCI(name, "storeg")) return OP_STOREG;
-  if (EQCI(name, "loadg")) return OP_LOADG;
-  if (EQCI(name, "calln")) return OP_CALLN;
-  if (EQCI(name, "halt")) return OP_HALT;
-#undef EQCI
-  return -1;
-}
+/* Catégories d’opcodes pour tri/affichage. */
+typedef enum {
+    VL_OPCAT_MISC = 0,   /* HALT, NOP, BREAK, etc. */
+    VL_OPCAT_STACK,      /* PUSHS, PUSHI, POP, DUP, SWAP… */
+    VL_OPCAT_ARITH,      /* ADD, SUB, MUL, DIV, MOD, NEG… */
+    VL_OPCAT_CMP,        /* CMP, EQ, NE, LT, LE, GT, GE… */
+    VL_OPCAT_LOGIC,      /* AND, OR, XOR, NOT… */
+    VL_OPCAT_JUMP,       /* JUMP, JZ, JNZ, JLT… */
+    VL_OPCAT_CALL,       /* CALL, CALLN, RET… */
+    VL_OPCAT_TABLE,      /* NEWTABLE, GET/SETFIELD/INDEX… */
+    VL_OPCAT_GLOBAL,     /* GET/SETGLOBAL, GET/SETLOCAL… */
+    VL_OPCAT_VM,         /* TRACE, PRINT, DUMPSTACK… */
+    VL_OPCAT__COUNT
+} vl_opcat_t;
 
-// Helpers booléens utiles pour l'assembleur et le désassembleur.
-static inline int vl_op_is_binary(uint8_t op) {
-  switch (op) {
-    case OP_ADD:
-    case OP_SUB:
-    case OP_MUL:
-    case OP_DIV:
-    case OP_EQ:
-    case OP_NEQ:
-    case OP_LT:
-    case OP_GT:
-    case OP_LE:
-    case OP_GE:
-      return 1;
-    default:
-      return 0;
-  }
+/* Arité : nombre d’octets d’opérandes immédiats consécutifs.
+ * Exemple si JUMP rel32, arity peut valoir 4. */
+extern const uint8_t vl_op_arity[VL_MAX_OPCODE];
+
+/* Catégorie par opcode. */
+extern const uint8_t vl_op_category[VL_MAX_OPCODE];
+
+/* Vue structurée pratique. */
+typedef struct {
+    const char *name;   /* NULL si non défini */
+    uint8_t     arity;  /* nb d’octets d’immédiats */
+    uint8_t     cat;    /* vl_opcat_t */
+} vl_opmeta_t;
+
+extern const vl_opmeta_t vl_opmeta[VL_MAX_OPCODE];
+
+/* Helpers. */
+static inline uint8_t vl_op_get_arity(uint8_t op) {
+    return (op < VL_MAX_OPCODE) ? vl_op_arity[op] : 0u;
 }
-static inline int vl_op_has_u32_const(uint8_t op) {  // utilise un index kstr
-  return (op == OP_PUSHS || op == OP_LOADG || op == OP_STOREG ||
-          op == OP_CALLN);
+static inline uint8_t vl_op_get_category(uint8_t op) {
+    return (op < VL_MAX_OPCODE) ? vl_op_category[op] : (uint8_t)VL_OPCAT_MISC;
 }
-static inline int vl_op_is_pure(uint8_t op) {  // grossière approximation
-  switch (op) {
-    case OP_ADD:
-    case OP_SUB:
-    case OP_MUL:
-    case OP_DIV:
-    case OP_EQ:
-    case OP_NEQ:
-    case OP_LT:
-    case OP_GT:
-    case OP_LE:
-    case OP_GE:
-      return 1;
-    default:
-      return 0;
-  }
-}
+const char *vl_op_category_name(uint8_t cat); /* "STACK", "JUMP", etc. */
+
+#endif /* VL_OPMETA_ENABLE */
 
 #ifdef __cplusplus
-}  // extern "C"
+}
 #endif
 
-#endif  // VITTE_LIGHT_CORE_OPNAMES_H
+#endif /* VITTE_LIGHT_CORE_OPNAMES_H */

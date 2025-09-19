@@ -20,6 +20,8 @@
 #include "ctype.h"
 #include "debug.h"
 #include "mem.h"
+#include "types.h"
+
 
 /* ----------------------------------------------------------------------------
    Config locale
