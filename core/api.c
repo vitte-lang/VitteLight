@@ -12,6 +12,7 @@
 #endif
 #endif
 
+#include "core/api.h"
 #include <errno.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -62,7 +63,6 @@ typedef uint64_t u64;
 typedef float f32;
 typedef double f64;
 typedef size_t usize;
-typedef ptrdiff_t isize;
 
 /* --------------------------------------------------------------------------
    Utilitaires généraux
