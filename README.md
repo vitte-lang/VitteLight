@@ -83,12 +83,13 @@ Autres:
 ```
 ──────────────────────────────────────────────────────────────────────────────
 ## STRUCTURE DE PROJET
+``` markdown
 project/
  ├─ src/
  │   └─ main.vitl
  ├─ build/
  └─ libs/    # librairies C optionnelles pour FFI
-
+```
 ──────────────────────────────────────────────────────────────────────────────
 ## EXEMPLE MINIMAL
 src/main.vitl :
@@ -199,13 +200,14 @@ E2001 fichier non trouvé
 
 ──────────────────────────────────────────────────────────────────────────────
 ## CHECKLIST AVANT RELEASE
+``` markdown
 [ ] module app.main défini
 [ ] main() -> i32 présent
 [ ] imports minimaux
 [ ] build avec -O2 ou -g
 [ ] tests passent
 [ ] binaire généré dans /build
-
+```
 ──────────────────────────────────────────────────────────────────────────────
 LICENCE
 MIT License.
