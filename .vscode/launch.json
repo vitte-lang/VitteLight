@@ -1,0 +1,53 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run vitl (default)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/bin/vitl",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "MIMode": "gdb",
+      "miDebuggerPath": "/usr/bin/gdb",
+      "environment": [],
+      "externalConsole": false,
+      "stopAtEntry": false
+    },
+    {
+      "name": "Run vitl with args",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/bin/vitl",
+      "args": ["--version"],
+      "cwd": "${workspaceFolder}",
+      "MIMode": "gdb",
+      "miDebuggerPath": "/usr/bin/gdb",
+      "environment": [],
+      "externalConsole": false,
+      "stopAtEntry": false
+    },
+    {
+      "name": "Debug vitl (stop at entry)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/bin/vitl",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "MIMode": "gdb",
+      "miDebuggerPath": "/usr/bin/gdb",
+      "environment": [],
+      "externalConsole": true,
+      "stopAtEntry": true
+    },
+    {
+      "name": "Attach to running vitl",
+      "type": "cppdbg",
+      "request": "attach",
+      "program": "${workspaceFolder}/bin/vitl",
+      "processId": "${command:pickProcess}",
+      "MIMode": "gdb",
+      "miDebuggerPath": "/usr/bin/gdb"
+    }
+  ]
+}
