@@ -4,13 +4,7 @@
    - Identifiants, nombres (10/16/2, float + exp, underscores), bool, char,
    string
    - Commentaires //, //!, /* */
-imbriqués;
-espaces ignorés hors littéraux - Opérateurs / délimiteurs complets
-    : ::....=->= > etc.- Positions(ligne, colonne,
-                                   offset) pour diagnostics Licence : MIT.==
-                 == == == == == == == == == == == == == == == == == == == == ==
-                 == == == == == == == == == == == == == == == ==
-                 */
+
 #ifndef VT_LEX_H
 #define VT_LEX_H
 #pragma once

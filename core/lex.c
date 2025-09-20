@@ -1,20 +1,17 @@
+// SPDX-License-Identifier: MIT
 /* ============================================================================
-   lex.c — Lexer Vitte/Vitl ultra complet (C17)
-   Grammaire ciblée: EBNF fournie (identique pour Vitte/Vitl).
+   lex.c — Lexer Vitte/Vitl (C17, portable)
+
    - Identifiants: [A-Za-z_][A-Za-z0-9_]*
-   - Nombres: décimal, hexa 0x, binaire 0b, flottants décimaux + exp, _ autorisé
-   - Littéraux: int, float, bool (true/false), char, string (escapes
-   \n\r\t\0\\\" \xHH)
-   - Commentaires: // ligne, //! doc, /* ... */
-imbriqués - Sauts d’espace ignorés hors string / char - Mots -
-    clés réservés(voir table) - Opérateurs / délimiteurs complets,
-    dont ::....= -> = > -Positions : ligne, colonne, offset;
-extraction de la ligne pour diagnostics -
-    API : initialisation depuis mémoire / fichier,
-    next / peek, expect,
-    dump token Licence : MIT.== == == == == == == == == == == == == == == == ==
-        == == == == == == == == == == == == == == == == == == == == ==
-        */
+   - Nombres: décimal, hexa 0x, binaire 0b, flottants + exp, '_' autorisé
+   - Littéraux: int, float, bool (true/false), char, string
+     Escapes: \n \r \t \0 \\ \" \xHH \uXXXX
+   - Commentaires: //, //!, /* ... avec imbrication
+   - Opérateurs/délimiteurs: une et deux/3-char
+     (== != <= >= -> :: ... += -= *= /= %= && || << >>)
+   - Positions: ligne, colonne, offset
+   - API: init mémoire/fichier, next/peek, expect, dump
+   ============================================================================ */
 
 #define _CRT_SECURE_NO_WARNINGS
 

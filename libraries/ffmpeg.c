@@ -1,747 +1,352 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// ffmpeg.c — FFmpeg (avformat/avcodec/swresample/swscale) bindings for Vitte
-// Light VM (C17, complete) Namespace: "ffmpeg"
+// ffmpeg.c — Thin FFmpeg adapter for Vitte Light (C17)
+// Namespace: "ffmpeg"
 //
-// Build:
-//   cc -std=c17 -O2 -Wall -Wextra -pedantic -DVL_HAVE_FFMPEG -c ffmpeg.c
-//   cc ... ffmpeg.o -lavformat -lavcodec -lavutil -lswresample -lswscale
+// Build options:
+//   // Probe via libav* when dev libs are present:
+//   cc -std=c17 -O2 -Wall -Wextra -pedantic -DVL_HAVE_FFMPEGLIB \
+//      -lavformat -lavcodec -lavutil -lswresample -lswscale -c ffmpeg.c
 //
-// Portability:
-//   - Real implementation if VL_HAVE_FFMPEG and FFmpeg headers are available.
-//   - Otherwise: stubs -> (nil,"ENOSYS").
+//   // Otherwise falls back to spawning the `ffmpeg` CLI binary:
+//   cc -std=c17 -O2 -Wall -Wextra -pedantic -c ffmpeg.c
 //
-// Model:
-//   - One handle id == one opened input (file/URL).
-//   - Decoders created for audio/video streams. Output formats:
-//       * Audio frames: interleaved float32 PCM (sample_rate, channels,
-//       nb_samples).
-//       * Video frames: RGB24 (width * height * 3 bytes).
-//   - Stream list is returned as USV rows (fields 0x1F, rows 0x1E).
+// Provides:
+//   typedef struct {
+//     int has_video, has_audio;
+//     int width, height;
+//     int audio_sr, audio_ch;
+//     double duration_sec;
+//     char vcodec[64], acodec[64];
+//   } ff_info;
 //
-// API:
-//   ffmpeg.version() -> string                     // "libavformat:X
-//   libavcodec:Y libavutil:Z ..." ffmpeg.open_input(path_or_url) -> id |
-//   (nil,errmsg) ffmpeg.streams(id) -> usv:string | (nil,errmsg) // rows:
-//   idx,kind,codec,w,h,pixfmt,sr,ch,fmt,dur_ts,time_base,avg_fps
-//   ffmpeg.read_packet(id) -> sid:int, pts_sec:float, key:int, data:string |
-//   (nil,"eof") | (nil,errmsg) ffmpeg.decode_next(id[, want="av"]) ->
-//        "audio", sid, pts_sec:float, sr:int, ch:int, nb_samples:int,
-//        pcm_f32:string
-//      | "video", sid, pts_sec:float, w:int, h:int, rgb24:string
-//      | (nil,"eof") | (nil,errmsg)
-//   ffmpeg.seek(id, seconds:number[, mode="any"]) -> true | (nil,errmsg)   //
-//   mode: "any"|"backward"|"frame" ffmpeg.close(id) -> true
+//   // Probe media (prefers libav*, else runs `ffprobe` if available, else zeroes):
+//   int  ff_probe(const char* in_path, ff_info* out);
+//
+//   // Common actions via CLI (works without libav*):
+//   int  ff_extract_wav(const char* in_path, const char* out_wav, int sr, int ch);
+//   int  ff_screenshot_png(const char* in_path, const char* out_png, double t_sec, int w, int h);
+//   int  ff_transcode_h264_aac_mp4(const char* in_path, const char* out_mp4,
+//                                  int v_bitrate_k, int a_bitrate_k);
 //
 // Notes:
-//   - Strings passed in are expected to have no NUL bytes (VM limitation).
-//   Outputs use vl_push_lstring() and are binary-safe.
-//   - decode_next() reads/decodes until one frame is produced from any A/V
-//   stream (filtered by 'want': "a","v","av").
-//
-// Deps: auxlib.h, state.h, object.h, vm.h
+//   - CLI functions require `ffmpeg` in PATH. Return -1 if not found or command fails.
+//   - Paths are quoted. Basic escaping only. Avoid untrusted inputs for absolute safety.
 
-#include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 
-#include "auxlib.h"
-#include "object.h"
-#include "state.h"
-#include "vm.h"
-
-#ifdef VL_HAVE_FFMPEG
-#include <libavcodec/avcodec.h>
-#include <libavformat/avformat.h>
-#include <libavutil/avutil.h>
-#include <libavutil/imgutils.h>
-#include <libavutil/opt.h>
-#include <libswresample/swresample.h>
-#include <libswscale/swscale.h>
+#if defined(_WIN32)
+  #define WIN32_LEAN_AND_MEAN
+  #include <windows.h>
+  #define SLASH '\\'
+#else
+  #include <unistd.h>
+  #define SLASH '/'
 #endif
 
-#define US 0x1F
-#define RS 0x1E
+// ---------------- Data ----------------
+typedef struct {
+    int has_video, has_audio;
+    int width, height;
+    int audio_sr, audio_ch;
+    double duration_sec;
+    char vcodec[64], acodec[64];
+} ff_info;
 
-// ---------------------------------------------------------------------
-// VM arg helpers
-// ---------------------------------------------------------------------
-static const char *ff_check_str(VL_State *S, int idx) {
-  if (vl_get(S, idx) && vl_isstring(S, idx))
-    return vl_tocstring(S, vl_get(S, idx));
-  vl_errorf(S, "argument #%d: string expected", idx);
-  vl_error(S);
-  return NULL;
-}
-static int64_t ff_check_int(VL_State *S, int idx) {
-  if (vl_get(S, idx) && (vl_isint(S, idx) || vl_isfloat(S, idx)))
-    return vl_isint(S, idx) ? vl_toint(S, vl_get(S, idx))
-                            : (int64_t)vl_tonumber(S, vl_get(S, idx));
-  vl_errorf(S, "argument #%d: int expected", idx);
-  vl_error(S);
-  return 0;
-}
-static double ff_check_num(VL_State *S, int idx) {
-  if (vl_get(S, idx) && (vl_isint(S, idx) || vl_isfloat(S, idx)))
-    return vl_isint(S, idx) ? (double)vl_toint(S, vl_get(S, idx))
-                            : vl_tonumber(S, vl_get(S, idx));
-  vl_errorf(S, "argument #%d: number expected", idx);
-  vl_error(S);
-  return 0.0;
-}
-static const char *ff_opt_str(VL_State *S, int idx, const char *defv) {
-  if (!vl_get(S, idx) || !vl_isstring(S, idx)) return defv;
-  return ff_check_str(S, idx);
+// ---------------- Utilities ----------------
+
+static int file_exists(const char* p) {
+    if (!p || !*p) return 0;
+    FILE* f = fopen(p, "rb");
+    if (!f) return 0;
+    fclose(f);
+    return 1;
 }
 
-// ---------------------------------------------------------------------
-// Stubs when FFmpeg is missing
-// ---------------------------------------------------------------------
-#ifndef VL_HAVE_FFMPEG
-
-#define NOSYS_PAIR(S)            \
-  do {                           \
-    vl_push_nil(S);              \
-    vl_push_string(S, "ENOSYS"); \
-    return 2;                    \
-  } while (0)
-
-static int vlff_version(VL_State *S) {
-  vl_push_string(S, "ffmpeg not built");
-  return 1;
+static int which_in_path(const char* exe) {
+#if defined(_WIN32)
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "where %s >NUL 2>NUL", exe);
+    return system(cmd) == 0;
+#else
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "command -v %s >/dev/null 2>&1", exe);
+    return system(cmd) == 0;
+#endif
 }
-static int vlff_open(VL_State *S) {
-  (void)ff_check_str(S, 1);
-  NOSYS_PAIR(S);
+
+static void quote_path(char* out, size_t n, const char* in) {
+#if defined(_WIN32)
+    // "C:\path with spaces\file.ext"
+    snprintf(out, n, "\"%s\"", in ? in : "");
+#else
+    // 'path with spaces' (escape single quotes)
+    if (!in) { snprintf(out, n, "''"); return; }
+    size_t used = 0;
+    out[0] = '\0';
+    if (used + 1 < n) { out[used++] = '\''; out[used] = '\0'; }
+    for (const char* p = in; *p && used + 4 < n; ++p) {
+        if (*p == '\'') { // close, escape, reopen
+            used += snprintf(out + used, n - used, "'\\''");
+        } else {
+            out[used++] = *p; out[used] = '\0';
+        }
+    }
+    if (used + 2 < n) { out[used++] = '\''; out[used] = '\0'; }
+#endif
 }
-static int vlff_streams(VL_State *S) { NOSYS_PAIR(S); }
-static int vlff_read_packet(VL_State *S) { NOSYS_PAIR(S); }
-static int vlff_decode_next(VL_State *S) { NOSYS_PAIR(S); }
-static int vlff_seek(VL_State *S) { NOSYS_PAIR(S); }
-static int vlff_close(VL_State *S) {
-  vl_push_bool(S, 1);
-  return 1;
+
+static int run_cmd(const char* cmdline) {
+#if defined(_WIN32)
+    // Use system() for simplicity. Non-zero ⇒ failure.
+    int rc = system(cmdline);
+    return rc == 0 ? 0 : -1;
+#else
+    int rc = system(cmdline);
+    if (rc == -1) return -1;
+    if (WIFEXITED(rc) && WEXITSTATUS(rc) == 0) return 0;
+    return -1;
+#endif
+}
+
+// ---------------- Probe ----------------
+
+#if defined(VL_HAVE_FFMPEGLIB)
+#  include <libavformat/avformat.h>
+#  include <libavcodec/avcodec.h>
+#  include <libavutil/avutil.h>
+
+int ff_probe(const char* in_path, ff_info* out) {
+    if (!in_path || !out) { errno = EINVAL; return -1; }
+    memset(out, 0, sizeof(*out));
+    AVFormatContext* fmt = NULL;
+#if LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(58,9,100)
+    if (avformat_open_input(&fmt, in_path, NULL, NULL) < 0) return -1;
+#else
+    if (av_open_input_file(&fmt, in_path, NULL, 0, NULL) < 0) return -1;
+#endif
+    if (avformat_find_stream_info(fmt, NULL) < 0) { avformat_close_input(&fmt); return -1; }
+
+    out->duration_sec = (fmt->duration > 0) ? (fmt->duration / (double)AV_TIME_BASE) : 0.0;
+
+    for (unsigned i = 0; i < fmt->nb_streams; ++i) {
+        AVStream* st = fmt->streams[i];
+        AVCodecParameters* p = st->codecpar;
+        if (p->codec_type == AVMEDIA_TYPE_VIDEO && !out->has_video) {
+            out->has_video = 1;
+            out->width = p->width;
+            out->height = p->height;
+            const AVCodecDescriptor* d = avcodec_descriptor_get(p->codec_id);
+            snprintf(out->vcodec, sizeof(out->vcodec), "%s", d && d->name ? d->name : "unknown");
+        } else if (p->codec_type == AVMEDIA_TYPE_AUDIO && !out->has_audio) {
+            out->has_audio = 1;
+            out->audio_sr = p->sample_rate;
+            out->audio_ch = p->channels;
+            const AVCodecDescriptor* d = avcodec_descriptor_get(p->codec_id);
+            snprintf(out->acodec, sizeof(out->acodec), "%s", d && d->name ? d->name : "unknown");
+        }
+    }
+    avformat_close_input(&fmt);
+    return 0;
 }
 
 #else
-// ---------------------------------------------------------------------
-// Real implementation
-// ---------------------------------------------------------------------
 
-typedef struct FFHandle {
-  int used;
-  AVFormatContext *fmt;
-  AVCodecContext **dec;  // per stream or NULL
-  SwrContext **swr;      // for audio streams or NULL
-  SwsContext **sws;      // for video streams or NULL
-  int nb;
-  int inited_net;
-} FFHandle;
+// Fallback: try `ffprobe` CLI; if missing, return zeros with success=0 but not error.
+int ff_probe(const char* in_path, ff_info* out) {
+    if (!in_path || !out) { errno = EINVAL; return -1; }
+    memset(out, 0, sizeof(*out));
 
-static FFHandle *g_h = NULL;
-static int g_h_cap = 0;
-static int ensure_h_cap(int need) {
-  if (need <= g_h_cap) return 1;
-  int n = g_h_cap ? g_h_cap : 8;
-  while (n < need) n <<= 1;
-  FFHandle *nh = (FFHandle *)realloc(g_h, (size_t)n * sizeof *nh);
-  if (!nh) return 0;
-  for (int i = g_h_cap; i < n; i++) {
-    nh[i].used = 0;
-    nh[i].fmt = NULL;
-    nh[i].dec = NULL;
-    nh[i].swr = NULL;
-    nh[i].sws = NULL;
-    nh[i].nb = 0;
-    nh[i].inited_net = 0;
-  }
-  g_h = nh;
-  g_h_cap = n;
-  return 1;
-}
-static int alloc_h(void) {
-  for (int i = 1; i < g_h_cap; i++)
-    if (!g_h[i].used) return i;
-  if (!ensure_h_cap(g_h_cap ? g_h_cap * 2 : 8)) return 0;
-  for (int i = 1; i < g_h_cap; i++)
-    if (!g_h[i].used) return i;
-  return 0;
-}
-static int chk_h(int id) {
-  return id > 0 && id < g_h_cap && g_h[id].used && g_h[id].fmt;
-}
+    if (!which_in_path("ffprobe")) return 0; // not an error, just no data
+    char qi[1024]; quote_path(qi, sizeof(qi), in_path);
 
-static void free_handle(FFHandle *H) {
-  if (!H || !H->used) return;
-  if (H->dec) {
-    for (int i = 0; i < H->nb; i++) {
-      if (H->dec[i]) avcodec_free_context(&H->dec[i]);
+    // duration (seconds)
+#if defined(_WIN32)
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd),
+        "ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 %s > ffprobe_dur.txt 2>NUL",
+        qi);
+    if (run_cmd(cmd) == 0 && file_exists("ffprobe_dur.txt")) {
+        FILE* f = fopen("ffprobe_dur.txt", "rb");
+        if (f) { double d=0; if (fscanf(f, "%lf", &d)==1) out->duration_sec = d; fclose(f); remove("ffprobe_dur.txt"); }
     }
-    free(H->dec);
-    H->dec = NULL;
-  }
-  if (H->swr) {
-    for (int i = 0; i < H->nb; i++) {
-      if (H->swr[i]) {
-        swr_free(&H->swr[i]);
-      }
+#else
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd),
+        "ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 %s > /tmp/ffprobe_dur.$$ 2>/dev/null",
+        qi);
+    if (run_cmd(cmd) == 0) {
+        char tmp[64]; snprintf(tmp, sizeof(tmp), "/tmp/ffprobe_dur.%d", getpid());
+        FILE* f = fopen(tmp, "rb");
+        if (f) { double d=0; if (fscanf(f, "%lf", &d)==1) out->duration_sec = d; fclose(f); remove(tmp); }
     }
-    free(H->swr);
-    H->swr = NULL;
-  }
-  if (H->sws) {
-    for (int i = 0; i < H->nb; i++) {
-      if (H->sws[i]) {
-        sws_freeContext(H->sws[i]);
-        H->sws[i] = NULL;
-      }
-    }
-    free(H->sws);
-    H->sws = NULL;
-  }
-  if (H->fmt) {
-    avformat_close_input(&H->fmt);
-    H->fmt = NULL;
-  }
-  H->nb = 0;
-  H->used = 0;
-}
-
-static int push_averr(VL_State *S, int err, const char *fallback) {
-  char buf[256];
-  const char *msg = av_strerror(err, buf, sizeof buf) == 0 ? buf : fallback;
-  vl_push_nil(S);
-  vl_push_string(S, msg ? msg : "EIO");
-  return 2;
-}
-
-static int vlff_version(VL_State *S) {
-  char buf[256];
-  snprintf(buf, sizeof buf,
-           "libavformat:%u libavcodec:%u libavutil:%u swresample:%u swscale:%u",
-           (unsigned)avformat_version(), (unsigned)avcodec_version(),
-           (unsigned)avutil_version(), (unsigned)swresample_version(),
-           (unsigned)swscale_version());
-  vl_push_string(S, buf);
-  return 1;
-}
-
-static int vlff_open(VL_State *S) {
-  const char *url = ff_check_str(S, 1);
-  int id = alloc_h();
-  if (!id) {
-    vl_push_nil(S);
-    vl_push_string(S, "ENOMEM");
-    return 2;
-  }
-  memset(&g_h[id], 0, sizeof g_h[id]);
-
-  // network init once per process is fine; we keep a flag on handle to avoid
-  // double finalize
-  avformat_network_init();
-  g_h[id].inited_net = 1;
-
-  AVFormatContext *fmt = NULL;
-  int err = avformat_open_input(&fmt, url, NULL, NULL);
-  if (err < 0) {
-    return push_averr(S, err, "open_input");
-  }
-  err = avformat_find_stream_info(fmt, NULL);
-  if (err < 0) {
-    avformat_close_input(&fmt);
-    return push_averr(S, err, "stream_info");
-  }
-
-  int nb = (int)fmt->nb_streams;
-  AVCodecContext **dec = (AVCodecContext **)calloc((size_t)nb, sizeof *dec);
-  SwrContext **swr = (SwrContext **)calloc((size_t)nb, sizeof *swr);
-  SwsContext **sws = (SwsContext **)calloc((size_t)nb, sizeof *sws);
-  if (!dec || !swr || !sws) {
-    if (dec) free(dec);
-    if (swr) free(swr);
-    if (sws) free(sws);
-    avformat_close_input(&fmt);
-    vl_push_nil(S);
-    vl_push_string(S, "ENOMEM");
-    return 2;
-  }
-
-  // Open decoders for audio/video streams
-  for (int i = 0; i < nb; i++) {
-    AVStream *st = fmt->streams[i];
-    enum AVMediaType mt = st->codecpar->codec_type;
-    if (mt != AVMEDIA_TYPE_AUDIO && mt != AVMEDIA_TYPE_VIDEO) continue;
-    const AVCodec *codec = avcodec_find_decoder(st->codecpar->codec_id);
-    if (!codec) continue;
-    dec[i] = avcodec_alloc_context3(codec);
-    if (!dec[i]) { /* best-effort */
-      continue;
-    }
-    avcodec_parameters_to_context(dec[i], st->codecpar);
-    dec[i]->pkt_timebase = st->time_base;
-    if ((err = avcodec_open2(dec[i], codec, NULL)) < 0) {
-      avcodec_free_context(&dec[i]);
-      dec[i] = NULL;
-      continue;
-    }
-    if (mt == AVMEDIA_TYPE_AUDIO) {
-      // Prepare resampler to f32 interleaved
-      int64_t src_layout =
-          dec[i]->ch_layout.nb_channels
-              ? dec[i]->ch_layout.u.mask
-              : av_get_default_channel_layout(dec[i]->ch_layout.nb_channels);
-      if (src_layout == 0 && dec[i]->ch_layout.nb_channels > 0)
-        src_layout =
-            av_get_default_channel_layout(dec[i]->ch_layout.nb_channels);
-      enum AVSampleFormat src_fmt = dec[i]->sample_fmt;
-      enum AVSampleFormat dst_fmt = AV_SAMPLE_FMT_FLT;  // interleaved float32
-      int src_rate = dec[i]->sample_rate;
-      int dst_rate = src_rate;
-      uint64_t dst_layout = src_layout;
-#if LIBAVUTIL_VERSION_MAJOR >= 57
-      // New channel layout API already used above
 #endif
-      swr[i] =
-          swr_alloc_set_opts(NULL, (int64_t)dst_layout, dst_fmt, dst_rate,
-                             (int64_t)src_layout, src_fmt, src_rate, 0, NULL);
-      if (swr[i] && swr_init(swr[i]) < 0) {
-        swr_free(&swr[i]);
-        swr[i] = NULL;
-      }
-    }
-    if (mt == AVMEDIA_TYPE_VIDEO) {
-      sws[i] = NULL;  // lazy-create on first frame to RGB24
-    }
-  }
 
-  g_h[id].fmt = fmt;
-  g_h[id].dec = dec;
-  g_h[id].swr = swr;
-  g_h[id].sws = sws;
-  g_h[id].nb = nb;
-  g_h[id].used = 1;
-  vl_push_int(S, (int64_t)id);
-  return 1;
-}
-
-static int vlff_streams(VL_State *S) {
-  int id = (int)ff_check_int(S, 1);
-  if (!chk_h(id)) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-  FFHandle *H = &g_h[id];
-  AuxBuffer out = {0};
-
-  for (int i = 0; i < H->nb; i++) {
-    AVStream *st = H->fmt->streams[i];
-    const char *kind = av_get_media_type_string(st->codecpar->codec_type);
-    if (!kind) kind = "unknown";
-    const char *cname = avcodec_get_name(st->codecpar->codec_id);
-    if (!cname) cname = "unknown";
-
-    // Fields: idx,kind,codec,w,h,pixfmt,sr,ch,fmt,dur_ts,time_base,avg_fps
-    char tmp[256];
-
-    // idx
-    snprintf(tmp, sizeof tmp, "%d", i);
-    aux_buffer_append(&out, (const uint8_t *)tmp, strlen(tmp));
-    uint8_t u = US;
-    aux_buffer_append(&out, &u, 1);
-    // kind
-    aux_buffer_append(&out, (const uint8_t *)kind, strlen(kind));
-    u = US;
-    aux_buffer_append(&out, &u, 1);
-    // codec
-    aux_buffer_append(&out, (const uint8_t *)cname, strlen(cname));
-    u = US;
-    aux_buffer_append(&out, &u, 1);
-
-    // video specifics
-    if (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-      snprintf(tmp, sizeof tmp, "%d", st->codecpar->width);
-      aux_buffer_append(&out, (const uint8_t *)tmp, strlen(tmp));
-      u = US;
-      aux_buffer_append(&out, &u, 1);
-      snprintf(tmp, sizeof tmp, "%d", st->codecpar->height);
-      aux_buffer_append(&out, (const uint8_t *)tmp, strlen(tmp));
-      u = US;
-      aux_buffer_append(&out, &u, 1);
-      const char *pix =
-          av_get_pix_fmt_name((enum AVPixelFormat)st->codecpar->format);
-      if (!pix) pix = "";
-      aux_buffer_append(&out, (const uint8_t *)pix, strlen(pix));
-      u = US;
-      aux_buffer_append(&out, &u, 1);
-      // placeholders for audio fields
-      aux_buffer_append(&out, (const uint8_t *)"", 0);
-      u = US;
-      aux_buffer_append(&out, &u, 1);  // sr
-      aux_buffer_append(&out, (const uint8_t *)"", 0);
-      u = US;
-      aux_buffer_append(&out, &u, 1);  // ch
-      aux_buffer_append(&out, (const uint8_t *)"", 0);
-      u = US;
-      aux_buffer_append(&out, &u, 1);  // sample_fmt
-    } else if (st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
-      // fill empty video fields
-      aux_buffer_append(&out, (const uint8_t *)"", 0);
-      u = US;
-      aux_buffer_append(&out, &u, 1);
-      aux_buffer_append(&out, (const uint8_t *)"", 0);
-      u = US;
-      aux_buffer_append(&out, &u, 1);
-      aux_buffer_append(&out, (const uint8_t *)"", 0);
-      u = US;
-      aux_buffer_append(&out, &u, 1);
-      // audio specifics
-      snprintf(tmp, sizeof tmp, "%d", st->codecpar->sample_rate);
-      aux_buffer_append(&out, (const uint8_t *)tmp, strlen(tmp));
-      u = US;
-      aux_buffer_append(&out, &u, 1);
-      snprintf(tmp, sizeof tmp, "%d",
-               st->codecpar->ch_layout.nb_channels
-                   ? st->codecpar->ch_layout.nb_channels
-                   : st->codecpar->channels);
-      aux_buffer_append(&out, (const uint8_t *)tmp, strlen(tmp));
-      u = US;
-      aux_buffer_append(&out, &u, 1);
-      const char *sf =
-          av_get_sample_fmt_name((enum AVSampleFormat)st->codecpar->format);
-      if (!sf) sf = "";
-      aux_buffer_append(&out, (const uint8_t *)sf, strlen(sf));
-      u = US;
-      aux_buffer_append(&out, &u, 1);
-    } else {
-      // fill 6 blanks
-      for (int k = 0; k < 6; k++) {
-        u = US;
-        aux_buffer_append(&out, &u, 1);
-      }
-    }
-
-    // duration ts
-    int64_t dur = st->duration;
-    snprintf(tmp, sizeof tmp, "%lld", (long long)dur);
-    aux_buffer_append(&out, (const uint8_t *)tmp, strlen(tmp));
-    u = US;
-    aux_buffer_append(&out, &u, 1);
-    // time_base
-    snprintf(tmp, sizeof tmp, "%d/%d", st->time_base.num, st->time_base.den);
-    aux_buffer_append(&out, (const uint8_t *)tmp, strlen(tmp));
-    u = US;
-    aux_buffer_append(&out, &u, 1);
-    // avg_fps
-    if (st->avg_frame_rate.num > 0 && st->avg_frame_rate.den > 0) {
-      snprintf(tmp, sizeof tmp, "%d/%d", st->avg_frame_rate.num,
-               st->avg_frame_rate.den);
-    } else
-      snprintf(tmp, sizeof tmp, "");
-    aux_buffer_append(&out, (const uint8_t *)tmp, strlen(tmp));
-    uint8_t r = RS;
-    aux_buffer_append(&out, &r, 1);
-  }
-
-  vl_push_lstring(S, (const char *)out.data, (int)out.len);
-  aux_buffer_free(&out);
-  return 1;
-}
-
-static double ts_to_sec(int64_t ts, AVRational tb) {
-  if (ts == AV_NOPTS_VALUE) return 0.0;
-  return (double)ts * (double)tb.num / (double)tb.den;
-}
-
-static int vlff_read_packet(VL_State *S) {
-  int id = (int)ff_check_int(S, 1);
-  if (!chk_h(id)) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-  FFHandle *H = &g_h[id];
-
-  AVPacket *pkt = av_packet_alloc();
-  if (!pkt) {
-    vl_push_nil(S);
-    vl_push_string(S, "ENOMEM");
-    return 2;
-  }
-
-  int err = av_read_frame(H->fmt, pkt);
-  if (err == AVERROR_EOF) {
-    av_packet_free(&pkt);
-    vl_push_nil(S);
-    vl_push_string(S, "eof");
-    return 2;
-  }
-  if (err < 0) {
-    int ret = push_averr(S, err, "read");
-    av_packet_free(&pkt);
-    return ret;
-  }
-
-  int sid = pkt->stream_index;
-  AVStream *st = H->fmt->streams[sid];
-  double pts_sec = ts_to_sec(pkt->pts, st->time_base);
-
-  vl_push_int(S, (int64_t)sid);
-  vl_push_float(S, pts_sec);
-  vl_push_int(S, (pkt->flags & AV_PKT_FLAG_KEY) ? 1 : 0);
-  vl_push_lstring(S, (const char *)pkt->data, pkt->size);
-
-  av_packet_free(&pkt);
-  return 4;
-}
-
-static int want_mask_from_str(const char *w) {
-  if (!w) return 3;  // both
-  if (strcmp(w, "a") == 0) return 1;
-  if (strcmp(w, "v") == 0) return 2;
-  return 3;  // "av" or others -> both
-}
-
-static int vlff_decode_next(VL_State *S) {
-  int id = (int)ff_check_int(S, 1);
-  const char *want = ff_opt_str(S, 2, "av");
-  if (!chk_h(id)) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-  FFHandle *H = &g_h[id];
-  int wantmask = want_mask_from_str(want);
-
-  AVPacket *pkt = av_packet_alloc();
-  AVFrame *frm = av_frame_alloc();
-  if (!pkt || !frm) {
-    if (pkt) av_packet_free(&pkt);
-    if (frm) av_frame_free(&frm);
-    vl_push_nil(S);
-    vl_push_string(S, "ENOMEM");
-    return 2;
-  }
-
-  for (;;) {
-    int err = av_read_frame(H->fmt, pkt);
-    if (err == AVERROR_EOF) {
-      av_packet_unref(pkt);
-      av_frame_free(&frm);
-      av_packet_free(&pkt);
-      vl_push_nil(S);
-      vl_push_string(S, "eof");
-      return 2;
-    }
-    if (err < 0) {
-      int ret = push_averr(S, err, "read");
-      av_frame_free(&frm);
-      av_packet_free(&pkt);
-      return ret;
-    }
-
-    int sid = pkt->stream_index;
-    AVStream *st = H->fmt->streams[sid];
-    AVCodecContext *dc = (sid >= 0 && sid < H->nb) ? H->dec[sid] : NULL;
-    if (!dc) {
-      av_packet_unref(pkt);
-      continue;
-    }
-
-    enum AVMediaType mt = dc->codec_type;
-    if ((mt == AVMEDIA_TYPE_AUDIO && !(wantmask & 1)) ||
-        (mt == AVMEDIA_TYPE_VIDEO && !(wantmask & 2))) {
-      av_packet_unref(pkt);
-      continue;
-    }
-
-    // send/receive
-    err = avcodec_send_packet(dc, pkt);
-    av_packet_unref(pkt);
-    if (err == 0 || err == AVERROR(EAGAIN)) {
-      while (1) {
-        err = avcodec_receive_frame(dc, frm);
-        if (err == AVERROR(EAGAIN)) break;
-        if (err == AVERROR_EOF) {
-          break;
-        }
-        if (err < 0) {
-          int ret = push_averr(S, err, "decode");
-          av_frame_unref(frm);
-          av_frame_free(&frm);
-          av_packet_free(&pkt);
-          return ret;
-        }
-
-        double pts_sec = 0.0;
-        int64_t ts = frm->best_effort_timestamp != AV_NOPTS_VALUE
-                         ? frm->best_effort_timestamp
-                         : frm->pts;
-        pts_sec = ts_to_sec(ts, st->time_base);
-
-        if (mt == AVMEDIA_TYPE_AUDIO) {
-          // Resample to f32 interleaved
-          SwrContext *swr = H->swr[sid];
-          int ch = dc->ch_layout.nb_channels ? dc->ch_layout.nb_channels
-                                             : dc->channels;
-          int sr = dc->sample_rate;
-          if (!swr || ch <= 0 || sr <= 0) {
-            av_frame_unref(frm);
-            continue;
-          }
-
-          int in_samps = frm->nb_samples;
-          int out_samps = (int)av_rescale_rnd(swr_get_delay(swr, sr) + in_samps,
-                                              sr, sr, AV_ROUND_UP);
-          uint8_t *outbuf = NULL;
-          int out_linesize = 0;
-          int ret = av_samples_alloc(&outbuf, &out_linesize, ch, out_samps,
-                                     AV_SAMPLE_FMT_FLT, 0);
-          if (ret < 0) {
-            av_frame_unref(frm);
-            continue;
-          }
-
-          int got =
-              swr_convert(swr, &outbuf, out_samps,
-                          (const uint8_t const *const *)frm->data, in_samps);
-          if (got < 0) {
-            av_freep(&outbuf);
-            av_frame_unref(frm);
-            continue;
-          }
-
-          int out_bytes = av_samples_get_buffer_size(&out_linesize, ch, got,
-                                                     AV_SAMPLE_FMT_FLT, 0);
-          if (out_bytes < 0) {
-            av_freep(&outbuf);
-            av_frame_unref(frm);
-            continue;
-          }
-
-          vl_push_string(S, "audio");
-          vl_push_int(S, (int64_t)sid);
-          vl_push_float(S, pts_sec);
-          vl_push_int(S, (int64_t)sr);
-          vl_push_int(S, (int64_t)ch);
-          vl_push_int(S, (int64_t)got);
-          vl_push_lstring(S, (const char *)outbuf, out_bytes);
-
-          av_freep(&outbuf);
-          av_frame_unref(frm);
-          av_frame_free(&frm);
-          av_packet_free(&pkt);
-          return 7;
-        } else if (mt == AVMEDIA_TYPE_VIDEO) {
-          // Convert to RGB24
-          int w = frm->width, h = frm->height;
-          if (w <= 0 || h <= 0) {
-            av_frame_unref(frm);
-            continue;
-          }
-          if (!H->sws[sid]) {
-            H->sws[sid] = sws_getContext(w, h, (enum AVPixelFormat)frm->format,
-                                         w, h, AV_PIX_FMT_RGB24, SWS_BILINEAR,
-                                         NULL, NULL, NULL);
-            if (!H->sws[sid]) {
-              av_frame_unref(frm);
-              continue;
+    // codecs and dimensions: best-effort using -show_streams JSON simplified
+#if defined(_WIN32)
+    snprintf(cmd, sizeof(cmd),
+        "ffprobe -v error -select_streams v:0 -show_entries stream=codec_name,width,height "
+        "-of default=nw=1:nk=1 %s > ffprobe_v.txt 2>NUL", qi);
+    if (run_cmd(cmd) == 0 && file_exists("ffprobe_v.txt")) {
+        FILE* f = fopen("ffprobe_v.txt", "rb");
+        if (f) {
+            char vc[64]={0}; int w=0,h=0;
+            if (fscanf(f, "%63s %d %d", vc, &w, &h) >= 1) {
+                out->has_video = 1; out->width = w; out->height = h;
+                snprintf(out->vcodec, sizeof(out->vcodec), "%s", vc);
             }
-          }
-          uint8_t *dst_data[4] = {0};
-          int dst_linesize[4] = {0};
-          int dst_bytes =
-              av_image_alloc(dst_data, dst_linesize, w, h, AV_PIX_FMT_RGB24, 1);
-          if (dst_bytes < 0) {
-            av_frame_unref(frm);
-            continue;
-          }
-
-          sws_scale(H->sws[sid], (const uint8_t *const *)frm->data,
-                    frm->linesize, 0, h, dst_data, dst_linesize);
-
-          vl_push_string(S, "video");
-          vl_push_int(S, (int64_t)sid);
-          vl_push_float(S, pts_sec);
-          vl_push_int(S, (int64_t)w);
-          vl_push_int(S, (int64_t)h);
-          vl_push_lstring(S, (const char *)dst_data[0], dst_bytes);
-
-          av_freep(&dst_data[0]);
-          av_frame_unref(frm);
-          av_frame_free(&frm);
-          av_packet_free(&pkt);
-          return 6;
-        } else {
-          av_frame_unref(frm);
-          continue;
+            fclose(f); remove("ffprobe_v.txt");
         }
-      }
-    } else if (err < 0) {
-      int ret = push_averr(S, err, "sendpkt");
-      av_frame_free(&frm);
-      av_packet_free(&pkt);
-      return ret;
     }
-    // continue loop reading more packets
-  }
+    snprintf(cmd, sizeof(cmd),
+        "ffprobe -v error -select_streams a:0 -show_entries stream=codec_name,sample_rate,channels "
+        "-of default=nw=1:nk=1 %s > ffprobe_a.txt 2>NUL", qi);
+    if (run_cmd(cmd) == 0 && file_exists("ffprobe_a.txt")) {
+        FILE* f = fopen("ffprobe_a.txt", "rb");
+        if (f) {
+            char ac[64]={0}; int sr=0,ch=0;
+            if (fscanf(f, "%63s %d %d", ac, &sr, &ch) >= 1) {
+                out->has_audio = 1; out->audio_sr = sr; out->audio_ch = ch;
+                snprintf(out->acodec, sizeof(out->acodec), "%s", ac);
+            }
+            fclose(f); remove("ffprobe_a.txt");
+        }
+    }
+#else
+    snprintf(cmd, sizeof(cmd),
+        "ffprobe -v error -select_streams v:0 -show_entries stream=codec_name,width,height "
+        "-of default=nw=1:nk=1 %s > /tmp/ffprobe_v.$$ 2>/dev/null", qi);
+    if (run_cmd(cmd) == 0) {
+        char tmpv[64]; snprintf(tmpv, sizeof(tmpv), "/tmp/ffprobe_v.%d", getpid());
+        FILE* f = fopen(tmpv, "rb");
+        if (f) {
+            char vc[64]={0}; int w=0,h=0;
+            if (fscanf(f, "%63s %d %d", vc, &w, &h) >= 1) {
+                out->has_video = 1; out->width = w; out->height = h;
+                snprintf(out->vcodec, sizeof(out->vcodec), "%s", vc);
+            }
+            fclose(f); remove(tmpv);
+        }
+    }
+    snprintf(cmd, sizeof(cmd),
+        "ffprobe -v error -select_streams a:0 -show_entries stream=codec_name,sample_rate,channels "
+        "-of default=nw=1:nk=1 %s > /tmp/ffprobe_a.$$ 2>/dev/null", qi);
+    if (run_cmd(cmd) == 0) {
+        char tmpa[64]; snprintf(tmpa, sizeof(tmpa), "/tmp/ffprobe_a.%d", getpid());
+        FILE* f = fopen(tmpa, "rb");
+        if (f) {
+            char ac[64]={0}; int sr=0,ch=0;
+            if (fscanf(f, "%63s %d %d", ac, &sr, &ch) >= 1) {
+                out->has_audio = 1; out->audio_sr = sr; out->audio_ch = ch;
+                snprintf(out->acodec, sizeof(out->acodec), "%s", ac);
+            }
+            fclose(f); remove(tmpa);
+        }
+    }
+#endif
+    return 0;
+}
+#endif
+
+// ---------------- CLI Actions ----------------
+
+int ff_extract_wav(const char* in_path, const char* out_wav, int sr, int ch) {
+    if (!in_path || !out_wav) { errno = EINVAL; return -1; }
+    if (!which_in_path("ffmpeg")) { errno = ENOENT; return -1; }
+    if (sr <= 0) sr = 48000;
+    if (ch <= 0) ch = 2;
+
+    char qi[1024], qo[1024];
+    quote_path(qi, sizeof(qi), in_path);
+    quote_path(qo, sizeof(qo), out_wav);
+
+    char cmd[4096];
+#if defined(_WIN32)
+    snprintf(cmd, sizeof(cmd), "ffmpeg -y -i %s -vn -ac %d -ar %d -f wav %s 1>NUL 2>NUL",
+             qi, ch, sr, qo);
+#else
+    snprintf(cmd, sizeof(cmd), "ffmpeg -y -i %s -vn -ac %d -ar %d -f wav %s >/dev/null 2>&1",
+             qi, ch, sr, qo);
+#endif
+    return run_cmd(cmd);
 }
 
-static int vlff_seek(VL_State *S) {
-  int id = (int)ff_check_int(S, 1);
-  double secs = ff_check_num(S, 2);
-  const char *mode = ff_opt_str(S, 3, "any");
-  if (!chk_h(id)) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-  FFHandle *H = &g_h[id];
+int ff_screenshot_png(const char* in_path, const char* out_png, double t_sec, int w, int h) {
+    if (!in_path || !out_png) { errno = EINVAL; return -1; }
+    if (!which_in_path("ffmpeg")) { errno = ENOENT; return -1; }
+    if (t_sec < 0) t_sec = 0;
+    if (w <= 0 && h <= 0) { w = 1280; h = -1; } // keep aspect
 
-  int flags = 0;
-  if (strcmp(mode, "backward") == 0)
-    flags |= AVSEEK_FLAG_BACKWARD;
-  else if (strcmp(mode, "frame") == 0)
-    flags |= AVSEEK_FLAG_FRAME;
+    char qi[1024], qo[1024];
+    quote_path(qi, sizeof(qi), in_path);
+    quote_path(qo, sizeof(qo), out_png);
 
-  int64_t ts = (int64_t)(secs * (double)AV_TIME_BASE);
-  int err = av_seek_frame(
-      H->fmt, -1, av_rescale_q(ts, AV_TIME_BASE_Q, (AVRational){1, 1}), flags);
-  if (err < 0) {
-    // fallback using AV_TIME_BASE_Q
-    err = avformat_seek_file(H->fmt, -1, INT64_MIN, ts, INT64_MAX, flags);
-  }
-  if (err < 0) return push_averr(S, err, "seek");
+    char scale[64];
+    if (w > 0 && h > 0) snprintf(scale, sizeof(scale), "scale=%d:%d", w, h);
+    else if (w > 0)     snprintf(scale, sizeof(scale), "scale=%d:-1", w);
+    else                snprintf(scale, sizeof(scale), "scale=-1:%d", h);
 
-  // flush decoders
-  for (int i = 0; i < H->nb; i++) {
-    if (H->dec[i]) avcodec_flush_buffers(H->dec[i]);
-  }
-  vl_push_bool(S, 1);
-  return 1;
+    char cmd[4096];
+#if defined(_WIN32)
+    snprintf(cmd, sizeof(cmd),
+        "ffmpeg -y -ss %.3f -i %s -frames:v 1 -vf %s -f image2 %s 1>NUL 2>NUL",
+        t_sec, qi, scale, qo);
+#else
+    snprintf(cmd, sizeof(cmd),
+        "ffmpeg -y -ss %.3f -i %s -frames:v 1 -vf %s -f image2 %s >/dev/null 2>&1",
+        t_sec, qi, scale, qo);
+#endif
+    return run_cmd(cmd);
 }
 
-static int vlff_close(VL_State *S) {
-  int id = (int)ff_check_int(S, 1);
-  if (id > 0 && id < g_h_cap && g_h[id].used) {
-    free_handle(&g_h[id]);
-  }
-  vl_push_bool(S, 1);
-  return 1;
+int ff_transcode_h264_aac_mp4(const char* in_path, const char* out_mp4,
+                              int v_bitrate_k, int a_bitrate_k)
+{
+    if (!in_path || !out_mp4) { errno = EINVAL; return -1; }
+    if (!which_in_path("ffmpeg")) { errno = ENOENT; return -1; }
+    if (v_bitrate_k <= 0) v_bitrate_k = 3000;
+    if (a_bitrate_k <= 0) a_bitrate_k = 160;
+
+    char qi[1024], qo[1024];
+    quote_path(qi, sizeof(qi), in_path);
+    quote_path(qo, sizeof(qo), out_mp4);
+
+    char cmd[4096];
+#if defined(_WIN32)
+    snprintf(cmd, sizeof(cmd),
+        "ffmpeg -y -i %s -c:v libx264 -preset veryfast -b:v %dk "
+        "-movflags +faststart -c:a aac -b:a %dk %s 1>NUL 2>NUL",
+        qi, v_bitrate_k, a_bitrate_k, qo);
+#else
+    snprintf(cmd, sizeof(cmd),
+        "ffmpeg -y -i %s -c:v libx264 -preset veryfast -b:v %dk "
+        "-movflags +faststart -c:a aac -b:a %dk %s >/dev/null 2>&1",
+        qi, v_bitrate_k, a_bitrate_k, qo);
+#endif
+    return run_cmd(cmd);
 }
 
-#endif  // VL_HAVE_FFMPEG
-
-// ---------------------------------------------------------------------
-// Registration VM
-// ---------------------------------------------------------------------
-static const VL_Reg ffmpeglib[] = {{"version", vlff_version},
-                                   {"open_input", vlff_open},
-                                   {"streams", vlff_streams},
-                                   {"read_packet", vlff_read_packet},
-                                   {"decode_next", vlff_decode_next},
-                                   {"seek", vlff_seek},
-                                   {"close", vlff_close},
-                                   {NULL, NULL}};
-
-void vl_open_ffmpeglib(VL_State *S) { vl_register_lib(S, "ffmpeg", ffmpeglib); }
+// ---------------- Demo ----------------
+#ifdef FFMPEG_DEMO
+#include <stdio.h>
+int main(int argc, char** argv) {
+    if (argc < 2) { fprintf(stderr, "usage: %s INPUT\n", argv[0]); return 2; }
+    const char* in = argv[1];
+    ff_info info;
+    if (ff_probe(in, &info) == 0) {
+        printf("has_video=%d %dx%d vcodec=%s | has_audio=%d %dHz %dch acodec=%s | duration=%.3f\n",
+               info.has_video, info.width, info.height, info.vcodec,
+               info.has_audio, info.audio_sr, info.audio_ch, info.acodec,
+               info.duration_sec);
+    } else {
+        perror("ff_probe");
+    }
+    ff_screenshot_png(in, "frame.png", 1.23, 1280, -1);
+    ff_extract_wav(in, "audio.wav", 48000, 2);
+    ff_transcode_h264_aac_mp4(in, "out.mp4", 2500, 128);
+    return 0;
+}
+#endif

@@ -107,8 +107,8 @@ VT_STRING_API void vt_str_to_upper_ascii(vt_str* s);
 /* ----------------------------------------------------------------------------
    Recherche / comparaisons
 ---------------------------------------------------------------------------- */
-VT_STRING_API ssize_t vt_sv_find(vt_sv hay, vt_sv nee);  /* KMP */
-VT_STRING_API ssize_t vt_sv_rfind(vt_sv hay, vt_sv nee); /* reverse naïf */
+VT_STRING_API size_t vt_sv_find(vt_sv hay, vt_sv nee);  /* KMP */
+VT_STRING_API size_t vt_sv_rfind(vt_sv hay, vt_sv nee); /* reverse naïf */
 VT_STRING_API bool vt_sv_starts_with(vt_sv s, vt_sv pre);
 VT_STRING_API bool vt_sv_ends_with(vt_sv s, vt_sv suf);
 VT_STRING_API int vt_sv_cmp(vt_sv a, vt_sv b);           /* binaire */

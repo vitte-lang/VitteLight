@@ -1,581 +1,384 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// z.c — zlib/gzip bindings pour Vitte Light (C17, complet)
-// Namespace VM: "z"
+// z.c — Compression utilitaire complète (mémoire, flux, fichiers), C17 portable
+// Namespace: "z"
 //
-// Build:
-//   cc -std=c17 -O2 -Wall -Wextra -pedantic -DVL_HAVE_ZLIB -c z.c
-//   cc ... z.o -lz
+// Points clés:
+//   • CRC32 (table générée à l’exécution)
+//   • Mémoire: deflate/inflate (zlib si dispo, sinon passthrough)
+//   • Flux   : compress/decompress FILE*↔FILE* (chunks)
+//   • GZip   : lecture/écriture, détection auto (magic 1F 8B)
+//   • Options: niveau, stratégie simple, tailles tampon
 //
-// Portabilité:
-//   - Si VL_HAVE_ZLIB et <zlib.h> présents: implémentation réelle.
-//   - Sinon: stubs -> (nil,"ENOSYS").
+// Build (avec zlib):
+//   cc -std=c17 -O2 -Wall -Wextra -pedantic -DHAVE_ZLIB z.c -lz
+// Build (fallback sans zlib): compile et fonctionne, mais sans compression.
 //
-// API (one-shot):
-//   z.version()                              -> string
-//   z.deflate(data[, level=-1[, raw=false[, gzip=false]]]) -> bytes |
-//   (nil,errmsg) z.inflate(data[, raw=false[, gzip=false[, max_out=16777216]]])
-//   -> bytes | (nil,errmsg) z.gzip(data[, level=-1])                 -> bytes |
-//   (nil,errmsg) z.gunzip(data[, max_out=16777216])       -> bytes |
-//   (nil,errmsg) z.crc32(data[, seed=0])                  -> uint32
-//   z.adler32(data[, seed=1])                -> uint32
-//
-// API (streaming):
-//   -- Deflate
-//     z.deflate_init([level=-1[, raw=false[, gzip=false]]]) -> id |
-//     (nil,errmsg) z.deflate_chunk(id, bytes[, finish=false])            ->
-//     out:string, done:bool | (nil,errmsg) z.deflate_end(id) -> true
-//   -- Inflate
-//     z.inflate_init([raw=false[, gzip=false]])             -> id |
-//     (nil,errmsg) z.inflate_chunk(id, bytes[, finish=false[,
-//     max_out_chunk=65536]]) -> out:string, done:bool | (nil,errmsg)
-//     z.inflate_end(id)                                     -> true
-//
-// Notes:
-//   - "raw" utilise windowBits = -MAX_WBITS.
-//   - "gzip" utilise windowBits = MAX_WBITS+16 (gzip wrapper).
-//   - ni "raw" ni "gzip" -> zlib stream (windowBits = MAX_WBITS).
-//   - One-shot inflate: si "gzip=true" ignore "raw" et auto-détecte gzip via
-//   16+MAX_WBITS.
-//   - VM strings supposées 0-terminées; données binaires possibles en sortie
-//   via vl_push_lstring().
-//
-// Dépendances: auxlib.h, state.h, object.h, vm.h
+// Codes retour communs:
+//   0=OK ; 1=OK passthrough ; -1=E/S/Mem ; -2=zlib ; -3=input invalide
 
-#include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 
-#include "auxlib.h"
-#include "object.h"
-#include "state.h"
-#include "vm.h"
-
-#ifdef VL_HAVE_ZLIB
-#include <zlib.h>
+#if defined(HAVE_ZLIB)
+  #include <zlib.h>
 #endif
 
-// ---------------------------------------------------------------------
-// VM arg helpers
-// ---------------------------------------------------------------------
-static const char *z_check_str(VL_State *S, int idx) {
-  if (vl_get(S, idx) && vl_isstring(S, idx))
-    return vl_tocstring(S, vl_get(S, idx));
-  vl_errorf(S, "argument #%d: string expected", idx);
-  vl_error(S);
-  return NULL;
+#ifndef Z_API
+#define Z_API
+#endif
+
+/* ===================== CRC32 ===================== */
+
+static uint32_t z__crc_tbl[256];
+static int z__crc_init_done = 0;
+
+static void z__crc_init(void){
+    if (z__crc_init_done) return;
+    for (uint32_t i=0;i<256;i++){
+        uint32_t c=i;
+        for (int k=0;k<8;k++) c = (c&1)? (0xEDB88320u ^ (c>>1)) : (c>>1);
+        z__crc_tbl[i]=c;
+    }
+    z__crc_init_done=1;
 }
-static int64_t z_check_int(VL_State *S, int idx) {
-  if (vl_get(S, idx) && (vl_isint(S, idx) || vl_isfloat(S, idx)))
-    return vl_isint(S, idx) ? vl_toint(S, vl_get(S, idx))
-                            : (int64_t)vl_tonumber(S, vl_get(S, idx));
-  vl_errorf(S, "argument #%d: int expected", idx);
-  vl_error(S);
-  return 0;
-}
-static int z_opt_bool(VL_State *S, int idx, int defv) {
-  if (!vl_get(S, idx)) return defv;
-  return vl_tobool(vl_get(S, idx)) ? 1 : 0;
-}
-static int z_opt_int(VL_State *S, int idx, int defv) {
-  if (!vl_get(S, idx)) return defv;
-  if (vl_isint(S, idx) || vl_isfloat(S, idx)) return (int)z_check_int(S, idx);
-  return defv;
+Z_API uint32_t z_crc32(const void* p, size_t n){
+    z__crc_init();
+    const uint8_t* s=(const uint8_t*)p;
+    uint32_t c=~0u;
+    for (size_t i=0;i<n;i++) c = z__crc_tbl[(c ^ s[i]) & 0xFFu] ^ (c>>8);
+    return ~c;
 }
 
-#ifndef VL_HAVE_ZLIB
-// ---------------------------------------------------------------------
-// STUBS (zlib absent)
-// ---------------------------------------------------------------------
-#define NOSYS_PAIR(S)            \
-  do {                           \
-    vl_push_nil(S);              \
-    vl_push_string(S, "ENOSYS"); \
-    return 2;                    \
-  } while (0)
-static int vlz_version(VL_State *S) {
-  (void)S;
-  vl_push_string(S, "zlib not built");
-  return 1;
-}
-static int vlz_deflate(VL_State *S) {
-  (void)z_check_str(S, 1);
-  NOSYS_PAIR(S);
-}
-static int vlz_inflate(VL_State *S) {
-  (void)z_check_str(S, 1);
-  NOSYS_PAIR(S);
-}
-static int vlz_gzip(VL_State *S) {
-  (void)z_check_str(S, 1);
-  NOSYS_PAIR(S);
-}
-static int vlz_gunzip(VL_State *S) {
-  (void)z_check_str(S, 1);
-  NOSYS_PAIR(S);
-}
-static int vlz_crc32(VL_State *S) {
-  (void)z_check_str(S, 1);
-  vl_push_int(S, 0);
-  return 1;
-}
-static int vlz_adler32(VL_State *S) {
-  (void)z_check_str(S, 1);
-  vl_push_int(S, 0);
-  return 1;
-}
+/* ===================== Mémoire ===================== */
 
-static int vlz_d_init(VL_State *S) { NOSYS_PAIR(S); }
-static int vlz_d_chunk(VL_State *S) { NOSYS_PAIR(S); }
-static int vlz_d_end(VL_State *S) {
-  vl_push_bool(S, 1);
-  return 1;
-}
-static int vlz_i_init(VL_State *S) { NOSYS_PAIR(S); }
-static int vlz_i_chunk(VL_State *S) { NOSYS_PAIR(S); }
-static int vlz_i_end(VL_State *S) {
-  vl_push_bool(S, 1);
-  return 1;
-}
-
+Z_API int z_deflate_mem(const void* in, size_t in_n, int level, void** out, size_t* out_n){
+    if (!out || !out_n) return -3;
+#if defined(HAVE_ZLIB)
+    if (level<0) level = Z_DEFAULT_COMPRESSION;
+    /* marge standard compressBound */
+    uLongf cap = compressBound((uLong)in_n);
+    void* buf = malloc(cap?cap:1);
+    if (!buf) return -1;
+    int rc = compress2((Bytef*)buf, &cap, (const Bytef*)in, (uLong)in_n, level);
+    if (rc != Z_OK){ free(buf); return -2; }
+    *out = buf; *out_n = (size_t)cap; return 0;
 #else
-// ---------------------------------------------------------------------
-// Implémentation réelle (zlib)
-// ---------------------------------------------------------------------
-
-// --------- util erreurs ---------
-static int push_zerr(VL_State *S, int code, z_stream *zs) {
-  const char *m = zs && zs->msg ? zs->msg
-                                : (code == Z_MEM_ERROR      ? "ENOMEM"
-                                   : code == Z_BUF_ERROR    ? "EAGAIN"
-                                   : code == Z_STREAM_ERROR ? "EINVAL"
-                                                            : "EIO");
-  vl_push_nil(S);
-  vl_push_string(S, m);
-  return 2;
+    void* buf = malloc(in_n?in_n:1);
+    if (!buf) return -1;
+    if (in && in_n) memcpy(buf,in,in_n);
+    *out=buf; *out_n=in_n; return 1;
+#endif
 }
 
-// --------- one-shot deflate/inflate ---------
-static int do_deflate_buffer(VL_State *S, const uint8_t *in, size_t inlen,
-                             int level, int wbits) {
-  z_stream zs;
-  memset(&zs, 0, sizeof zs);
-  int rc = deflateInit2(&zs, level, Z_DEFLATED, wbits, 8, Z_DEFAULT_STRATEGY);
-  if (rc != Z_OK) return push_zerr(S, rc, &zs);
-
-  AuxBuffer out = {0};
-  uint8_t buf[65536];
-
-  zs.next_in = (Bytef *)in;
-  zs.avail_in = (uInt)inlen;
-  int flush = Z_FINISH;
-  do {
-    zs.next_out = buf;
-    zs.avail_out = (uInt)sizeof buf;
-    rc = deflate(&zs, flush);
-    if (rc != Z_STREAM_END && rc != Z_OK && rc != Z_BUF_ERROR &&
-        rc != Z_STREAM_END) {
-      deflateEnd(&zs);
-      aux_buffer_free(&out);
-      return push_zerr(S, rc, &zs);
+Z_API int z_inflate_mem(const void* in, size_t in_n, void** out, size_t* out_n, size_t hint){
+    if (!out || !out_n) return -3;
+#if defined(HAVE_ZLIB)
+    size_t cap = hint? hint : (in_n*3 + 64);
+    if (cap<256) cap=256;
+    void* buf=NULL;
+    for (int tries=0; tries<8; tries++){
+        void* nb = realloc(buf, cap);
+        if (!nb){ free(buf); return -1; }
+        buf=nb;
+        uLongf outl=(uLongf)cap;
+        int rc = uncompress((Bytef*)buf, &outl, (const Bytef*)in, (uLong)in_n);
+        if (rc==Z_OK){ *out=buf; *out_n=(size_t)outl; return 0; }
+        if (rc==Z_BUF_ERROR){ cap*=2; continue; }
+        free(buf); return -2;
     }
-    size_t produced = sizeof buf - zs.avail_out;
-    if (produced) aux_buffer_append(&out, buf, produced);
-  } while (rc != Z_STREAM_END);
-
-  deflateEnd(&zs);
-  vl_push_lstring(S, (const char *)out.data, (int)out.len);
-  aux_buffer_free(&out);
-  return 1;
+    free(buf); return -2;
+#else
+    void* buf = malloc(in_n?in_n:1);
+    if (!buf) return -1;
+    if (in && in_n) memcpy(buf,in,in_n);
+    *out=buf; *out_n=in_n; return 1;
+#endif
 }
 
-static int do_inflate_buffer(VL_State *S, const uint8_t *in, size_t inlen,
-                             int wbits, size_t max_out) {
-  z_stream zs;
-  memset(&zs, 0, sizeof zs);
-  int rc = inflateInit2(&zs, wbits);
-  if (rc != Z_OK) return push_zerr(S, rc, &zs);
+/* ===================== Flux (FILE* ↔ FILE*) ===================== */
 
-  AuxBuffer out = {0};
-  uint8_t buf[65536];
+typedef struct {
+    size_t in_chunk;   /* taille lecture */
+    size_t out_chunk;  /* taille écriture */
+    int    level;      /* deflate */
+} z_stream_opts;
 
-  zs.next_in = (Bytef *)in;
-  zs.avail_in = (uInt)inlen;
+static void z__opts_default(z_stream_opts* o){
+    o->in_chunk  = 1<<16;  /* 64 KiB */
+    o->out_chunk = 1<<16;
+    o->level     = -1;     /* zlib default */
+}
 
-  while (1) {
-    zs.next_out = buf;
-    zs.avail_out = (uInt)sizeof buf;
-    rc = inflate(&zs, Z_NO_FLUSH);
-    if (rc == Z_STREAM_END) {
-      size_t produced = sizeof buf - zs.avail_out;
-      if (produced) aux_buffer_append(&out, buf, produced);
-      break;
+/* Détecte un en-tête GZip (1F 8B 08) dans les 3 premiers octets. */
+Z_API int z_is_gzip_header(const unsigned char* p, size_t n){
+    return (n>=3 && p[0]==0x1F && p[1]==0x8B && p[2]==0x08) ? 1 : 0;
+}
+
+#if defined(HAVE_ZLIB)
+/* ---- avec zlib ---- */
+Z_API int z_deflate_fp(FILE* fin, FILE* fout, const z_stream_opts* _opt){
+    if (!fin||!fout) return -3;
+    z_stream_opts opt; if(_opt) opt=*(_opt); else z__opts_default(&opt);
+
+    z_stream zs; memset(&zs,0,sizeof zs);
+    int lvl = (opt.level<0)? Z_DEFAULT_COMPRESSION : (opt.level>9? 9: opt.level);
+    if (deflateInit(&zs, lvl) != Z_OK) return -2;
+
+    unsigned char* in  = (unsigned char*)malloc(opt.in_chunk);
+    unsigned char* out = (unsigned char*)malloc(opt.out_chunk);
+    if(!in||!out){ free(in); free(out); deflateEnd(&zs); return -1; }
+
+    int rc=0;
+    for(;;){
+        zs.avail_in = (uInt)fread(in,1,opt.in_chunk,fin);
+        zs.next_in  = in;
+        int last = feof(fin);
+
+        do{
+            zs.avail_out = (uInt)opt.out_chunk; zs.next_out = out;
+            int flush = last ? Z_FINISH : Z_NO_FLUSH;
+            int zrc = deflate(&zs, flush);
+            if (zrc==Z_STREAM_ERROR){ rc=-2; goto done; }
+            size_t have = opt.out_chunk - zs.avail_out;
+            if (have && fwrite(out,1,have,fout)!=have){ rc=-1; goto done; }
+        } while (zs.avail_out==0);
+
+        if (last) break;
+        if (ferror(fin)){ rc=-1; goto done; }
     }
-    if (rc != Z_OK && rc != Z_BUF_ERROR) {
-      inflateEnd(&zs);
-      aux_buffer_free(&out);
-      return push_zerr(S, rc, &zs);
+
+done:
+    deflateEnd(&zs);
+    free(in); free(out);
+    return rc;
+}
+
+Z_API int z_inflate_fp(FILE* fin, FILE* fout, const z_stream_opts* _opt, int raw_gzip_auto){
+    if (!fin||!fout) return -3;
+    z_stream_opts opt; if(_opt) opt=*(_opt); else z__opts_default(&opt);
+
+    /* Détecter gzip vs zlib vs raw en regardant le début. */
+    unsigned char peek[4]={0}; size_t pn=fread(peek,1,3,fin);
+    if (pn>0) fseek(fin, (long)pn * -1L, SEEK_CUR);
+    int is_gz = z_is_gzip_header(peek,pn);
+
+    z_stream zs; memset(&zs,0,sizeof zs);
+    int winbits = is_gz? 16+MAX_WBITS : MAX_WBITS; /* 16+ pour gzip auto */
+    if (raw_gzip_auto==2) winbits = MAX_WBITS;     /* zlib enrobage */
+    if (raw_gzip_auto==1) winbits = -MAX_WBITS;    /* raw deflate */
+
+    if (inflateInit2(&zs, winbits) != Z_OK) return -2;
+
+    unsigned char* in  = (unsigned char*)malloc(opt.in_chunk);
+    unsigned char* out = (unsigned char*)malloc(opt.out_chunk);
+    if(!in||!out){ free(in); free(out); inflateEnd(&zs); return -1; }
+
+    int rc=0;
+    int done=0;
+    while (!done){
+        zs.avail_in = (uInt)fread(in,1,opt.in_chunk,fin);
+        if (ferror(fin)){ rc=-1; break; }
+        if (zs.avail_in==0){ /* pousser un finish */
+            int zrc;
+            do{
+                zs.avail_out=(uInt)opt.out_chunk; zs.next_out=out;
+                zrc = inflate(&zs, Z_FINISH);
+                size_t have = opt.out_chunk - zs.avail_out;
+                if (have && fwrite(out,1,have,fout)!=have){ rc=-1; goto out; }
+            } while (zrc!=Z_STREAM_END && zs.avail_out==0);
+            if (zrc==Z_STREAM_END){ rc=0; goto out; }
+            if (zrc!=Z_OK && zrc!=Z_BUF_ERROR){ rc=-2; goto out; }
+            goto out;
+        }
+        zs.next_in  = in;
+
+        for(;;){
+            zs.avail_out=(uInt)opt.out_chunk; zs.next_out=out;
+            int zrc = inflate(&zs, Z_NO_FLUSH);
+            if (zrc==Z_STREAM_END){ done=1; }
+            else if (zrc!=Z_OK){ if(zrc==Z_BUF_ERROR && zs.avail_in==0) break; if(zrc!=Z_BUF_ERROR){ rc=-2; goto out; } }
+            size_t have = opt.out_chunk - zs.avail_out;
+            if (have && fwrite(out,1,have,fout)!=have){ rc=-1; goto out; }
+            if (zs.avail_out!=0) break;
+        }
     }
-    size_t produced = sizeof buf - zs.avail_out;
-    if (produced) aux_buffer_append(&out, buf, produced);
-    if (out.len > max_out) {
-      inflateEnd(&zs);
-      aux_buffer_free(&out);
-      vl_push_nil(S);
-      vl_push_string(S, "ERANGE");
-      return 2;
+
+out:
+    inflateEnd(&zs);
+    free(in); free(out);
+    return rc;
+}
+#else
+/* ---- fallback sans zlib: copie brute ---- */
+Z_API int z_deflate_fp(FILE* fin, FILE* fout, const z_stream_opts* _opt){
+    (void)_opt;
+    unsigned char buf[1<<16];
+    size_t n;
+    while ((n=fread(buf,1,sizeof buf,fin))>0){
+        if (fwrite(buf,1,n,fout)!=n) return -1;
     }
-    if (rc == Z_BUF_ERROR && zs.avail_in == 0) break;  // no progress
-  }
-
-  inflateEnd(&zs);
-  vl_push_lstring(S, (const char *)out.data, (int)out.len);
-  aux_buffer_free(&out);
-  return 1;
+    return ferror(fin)? -1 : 1;
 }
-
-// VM: z.version()
-static int vlz_version(VL_State *S) {
-  vl_push_string(S, zlibVersion());
-  return 1;
-}
-
-// VM: z.deflate(data[, level[, raw[, gzip]]])
-static int vlz_deflate(VL_State *S) {
-  const char *data = z_check_str(S, 1);
-  int level = z_opt_int(S, 2, -1);
-  int raw = z_opt_bool(S, 3, 0);
-  int gzip = z_opt_bool(S, 4, 0);
-  if (raw && gzip) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-  int wbits = gzip ? (MAX_WBITS + 16) : (raw ? -MAX_WBITS : MAX_WBITS);
-  return do_deflate_buffer(S, (const uint8_t *)data, strlen(data), level,
-                           wbits);
-}
-
-// VM: z.inflate(data[, raw[, gzip[, max_out]]])
-static int vlz_inflate(VL_State *S) {
-  const char *data = z_check_str(S, 1);
-  int raw = z_opt_bool(S, 2, 0);
-  int gzip = z_opt_bool(S, 3, 0);
-  size_t max_out = (size_t)z_opt_int(S, 4, 16 * 1024 * 1024);  // 16 MiB default
-  if (raw && gzip) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-  int wbits = gzip ? (MAX_WBITS + 16) : (raw ? -MAX_WBITS : MAX_WBITS);
-  return do_inflate_buffer(S, (const uint8_t *)data, strlen(data), wbits,
-                           max_out);
-}
-
-// VM: z.gzip(data[, level])
-static int vlz_gzip(VL_State *S) {
-  const char *data = z_check_str(S, 1);
-  int level = z_opt_int(S, 2, -1);
-  return do_deflate_buffer(S, (const uint8_t *)data, strlen(data), level,
-                           MAX_WBITS + 16);
-}
-
-// VM: z.gunzip(data[, max_out])
-static int vlz_gunzip(VL_State *S) {
-  const char *data = z_check_str(S, 1);
-  size_t max_out = (size_t)z_opt_int(S, 2, 16 * 1024 * 1024);
-  return do_inflate_buffer(S, (const uint8_t *)data, strlen(data),
-                           MAX_WBITS + 16, max_out);
-}
-
-// VM: z.crc32(bytes[, seed])
-static int vlz_crc32(VL_State *S) {
-  const char *data = z_check_str(S, 1);
-  uint32_t seed = (uint32_t)z_opt_int(S, 2, 0);
-  uLong v = crc32(seed, (const Bytef *)data, (uInt)strlen(data));
-  vl_push_int(S, (int64_t)(uint32_t)v);
-  return 1;
-}
-
-// VM: z.adler32(bytes[, seed])
-static int vlz_adler32(VL_State *S) {
-  const char *data = z_check_str(S, 1);
-  uint32_t seed = (uint32_t)z_opt_int(S, 2, 1);
-  uLong v = adler32(seed, (const Bytef *)data, (uInt)strlen(data));
-  vl_push_int(S, (int64_t)(uint32_t)v);
-  return 1;
-}
-
-// --------- streaming ---------
-typedef struct ZDefl {
-  int used;
-  int finished;
-  z_stream zs;
-} ZDefl;
-
-typedef struct ZInfl {
-  int used;
-  int finished;
-  z_stream zs;
-} ZInfl;
-
-static ZDefl *g_d = NULL;
-static int g_d_cap = 0;
-static ZInfl *g_i = NULL;
-static int g_i_cap = 0;
-
-static int ensure_d_cap(int need) {
-  if (need <= g_d_cap) return 1;
-  int ncap = g_d_cap ? g_d_cap : 8;
-  while (ncap < need) ncap <<= 1;
-  ZDefl *nd = (ZDefl *)realloc(g_d, (size_t)ncap * sizeof *nd);
-  if (!nd) return 0;
-  for (int i = g_d_cap; i < ncap; i++) {
-    nd[i].used = 0;
-    nd[i].finished = 0;
-    memset(&nd[i].zs, 0, sizeof nd[i].zs);
-  }
-  g_d = nd;
-  g_d_cap = ncap;
-  return 1;
-}
-static int ensure_i_cap(int need) {
-  if (need <= g_i_cap) return 1;
-  int ncap = g_i_cap ? g_i_cap : 8;
-  while (ncap < need) ncap <<= 1;
-  ZInfl *ni = (ZInfl *)realloc(g_i, (size_t)ncap * sizeof *ni);
-  if (!ni) return 0;
-  for (int i = g_i_cap; i < ncap; i++) {
-    ni[i].used = 0;
-    ni[i].finished = 0;
-    memset(&ni[i].zs, 0, sizeof ni[i].zs);
-  }
-  g_i = ni;
-  g_i_cap = ncap;
-  return 1;
-}
-static int alloc_d_slot(void) {
-  for (int i = 1; i < g_d_cap; i++)
-    if (!g_d[i].used) return i;
-  if (!ensure_d_cap(g_d_cap ? g_d_cap * 2 : 8)) return 0;
-  for (int i = 1; i < g_d_cap; i++)
-    if (!g_d[i].used) return i;
-  return 0;
-}
-static int alloc_i_slot(void) {
-  for (int i = 1; i < g_i_cap; i++)
-    if (!g_i[i].used) return i;
-  if (!ensure_i_cap(g_i_cap ? g_i_cap * 2 : 8)) return 0;
-  for (int i = 1; i < g_i_cap; i++)
-    if (!g_i[i].used) return i;
-  return 0;
-}
-static int check_did(int id) { return id > 0 && id < g_d_cap && g_d[id].used; }
-static int check_iid(int id) { return id > 0 && id < g_i_cap && g_i[id].used; }
-
-// VM: z.deflate_init([level, raw, gzip])
-static int vlz_d_init(VL_State *S) {
-  int level = z_opt_int(S, 1, -1);
-  int raw = z_opt_bool(S, 2, 0);
-  int gzip = z_opt_bool(S, 3, 0);
-  if (raw && gzip) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-  int wbits = gzip ? (MAX_WBITS + 16) : (raw ? -MAX_WBITS : MAX_WBITS);
-
-  int id = alloc_d_slot();
-  if (!id) {
-    vl_push_nil(S);
-    vl_push_string(S, "ENOMEM");
-    return 2;
-  }
-  ZDefl *d = &g_d[id];
-  memset(d, 0, sizeof *d);
-  int rc =
-      deflateInit2(&d->zs, level, Z_DEFLATED, wbits, 8, Z_DEFAULT_STRATEGY);
-  if (rc != Z_OK) {
-    vl_push_nil(S);
-    vl_push_string(S, "EIO");
-    return 2;
-  }
-  d->used = 1;
-  d->finished = 0;
-  vl_push_int(S, (int64_t)id);
-  return 1;
-}
-
-// VM: z.deflate_chunk(id, bytes[, finish=false]) -> out, done
-static int vlz_d_chunk(VL_State *S) {
-  int id = (int)z_check_int(S, 1);
-  const char *in = z_check_str(S, 2);
-  int finish = z_opt_bool(S, 3, 0);
-  if (!check_did(id) || g_d[id].finished) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-
-  ZDefl *d = &g_d[id];
-  AuxBuffer out = {0};
-  uint8_t buf[65536];
-
-  d->zs.next_in = (Bytef *)in;
-  d->zs.avail_in = (uInt)strlen(in);
-
-  int flush = finish ? Z_FINISH : Z_NO_FLUSH;
-  int rc;
-  do {
-    d->zs.next_out = buf;
-    d->zs.avail_out = (uInt)sizeof buf;
-    rc = deflate(&d->zs, flush);
-    if (rc != Z_OK && rc != Z_STREAM_END && rc != Z_BUF_ERROR) {
-      aux_buffer_free(&out);
-      return push_zerr(S, rc, &d->zs);
+Z_API int z_inflate_fp(FILE* fin, FILE* fout, const z_stream_opts* _opt, int raw_gzip_auto){
+    (void)_opt; (void)raw_gzip_auto;
+    unsigned char buf[1<<16];
+    size_t n;
+    while ((n=fread(buf,1,sizeof buf,fin))>0){
+        if (fwrite(buf,1,n,fout)!=n) return -1;
     }
-    size_t produced = sizeof buf - d->zs.avail_out;
-    if (produced) aux_buffer_append(&out, buf, produced);
-  } while (d->zs.avail_out == 0);
-
-  if (rc == Z_STREAM_END) d->finished = 1;
-
-  vl_push_lstring(S, (const char *)out.data, (int)out.len);
-  vl_push_bool(S, d->finished ? 1 : 0);
-  aux_buffer_free(&out);
-  return 2;
+    return ferror(fin)? -1 : 1;
 }
+#endif
 
-// VM: z.deflate_end(id)
-static int vlz_d_end(VL_State *S) {
-  int id = (int)z_check_int(S, 1);
-  if (check_did(id)) {
-    deflateEnd(&g_d[id].zs);
-    g_d[id].used = 0;
-    g_d[id].finished = 0;
-  }
-  vl_push_bool(S, 1);
-  return 1;
-}
+/* ===================== Fichiers GZip simples ===================== */
 
-// VM: z.inflate_init([raw=false[, gzip=false]])
-static int vlz_i_init(VL_State *S) {
-  int raw = z_opt_bool(S, 1, 0);
-  int gzip = z_opt_bool(S, 2, 0);
-  if (raw && gzip) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-  int wbits = gzip ? (MAX_WBITS + 16) : (raw ? -MAX_WBITS : MAX_WBITS);
-
-  int id = alloc_i_slot();
-  if (!id) {
-    vl_push_nil(S);
-    vl_push_string(S, "ENOMEM");
-    return 2;
-  }
-  ZInfl *z = &g_i[id];
-  memset(z, 0, sizeof *z);
-  int rc = inflateInit2(&z->zs, wbits);
-  if (rc != Z_OK) {
-    vl_push_nil(S);
-    vl_push_string(S, "EIO");
-    return 2;
-  }
-  z->used = 1;
-  z->finished = 0;
-  vl_push_int(S, (int64_t)id);
-  return 1;
-}
-
-// VM: z.inflate_chunk(id, bytes[, finish=false[, max_out_chunk=65536]]) -> out,
-// done
-static int vlz_i_chunk(VL_State *S) {
-  int id = (int)z_check_int(S, 1);
-  const char *in = z_check_str(S, 2);
-  int finish = z_opt_bool(S, 3, 0);
-  int cap = z_opt_int(S, 4, 65536);
-  if (cap < 1024) cap = 1024;
-  if (!check_iid(id) || g_i[id].finished) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-
-  ZInfl *z = &g_i[id];
-  AuxBuffer out = {0};
-  uint8_t *buf = (uint8_t *)malloc((size_t)cap);
-  if (!buf) {
-    vl_push_nil(S);
-    vl_push_string(S, "ENOMEM");
-    return 2;
-  }
-
-  z->zs.next_in = (Bytef *)in;
-  z->zs.avail_in = (uInt)strlen(in);
-
-  int rc;
-  do {
-    z->zs.next_out = buf;
-    z->zs.avail_out = (uInt)cap;
-    rc = inflate(&z->zs, Z_NO_FLUSH);
-    if (rc != Z_OK && rc != Z_STREAM_END && rc != Z_BUF_ERROR) {
-      free(buf);
-      aux_buffer_free(&out);
-      return push_zerr(S, rc, &z->zs);
+Z_API int z_gzip_file_write(const char* path, const void* buf, size_t n, int level){
+    if (!path) return -3;
+#if defined(HAVE_ZLIB)
+    gzFile g;
+    {
+        char mode[8]; snprintf(mode,sizeof mode,"wb%d",(level<0||level>9)? Z_DEFAULT_COMPRESSION: level);
+        g = gzopen(path, mode);
     }
-    size_t produced = (size_t)cap - z->zs.avail_out;
-    if (produced) aux_buffer_append(&out, buf, produced);
-    if (rc == Z_STREAM_END) {
-      g_i[id].finished = 1;
-      break;
+    if (!g) return -1;
+    size_t off=0;
+    while (off<n){
+        unsigned chunk = (n-off>1<<20)? (1<<20) : (unsigned)(n-off);
+        int w = gzwrite(g, ((const unsigned char*)buf)+off, (unsigned)chunk);
+        if (w <= 0){ gzclose(g); return -2; }
+        off += (size_t)w;
     }
-    if (rc == Z_BUF_ERROR && z->zs.avail_in == 0) break;
-  } while (z->zs.avail_out == 0 || (finish && z->zs.avail_in));
-
-  free(buf);
-  vl_push_lstring(S, (const char *)out.data, (int)out.len);
-  vl_push_bool(S, g_i[id].finished ? 1 : 0);
-  aux_buffer_free(&out);
-  return 2;
+    if (gzclose(g) != Z_OK) return -2;
+    return 0;
+#else
+    FILE* f=fopen(path,"wb");
+    if (!f) return -1;
+    size_t w = n? fwrite(buf,1,n,f):0;
+    int rc = (w==n)? 1 : -1;
+    fclose(f); return rc;
+#endif
 }
 
-// VM: z.inflate_end(id)
-static int vlz_i_end(VL_State *S) {
-  int id = (int)z_check_int(S, 1);
-  if (check_iid(id)) {
-    inflateEnd(&g_i[id].zs);
-    g_i[id].used = 0;
-    g_i[id].finished = 0;
-  }
-  vl_push_bool(S, 1);
-  return 1;
+Z_API int z_gzip_file_read(const char* path, void** out, size_t* out_n){
+    if (!path||!out||!out_n) return -3;
+#if defined(HAVE_ZLIB)
+    gzFile g = gzopen(path,"rb");
+    if (!g) return -1;
+    size_t cap=1<<16, len=0;
+    unsigned char* buf=(unsigned char*)malloc(cap);
+    if(!buf){ gzclose(g); return -1; }
+    for(;;){
+        if (len==cap){
+            size_t nc=cap*2;
+            unsigned char* nb=(unsigned char*)realloc(buf,nc);
+            if(!nb){ free(buf); gzclose(g); return -1; }
+            buf=nb; cap=nc;
+        }
+        int r = gzread(g, buf+len, (unsigned)(cap-len));
+        if (r<0){ free(buf); gzclose(g); return -2; }
+        if (r==0) break;
+        len += (size_t)r;
+    }
+    gzclose(g);
+    *out=buf; *out_n=len; return 0;
+#else
+    FILE* f=fopen(path,"rb");
+    if (!f) return -1;
+    if (fseek(f,0,SEEK_END)!=0){ fclose(f); return -1; }
+    long L=ftell(f); if (L<0){ fclose(f); return -1; }
+    if (fseek(f,0,SEEK_SET)!=0){ fclose(f); return -1; }
+    void* buf=malloc((size_t)L? (size_t)L:1);
+    if(!buf){ fclose(f); return -1; }
+    size_t r=fread(buf,1,(size_t)L,f); fclose(f);
+    if (r!=(size_t)L){ free(buf); return -1; }
+    *out=buf; *out_n=(size_t)L; return 1;
+#endif
 }
 
-#endif  // VL_HAVE_ZLIB
+/* ===================== Utilitaires haut niveau ===================== */
 
-// ---------------------------------------------------------------------
-// Registration VM
-// ---------------------------------------------------------------------
-static const VL_Reg zlibreg[] = {{"version", vlz_version},
+/* Compresse un fichier source vers un fichier destination en zlib "raw/zlib/gzip".
+   mode: 0=zlib, 1=gzip, 2=raw(deflate). */
+Z_API int z_file_compress(const char* src, const char* dst, int mode, int level){
+    if (!src||!dst) return -3;
+    FILE* in=fopen(src,"rb"); if(!in) return -1;
+#if defined(HAVE_ZLIB)
+    int rc=0;
+    if (mode==1){
+        /* Écrire directement en .gz via gz* API */
+        /* Lire entièrement et transmettre à z_gzip_file_write pour simplicité */
+        fseek(in,0,SEEK_END); long L=ftell(in); if(L<0){ fclose(in); return -1; }
+        fseek(in,0,SEEK_SET);
+        void* buf=malloc((size_t)L? (size_t)L:1); if(!buf){ fclose(in); return -1; }
+        size_t r=fread(buf,1,(size_t)L,in); fclose(in);
+        if (r!=(size_t)L){ free(buf); return -1; }
+        rc = z_gzip_file_write(dst, buf, (size_t)L, level);
+        free(buf); return rc;
+    }
+    /* zlib raw/zlib via z_(de)flate_fp + zlib enveloppe paramétrée par inflate/deflateInit2.
+       Pour simplicité, on utilise deflateInit + copy, suffisant (zlib) */
+    FILE* out=fopen(dst,"wb"); if(!out){ fclose(in); return -1; }
+    z_stream_opts opt; z__opts_default(&opt); opt.level=level;
+    rc = z_deflate_fp(in,out,&opt);
+    fclose(out);
+    return rc;
+#else
+    /* fallback copie */
+    FILE* out=fopen(dst,"wb"); if(!out){ fclose(in); return -1; }
+    unsigned char buf[1<<16]; size_t n; int rc=1;
+    while((n=fread(buf,1,sizeof buf,in))>0){
+        if (fwrite(buf,1,n,out)!=n){ rc=-1; break; }
+    }
+    fclose(in); fclose(out); return rc;
+#endif
+}
 
-                                 // one-shot
-                                 {"deflate", vlz_deflate},
-                                 {"inflate", vlz_inflate},
-                                 {"gzip", vlz_gzip},
-                                 {"gunzip", vlz_gunzip},
-                                 {"crc32", vlz_crc32},
-                                 {"adler32", vlz_adler32},
+/* Décompresse un fichier source vers dest. raw_gzip_auto: 0=auto(zlib/gzip),1=raw,2=zlib. */
+Z_API int z_file_decompress(const char* src, const char* dst, int raw_gzip_auto){
+    if (!src||!dst) return -3;
+    FILE* in=fopen(src,"rb"); if(!in) return -1;
+    FILE* out=fopen(dst,"wb"); if(!out){ fclose(in); return -1; }
+    int rc = z_inflate_fp(in,out,NULL,raw_gzip_auto);
+    fclose(in); fclose(out);
+    return rc;
+}
 
-                                 // streaming
-                                 {"deflate_init", vlz_d_init},
-                                 {"deflate_chunk", vlz_d_chunk},
-                                 {"deflate_end", vlz_d_end},
-                                 {"inflate_init", vlz_i_init},
-                                 {"inflate_chunk", vlz_i_chunk},
-                                 {"inflate_end", vlz_i_end},
+/* Mémoire → GZip fichier, et fichier GZip → mémoire utilitaires rapides */
+Z_API int z_gzip_buffer_to_file(const char* path, const void* buf, size_t n, int level){
+    return z_gzip_file_write(path, buf, n, level);
+}
+Z_API int z_gzip_file_to_buffer(const char* path, void** out, size_t* out_n){
+    return z_gzip_file_read(path, out, out_n);
+}
 
-                                 {NULL, NULL}};
-
-void vl_open_zlib(VL_State *S) { vl_register_lib(S, "z", zlibreg); }
+/* ===================== Test ===================== */
+#ifdef Z_TEST
+#include <assert.h>
+static void hexdump(const void* p, size_t n){
+    const unsigned char* b=p;
+    for(size_t i=0;i<n;i++){ printf("%02x%s", b[i], ((i&15)==15||i+1==n)?"\n":" "); }
+}
+int main(void){
+    const char* msg="Vitte Light — zlib util complète";
+    void* c=NULL; size_t cn=0;
+    int rc = z_deflate_mem(msg, strlen(msg), 6, &c, &cn);
+    printf("deflate rc=%d out=%zu\n", rc, cn);
+    void* p=NULL; size_t pn=0;
+    rc = z_inflate_mem(c, cn, &p, &pn, 64);
+    printf("inflate rc=%d out=%zu eq=%d\n", rc, pn, (int)(pn==strlen(msg)&&memcmp(p,msg,pn)==0));
+    printf("crc=%08x\n", z_crc32(msg, strlen(msg)));
+#if defined(HAVE_ZLIB)
+    assert(z_gzip_file_write("ztest.gz", msg, strlen(msg), 6)==0);
+    void* fb=NULL; size_t fn=0; assert(z_gzip_file_read("ztest.gz",&fb,&fn)==0);
+    printf("gz len=%zu eq=%d\n", fn, (int)(fn==strlen(msg)&&memcmp(fb,msg,fn)==0));
+    free(fb);
+    FILE* in=fopen("ztest.gz","rb"); FILE* out=fopen("ztest.out","wb");
+    assert(z_inflate_fp(in,out,NULL,0)==0); fclose(in); fclose(out);
+#endif
+    free(c); free(p);
+    return 0;
+}
+#endif

@@ -1,662 +1,293 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// font.c — FreeType + HarfBuzz bindings for Vitte Light VM (C17, complete)
+// font.c — Tiny bitmap font & text rasterizer for Vitte Light (C17, portable)
 // Namespace: "font"
 //
 // Build:
-//   cc -std=c17 -O2 -Wall -Wextra -pedantic -DVL_HAVE_FREETYPE
-//   -DVL_HAVE_HARFBUZZ -c font.c cc ... font.o -lfreetype -lharfbuzz
+//   cc -std=c17 -O2 -Wall -Wextra -pedantic -c font.c
 //
-// Model:
-//   - One handle id = one FT_Face + hb_font_t pair.
-//   - Shaping with HarfBuzz -> USV rows per glyph:
-//   gid,cluster,x_adv,y_adv,x_off,y_off (float px).
-//   - Rasterization: A8 bitmap from glyph sequence (AA). Returns bbox and
-//   baseline origin.
-//
-// API:
-//   Init/Done
-//     font.init() -> true | (nil,errmsg)
-//     font.done() -> true
-//     font.version() -> string
-//
-//   Faces
-//     font.load(path[, face_index=0]) -> id | (nil,errmsg)
-//     font.free(id) -> true
-//     font.set_size(id, px:number[, dpi:int=96]) -> ascender_px:number,
-//     descender_px:number, height_px:number | (nil,errmsg) font.info(id) ->
-//     family, style, units_per_em:int, has_kerning:int, is_color:int |
-//     (nil,errmsg)
-//
-//   Shaping
-//     font.shape(id, utf8[, lang=""[, script=""[, dir="ltr"]]])
-//       -> usv:string  // rows: gid:uint, cluster:int, x_adv:float,
-//       y_adv:float, x_off:float, y_off:float
-//
-//   Rendering
-//     font.rasterize(id, layout_usv[, aa=true])
-//       -> w:int, h:int, origin_x:int, origin_y:int, a8_bitmap:string |
-//       (nil,errmsg)
+// Summary:
+//   - 5x7 monospaced bitmap font, integer scale, tight clipping.
+//   - RGBA8888 blitter with alpha blending (fg alpha honored).
+//   - API:
+//       typedef struct { int w, h, advance, baseline; } font_info_t;
+//       const font_info_t* font5x7_info(void);
+//       // Return 7 rows for ASCII 'c' in low 5 bits; returns 0 on miss (all zero)
+//       int  font5x7_get_rows(unsigned char c, uint8_t out_rows[7]);
+//       // Measure (width x height) for null-terminated UTF-8 assumed ASCII
+//       void font5x7_measure(const char* s, int scale, int* out_w, int* out_h);
+//       // Draw text at (x,y) top-left into RGBA8888 buffer (stride in pixels)
+//       // Transparent background. Newlines supported. Tab == 4 spaces.
+//       void font5x7_draw_rgba(uint32_t* img, int W, int H, int stride,
+//                              int x, int y, const char* s, uint32_t fg_rgba, int scale);
 //
 // Notes:
-//   - Positions from HarfBuzz are in 26.6; API returns pixel floats
-//   (value/64.0).
-//   - VM strings must not contain NUL on input. Outputs use vl_push_lstring for
-//   binary.
-//
-// Deps: auxlib.h, state.h, object.h, vm.h
+//   - Only ASCII 32..126 guaranteed. Missing glyphs render as '?'.
+//   - Data table contains compact rows for common glyphs; unknowns map to '?'.
+//   - Keep simple; extend table if you need more symbols.
 
-#include <math.h>
 #include <stdint.h>
-#include <stdlib.h>
+#include <stddef.h>
 #include <string.h>
 
-#include "auxlib.h"
-#include "object.h"
-#include "state.h"
-#include "vm.h"
+// ---------------- Font metadata ----------------
 
-#define US 0x1F
-#define RS 0x1E
+typedef struct { int w, h, advance, baseline; } font_info_t;
 
-// ---------------------------------------------------------------------
-// VM arg helpers
-// ---------------------------------------------------------------------
-static const char *ft_check_str(VL_State *S, int idx) {
-  if (vl_get(S, idx) && vl_isstring(S, idx))
-    return vl_tocstring(S, vl_get(S, idx));
-  vl_errorf(S, "argument #%d: string expected", idx);
-  vl_error(S);
-  return NULL;
-}
-static int64_t ft_check_int(VL_State *S, int idx) {
-  if (vl_get(S, idx) && (vl_isint(S, idx) || vl_isfloat(S, idx)))
-    return vl_isint(S, idx) ? vl_toint(S, vl_get(S, idx))
-                            : (int64_t)vl_tonumber(S, vl_get(S, idx));
-  vl_errorf(S, "argument #%d: int expected", idx);
-  vl_error(S);
-  return 0;
-}
-static double ft_check_num(VL_State *S, int idx) {
-  if (vl_get(S, idx) && (vl_isint(S, idx) || vl_isfloat(S, idx)))
-    return vl_isint(S, idx) ? (double)vl_toint(S, vl_get(S, idx))
-                            : vl_tonumber(S, vl_get(S, idx));
-  vl_errorf(S, "argument #%d: number expected", idx);
-  vl_error(S);
-  return 0.0;
-}
-static int ft_opt_bool(VL_State *S, int idx, int defv) {
-  if (!vl_get(S, idx)) return defv;
-  return vl_tobool(vl_get(S, idx)) ? 1 : 0;
-}
-static const char *ft_opt_str(VL_State *S, int idx, const char *defv) {
-  if (!vl_get(S, idx) || !vl_isstring(S, idx)) return defv;
-  return ft_check_str(S, idx);
+static const font_info_t g_info = { 5, 7, 6, 7 }; // 1px right-side spacing
+
+const font_info_t* font5x7_info(void) { return &g_info; }
+
+// ---------------- 5x7 bitmap table ----------------
+// Each glyph: 7 bytes (rows top→bottom). Low 5 bits are columns left→right.
+// Only a curated subset defined explicitly: space, digits, A-Z, a-z, punctuation used often.
+// Any missing character resolves to '?' glyph.
+
+typedef struct { unsigned char ch; uint8_t rows[7]; } glyph_t;
+
+#define R7(a,b,c,d,e,f,g) { (uint8_t)(a), (uint8_t)(b), (uint8_t)(c), (uint8_t)(d), (uint8_t)(e), (uint8_t)(f), (uint8_t)(g) }
+
+// Bit helper macro: write row as b4..b0 columns; example 0b10101 → 0x15
+// Below patterns are classic 5x7 forms.
+
+static const glyph_t g_tbl[] = {
+    // Space and punctuation minimal
+    { ' ', R7(0x00,0x00,0x00,0x00,0x00,0x00,0x00) },
+    { '!', R7(0x04,0x04,0x04,0x04,0x00,0x00,0x04) },
+    { '"', R7(0x0A,0x0A,0x0A,0x00,0x00,0x00,0x00) },
+    { '#', R7(0x0A,0x1F,0x0A,0x0A,0x1F,0x0A,0x00) },
+    { '$', R7(0x04,0x0F,0x14,0x0E,0x05,0x1E,0x04) },
+    { '%', R7(0x18,0x19,0x02,0x04,0x08,0x13,0x03) },
+    { '&', R7(0x0C,0x12,0x14,0x08,0x15,0x12,0x0D) },
+    { '\'',R7(0x04,0x04,0x02,0x00,0x00,0x00,0x00) },
+    { '(', R7(0x02,0x04,0x08,0x08,0x08,0x04,0x02) },
+    { ')', R7(0x08,0x04,0x02,0x02,0x02,0x04,0x08) },
+    { '*', R7(0x00,0x04,0x15,0x0E,0x15,0x04,0x00) },
+    { '+', R7(0x00,0x04,0x04,0x1F,0x04,0x04,0x00) },
+    { ',', R7(0x00,0x00,0x00,0x00,0x06,0x06,0x02) },
+    { '-', R7(0x00,0x00,0x00,0x1F,0x00,0x00,0x00) },
+    { '.', R7(0x00,0x00,0x00,0x00,0x06,0x06,0x00) },
+    { '/', R7(0x01,0x01,0x02,0x04,0x08,0x10,0x10) },
+
+    // Digits 0-9
+    { '0', R7(0x0E,0x11,0x13,0x15,0x19,0x11,0x0E) },
+    { '1', R7(0x04,0x0C,0x04,0x04,0x04,0x04,0x0E) },
+    { '2', R7(0x0E,0x11,0x01,0x06,0x08,0x10,0x1F) },
+    { '3', R7(0x1F,0x02,0x04,0x02,0x01,0x11,0x0E) },
+    { '4', R7(0x02,0x06,0x0A,0x12,0x1F,0x02,0x02) },
+    { '5', R7(0x1F,0x10,0x1E,0x01,0x01,0x11,0x0E) },
+    { '6', R7(0x06,0x08,0x10,0x1E,0x11,0x11,0x0E) },
+    { '7', R7(0x1F,0x01,0x02,0x04,0x08,0x08,0x08) },
+    { '8', R7(0x0E,0x11,0x11,0x0E,0x11,0x11,0x0E) },
+    { '9', R7(0x0E,0x11,0x11,0x0F,0x01,0x02,0x0C) },
+
+    { ':', R7(0x00,0x06,0x06,0x00,0x06,0x06,0x00) },
+    { ';', R7(0x00,0x06,0x06,0x00,0x06,0x06,0x02) },
+    { '<', R7(0x02,0x04,0x08,0x10,0x08,0x04,0x02) },
+    { '=', R7(0x00,0x00,0x1F,0x00,0x1F,0x00,0x00) },
+    { '>', R7(0x08,0x04,0x02,0x01,0x02,0x04,0x08) },
+    { '?', R7(0x0E,0x11,0x01,0x02,0x04,0x00,0x04) },
+
+    { '@', R7(0x0E,0x11,0x01,0x0D,0x15,0x15,0x0E) },
+
+    // Uppercase A-Z
+    { 'A', R7(0x0E,0x11,0x11,0x1F,0x11,0x11,0x11) },
+    { 'B', R7(0x1E,0x11,0x11,0x1E,0x11,0x11,0x1E) },
+    { 'C', R7(0x0E,0x11,0x10,0x10,0x10,0x11,0x0E) },
+    { 'D', R7(0x1C,0x12,0x11,0x11,0x11,0x12,0x1C) },
+    { 'E', R7(0x1F,0x10,0x10,0x1E,0x10,0x10,0x1F) },
+    { 'F', R7(0x1F,0x10,0x10,0x1E,0x10,0x10,0x10) },
+    { 'G', R7(0x0E,0x11,0x10,0x17,0x11,0x11,0x0E) },
+    { 'H', R7(0x11,0x11,0x11,0x1F,0x11,0x11,0x11) },
+    { 'I', R7(0x0E,0x04,0x04,0x04,0x04,0x04,0x0E) },
+    { 'J', R7(0x07,0x02,0x02,0x02,0x12,0x12,0x0C) },
+    { 'K', R7(0x11,0x12,0x14,0x18,0x14,0x12,0x11) },
+    { 'L', R7(0x10,0x10,0x10,0x10,0x10,0x10,0x1F) },
+    { 'M', R7(0x11,0x1B,0x15,0x15,0x11,0x11,0x11) },
+    { 'N', R7(0x11,0x19,0x15,0x13,0x11,0x11,0x11) },
+    { 'O', R7(0x0E,0x11,0x11,0x11,0x11,0x11,0x0E) },
+    { 'P', R7(0x1E,0x11,0x11,0x1E,0x10,0x10,0x10) },
+    { 'Q', R7(0x0E,0x11,0x11,0x11,0x15,0x12,0x0D) },
+    { 'R', R7(0x1E,0x11,0x11,0x1E,0x14,0x12,0x11) },
+    { 'S', R7(0x0F,0x10,0x10,0x0E,0x01,0x01,0x1E) },
+    { 'T', R7(0x1F,0x04,0x04,0x04,0x04,0x04,0x04) },
+    { 'U', R7(0x11,0x11,0x11,0x11,0x11,0x11,0x0E) },
+    { 'V', R7(0x11,0x11,0x11,0x11,0x11,0x0A,0x04) },
+    { 'W', R7(0x11,0x11,0x11,0x15,0x15,0x1B,0x11) },
+    { 'X', R7(0x11,0x11,0x0A,0x04,0x0A,0x11,0x11) },
+    { 'Y', R7(0x11,0x11,0x0A,0x04,0x04,0x04,0x04) },
+    { 'Z', R7(0x1F,0x01,0x02,0x04,0x08,0x10,0x1F) },
+
+    { '[', R7(0x0E,0x08,0x08,0x08,0x08,0x08,0x0E) },
+    { '\\',R7(0x10,0x10,0x08,0x04,0x02,0x01,0x01) },
+    { ']', R7(0x0E,0x02,0x02,0x02,0x02,0x02,0x0E) },
+    { '^', R7(0x04,0x0A,0x11,0x00,0x00,0x00,0x00) },
+    { '_', R7(0x00,0x00,0x00,0x00,0x00,0x00,0x1F) },
+    { '`', R7(0x08,0x04,0x02,0x00,0x00,0x00,0x00) },
+
+    // Lowercase a-z
+    { 'a', R7(0x00,0x00,0x0E,0x01,0x0F,0x11,0x0F) },
+    { 'b', R7(0x10,0x10,0x1E,0x11,0x11,0x11,0x1E) },
+    { 'c', R7(0x00,0x00,0x0E,0x11,0x10,0x11,0x0E) },
+    { 'd', R7(0x01,0x01,0x0F,0x11,0x11,0x11,0x0F) },
+    { 'e', R7(0x00,0x00,0x0E,0x11,0x1F,0x10,0x0E) },
+    { 'f', R7(0x06,0x08,0x1E,0x08,0x08,0x08,0x08) },
+    { 'g', R7(0x00,0x00,0x0F,0x11,0x11,0x0F,0x01) },
+    { 'h', R7(0x10,0x10,0x1E,0x11,0x11,0x11,0x11) },
+    { 'i', R7(0x04,0x00,0x0C,0x04,0x04,0x04,0x0E) },
+    { 'j', R7(0x02,0x00,0x06,0x02,0x02,0x12,0x0C) },
+    { 'k', R7(0x10,0x10,0x12,0x14,0x18,0x14,0x12) },
+    { 'l', R7(0x0C,0x04,0x04,0x04,0x04,0x04,0x0E) },
+    { 'm', R7(0x00,0x00,0x1A,0x15,0x15,0x15,0x15) },
+    { 'n', R7(0x00,0x00,0x1E,0x11,0x11,0x11,0x11) },
+    { 'o', R7(0x00,0x00,0x0E,0x11,0x11,0x11,0x0E) },
+    { 'p', R7(0x00,0x00,0x1E,0x11,0x11,0x1E,0x10) },
+    { 'q', R7(0x00,0x00,0x0F,0x11,0x11,0x0F,0x01) },
+    { 'r', R7(0x00,0x00,0x16,0x18,0x10,0x10,0x10) },
+    { 's', R7(0x00,0x00,0x0F,0x10,0x0E,0x01,0x1E) },
+    { 't', R7(0x08,0x08,0x1E,0x08,0x08,0x09,0x06) },
+    { 'u', R7(0x00,0x00,0x11,0x11,0x11,0x11,0x0F) },
+    { 'v', R7(0x00,0x00,0x11,0x11,0x11,0x0A,0x04) },
+    { 'w', R7(0x00,0x00,0x11,0x11,0x15,0x15,0x0A) },
+    { 'x', R7(0x00,0x00,0x11,0x0A,0x04,0x0A,0x11) },
+    { 'y', R7(0x00,0x00,0x11,0x11,0x11,0x0F,0x01) },
+    { 'z', R7(0x00,0x00,0x1F,0x02,0x04,0x08,0x1F) },
+
+    { '{', R7(0x02,0x04,0x04,0x08,0x04,0x04,0x02) },
+    { '|', R7(0x04,0x04,0x04,0x00,0x04,0x04,0x04) },
+    { '}', R7(0x08,0x04,0x04,0x02,0x04,0x04,0x08) },
+    { '~', R7(0x00,0x00,0x0A,0x15,0x00,0x00,0x00) },
+};
+
+static const uint8_t* find_rows(unsigned char c) {
+    // direct lookup over small table
+    for (size_t i=0; i < sizeof(g_tbl)/sizeof(g_tbl[0]); ++i)
+        if (g_tbl[i].ch == c) return g_tbl[i].rows;
+    // fallback to '?'
+    for (size_t i=0; i < sizeof(g_tbl)/sizeof(g_tbl[0]); ++i)
+        if (g_tbl[i].ch == '?') return g_tbl[i].rows;
+    return NULL;
 }
 
-#if defined(VL_HAVE_FREETYPE) && defined(VL_HAVE_HARFBUZZ)
-#include <ft2build.h>
-#include FT_FREETYPE_H
-#include FT_GLYPH_H
-#include <hb-ft.h>
-#include <hb.h>
-#define FONT_STUB 0
-#else
-#define FONT_STUB 1
+int font5x7_get_rows(unsigned char c, uint8_t out_rows[7]) {
+    const uint8_t* r = find_rows(c);
+    if (!r) return 0;
+    for (int i=0;i<7;i++) out_rows[i] = r[i] & 0x1F;
+    return 1;
+}
+
+// ---------------- Measure ----------------
+
+void font5x7_measure(const char* s, int scale, int* out_w, int* out_h) {
+    if (scale < 1) scale = 1;
+    int w = 0, h = g_info.h * scale;
+    int line_w = 0;
+    for (const unsigned char* p=(const unsigned char*)s; *p; ++p) {
+        unsigned char c = *p;
+        if (c == '\n') { if (line_w > w) w = line_w; line_w = 0; h += g_info.h * scale + scale; continue; }
+        if (c == '\t') { line_w += g_info.advance * 4 * scale; continue; }
+        line_w += g_info.advance * scale;
+    }
+    if (line_w > w) w = line_w;
+    if (out_w) *out_w = w;
+    if (out_h) *out_h = h;
+}
+
+// ---------------- Blitting ----------------
+
+static inline uint32_t blend_over(uint32_t dst, uint32_t src) {
+    // RGBA8888, straight alpha
+    uint32_t sa = (src >> 24) & 0xFF;
+    if (sa == 255) return src;
+    if (sa == 0)   return dst;
+    uint32_t da = (dst >> 24) & 0xFF;
+
+    uint32_t sr = (src >> 16) & 0xFF, sg = (src >> 8) & 0xFF, sb = (src) & 0xFF;
+    uint32_t dr = (dst >> 16) & 0xFF, dg = (dst >> 8) & 0xFF, db = (dst) & 0xFF;
+
+    uint32_t outA = sa + ((da * (255 - sa)) / 255);
+    uint32_t outR = (sr * sa + dr * (255 - sa)) / 255;
+    uint32_t outG = (sg * sa + dg * (255 - sa)) / 255;
+    uint32_t outB = (sb * sa + db * (255 - sa)) / 255;
+    return (outA << 24) | (outR << 16) | (outG << 8) | outB;
+}
+
+static void draw_glyph(uint32_t* img, int W, int H, int stride,
+                       int x, int y, const uint8_t rows[7],
+                       uint32_t fg, int scale)
+{
+    if (scale < 1) scale = 1;
+    for (int ry = 0; ry < 7; ++ry) {
+        uint8_t bits = rows[ry];
+        for (int rx = 0; rx < 5; ++rx) {
+            if (bits & (1u << (4 - rx))) {
+                int px0 = x + rx * scale;
+                int py0 = y + ry * scale;
+                // scaled solid block
+                for (int dy = 0; dy < scale; ++dy) {
+                    int py = py0 + dy;
+                    if ((unsigned)py >= (unsigned)H) continue;
+                    uint32_t* rowp = img + (size_t)py * (size_t)stride;
+                    for (int dx = 0; dx < scale; ++dx) {
+                        int px = px0 + dx;
+                        if ((unsigned)px >= (unsigned)W) continue;
+                        rowp[px] = blend_over(rowp[px], fg);
+                    }
+                }
+            }
+        }
+    }
+}
+
+void font5x7_draw_rgba(uint32_t* img, int W, int H, int stride,
+                       int x, int y, const char* s, uint32_t fg_rgba, int scale)
+{
+    if (!img || !s) return;
+    if (stride <= 0) stride = W;
+    if (scale < 1) scale = 1;
+
+    int cx = x;
+    int cy = y;
+    uint8_t rows[7];
+
+    for (const unsigned char* p=(const unsigned char*)s; *p; ++p) {
+        unsigned char c = *p;
+        if (c == '\n') { cx = x; cy += (g_info.h + 1) * scale; continue; }
+        if (c == '\t') { cx += g_info.advance * 4 * scale; continue; }
+        if (!font5x7_get_rows(c, rows)) continue;
+        draw_glyph(img, W, H, stride, cx, cy, rows, fg_rgba, scale);
+        cx += g_info.advance * scale;
+        if (cx >= W && cy >= H) break;
+    }
+}
+
+// ---------------- Optional demo ----------------
+#ifdef FONT_DEMO
+// Writes out.ppm with a demo string
+#include <stdio.h>
+#include <stdlib.h>
+static void save_ppm(const char* path, const uint32_t* img, int W, int H) {
+    FILE* f = fopen(path, "wb");
+    if (!f) return;
+    fprintf(f, "P6\n%d %d\n255\n", W, H);
+    for (int y=0;y<H;y++) {
+        for (int x=0;x<W;x++) {
+            uint32_t c = img[y*W + x];
+            unsigned char rgb[3] = { (c>>16)&255, (c>>8)&255, c&255 };
+            fwrite(rgb,1,3,f);
+        }
+    }
+    fclose(f);
+}
+int main(void) {
+    int W=320,H=100;
+    uint32_t* img = (uint32_t*)calloc((size_t)W*H, sizeof(uint32_t));
+    // fill background gray
+    for (int i=0;i<W*H;i++) img[i] = 0xFF202020u;
+    const char* txt = "Vitte Light\nfont5x7 demo: ABC abc 0123456789";
+    font5x7_draw_rgba(img, W, H, W, 10, 10, txt, 0xFFFFFFFFu, 3);
+    save_ppm("out.ppm", img, W, H);
+    free(img);
+    return 0;
+}
 #endif
-
-// ---------------------------------------------------------------------
-// Stubs
-// ---------------------------------------------------------------------
-#if FONT_STUB
-
-#define NOSYS_PAIR(S)            \
-  do {                           \
-    vl_push_nil(S);              \
-    vl_push_string(S, "ENOSYS"); \
-    return 2;                    \
-  } while (0)
-static int vlf_init(VL_State *S) {
-  vl_push_nil(S);
-  vl_push_string(S, "ENOSYS");
-  return 2;
-}
-static int vlf_done(VL_State *S) {
-  vl_push_bool(S, 1);
-  return 1;
-}
-static int vlf_version(VL_State *S) {
-  vl_push_string(S, "unavailable");
-  return 1;
-}
-static int vlf_load(VL_State *S) {
-  (void)ft_check_str(S, 1);
-  NOSYS_PAIR(S);
-}
-static int vlf_free(VL_State *S) {
-  vl_push_bool(S, 1);
-  return 1;
-}
-static int vlf_set_size(VL_State *S) { NOSYS_PAIR(S); }
-static int vlf_info(VL_State *S) { NOSYS_PAIR(S); }
-static int vlf_shape(VL_State *S) { NOSYS_PAIR(S); }
-static int vlf_raster(VL_State *S) { NOSYS_PAIR(S); }
-
-#else
-// ---------------------------------------------------------------------
-// Real implementation
-// ---------------------------------------------------------------------
-
-typedef struct FaceH {
-  int used;
-  FT_Face face;
-  hb_font_t *hb_font;
-} FaceH;
-
-static FT_Library g_ft = NULL;
-static FaceH *g_faces = NULL;
-static int g_cap = 0;
-
-static int ensure_cap(int need) {
-  if (need <= g_cap) return 1;
-  int n = g_cap ? g_cap : 8;
-  while (n < need) n <<= 1;
-  FaceH *nf = (FaceH *)realloc(g_faces, (size_t)n * sizeof *nf);
-  if (!nf) return 0;
-  for (int i = g_cap; i < n; i++) {
-    nf[i].used = 0;
-    nf[i].face = NULL;
-    nf[i].hb_font = NULL;
-  }
-  g_faces = nf;
-  g_cap = n;
-  return 1;
-}
-static int alloc_face(void) {
-  for (int i = 1; i < g_cap; i++)
-    if (!g_faces[i].used) return i;
-  if (!ensure_cap(g_cap ? g_cap * 2 : 8)) return 0;
-  for (int i = 1; i < g_cap; i++)
-    if (!g_faces[i].used) return i;
-  return 0;
-}
-static int chk_id(int id) {
-  return id > 0 && id < g_cap && g_faces[id].used && g_faces[id].face &&
-         g_faces[id].hb_font;
-}
-
-static int vlf_init(VL_State *S) {
-  if (!g_ft) {
-    FT_Error e = FT_Init_FreeType(&g_ft);
-    if (e) {
-      vl_push_nil(S);
-      vl_push_string(S, "freetype");
-      return 2;
-    }
-  }
-  vl_push_bool(S, 1);
-  return 1;
-}
-static int vlf_done(VL_State *S) {
-  if (g_faces) {
-    for (int i = 1; i < g_cap; i++) {
-      if (g_faces[i].used) {
-        if (g_faces[i].hb_font) hb_font_destroy(g_faces[i].hb_font);
-        if (g_faces[i].face) FT_Done_Face(g_faces[i].face);
-        g_faces[i].used = 0;
-        g_faces[i].face = NULL;
-        g_faces[i].hb_font = NULL;
-      }
-    }
-  }
-  if (g_ft) {
-    FT_Done_FreeType(g_ft);
-    g_ft = NULL;
-  }
-  vl_push_bool(S, 1);
-  return 1;
-}
-static int vlf_version(VL_State *S) {
-  char buf[128];
-  snprintf(buf, sizeof buf, "freetype %d.%d.%d, harfbuzz %u.%u.%u",
-           (int)FREETYPE_MAJOR, (int)FREETYPE_MINOR, (int)FREETYPE_PATCH,
-           (unsigned)HB_VERSION_MAJOR, (unsigned)HB_VERSION_MINOR,
-           (unsigned)HB_VERSION_MICRO);
-  vl_push_string(S, buf);
-  return 1;
-}
-
-static int vlf_load(VL_State *S) {
-  const char *path = ft_check_str(S, 1);
-  int face_index = (int)ft_check_int(S, 2);
-  if (!g_ft) {
-    FT_Error e = FT_Init_FreeType(&g_ft);
-    if (e) {
-      vl_push_nil(S);
-      vl_push_string(S, "freetype");
-      return 2;
-    }
-  }
-
-  FT_Face face = NULL;
-  FT_Error e = FT_New_Face(g_ft, path, face_index, &face);
-  if (e || !face) {
-    vl_push_nil(S);
-    vl_push_string(S, "ENOENT");
-    return 2;
-  }
-
-  // Default size to 12px for sensible metrics until set_size is called
-  FT_Set_Char_Size(face, 0, 12 * 64, 96, 96);
-
-  hb_font_t *hb_font = hb_ft_font_create_referenced(face);
-  if (!hb_font) {
-    FT_Done_Face(face);
-    vl_push_nil(S);
-    vl_push_string(S, "harfbuzz");
-    return 2;
-  }
-
-  int id = alloc_face();
-  if (!id) {
-    hb_font_destroy(hb_font);
-    FT_Done_Face(face);
-    vl_push_nil(S);
-    vl_push_string(S, "ENOMEM");
-    return 2;
-  }
-  g_faces[id].used = 1;
-  g_faces[id].face = face;
-  g_faces[id].hb_font = hb_font;
-
-  vl_push_int(S, (int64_t)id);
-  return 1;
-}
-
-static int vlf_free(VL_State *S) {
-  int id = (int)ft_check_int(S, 1);
-  if (id > 0 && id < g_cap && g_faces[id].used) {
-    if (g_faces[id].hb_font) hb_font_destroy(g_faces[id].hb_font);
-    if (g_faces[id].face) FT_Done_Face(g_faces[id].face);
-    g_faces[id].hb_font = NULL;
-    g_faces[id].face = NULL;
-    g_faces[id].used = 0;
-  }
-  vl_push_bool(S, 1);
-  return 1;
-}
-
-static int vlf_set_size(VL_State *S) {
-  int id = (int)ft_check_int(S, 1);
-  double px = ft_check_num(S, 2);
-  int dpi = (int)ft_check_int(S, 3);
-  if (dpi <= 0) dpi = 96;
-  if (!chk_id(id) || px <= 0) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-
-  FT_Error e =
-      FT_Set_Char_Size(g_faces[id].face, 0, (FT_F26Dot6)(px * 64.0), dpi, dpi);
-  if (e) {
-    vl_push_nil(S);
-    vl_push_string(S, "freetype");
-    return 2;
-  }
-
-  // hb-ft picks up FT size via metrics on demand; ensure scale sync
-  hb_ft_font_changed(g_faces[id].hb_font);
-
-  double asc = g_faces[id].face->size->metrics.ascender / 64.0;
-  double desc = g_faces[id].face->size->metrics.descender / 64.0;  // negative
-  double hgt = g_faces[id].face->size->metrics.height / 64.0;
-
-  vl_push_float(S, asc);
-  vl_push_float(S, desc);
-  vl_push_float(S, hgt);
-  return 3;
-}
-
-static int vlf_info(VL_State *S) {
-  int id = (int)ft_check_int(S, 1);
-  if (!chk_id(id)) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-  FT_Face f = g_faces[id].face;
-  vl_push_string(S, f->family_name ? f->family_name : "");
-  vl_push_string(S, f->style_name ? f->style_name : "");
-  vl_push_int(S, (int64_t)f->units_per_EM);
-  vl_push_int(S, (f->face_flags & FT_FACE_FLAG_KERNING) ? 1 : 0);
-  vl_push_int(S, (f->face_flags & FT_FACE_FLAG_COLOR) ? 1 : 0);
-  return 5;
-}
-
-static hb_direction_t parse_dir(const char *d) {
-  if (!d) return HB_DIRECTION_LTR;
-  if (strcmp(d, "rtl") == 0) return HB_DIRECTION_RTL;
-  if (strcmp(d, "ttb") == 0) return HB_DIRECTION_TTB;
-  if (strcmp(d, "btt") == 0) return HB_DIRECTION_BTT;
-  return HB_DIRECTION_LTR;
-}
-
-// font.shape(id, text, lang, script, dir) -> USV rows
-static int vlf_shape(VL_State *S) {
-  int id = (int)ft_check_int(S, 1);
-  const char *txt = ft_check_str(S, 2);
-  const char *lang = ft_opt_str(S, 3, "");
-  const char *script = ft_opt_str(S, 4, "");
-  const char *dir = ft_opt_str(S, 5, "ltr");
-  if (!chk_id(id)) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-
-  hb_buffer_t *buf = hb_buffer_create();
-  hb_buffer_add_utf8(buf, txt, (int)strlen(txt), 0, (int)strlen(txt));
-  if (lang && *lang)
-    hb_buffer_set_language(buf, hb_language_from_string(lang, -1));
-  if (script && *script)
-    hb_buffer_set_script(buf, hb_script_from_string(script, -1));
-  else
-    hb_buffer_guess_segment_properties(buf);
-  hb_buffer_set_direction(buf, parse_dir(dir));
-
-  hb_shape(g_faces[id].hb_font, buf, NULL, 0);
-
-  unsigned n = hb_buffer_get_length(buf);
-  hb_glyph_info_t *info = hb_buffer_get_glyph_infos(buf, NULL);
-  hb_glyph_position_t *pos = hb_buffer_get_glyph_positions(buf, NULL);
-
-  AuxBuffer out = {0};
-  char tmp[64];
-  for (unsigned i = 0; i < n; i++) {
-    // gid
-    snprintf(tmp, sizeof tmp, "%u", info[i].codepoint);
-    aux_buffer_append(&out, (const uint8_t *)tmp, strlen(tmp));
-    uint8_t u = US;
-    aux_buffer_append(&out, &u, 1);
-    // cluster (byte offset in UTF-8)
-    snprintf(tmp, sizeof tmp, "%u", info[i].cluster);
-    aux_buffer_append(&out, (const uint8_t *)tmp, strlen(tmp));
-    u = US;
-    aux_buffer_append(&out, &u, 1);
-    // x_adv, y_adv
-    double xadv = pos[i].x_advance / 64.0, yadv = pos[i].y_advance / 64.0;
-    snprintf(tmp, sizeof tmp, "%.6g", xadv);
-    aux_buffer_append(&out, (const uint8_t *)tmp, strlen(tmp));
-    u = US;
-    aux_buffer_append(&out, &u, 1);
-    snprintf(tmp, sizeof tmp, "%.6g", yadv);
-    aux_buffer_append(&out, (const uint8_t *)tmp, strlen(tmp));
-    u = US;
-    aux_buffer_append(&out, &u, 1);
-    // x_off, y_off
-    double xoff = pos[i].x_offset / 64.0, yoff = pos[i].y_offset / 64.0;
-    snprintf(tmp, sizeof tmp, "%.6g", xoff);
-    aux_buffer_append(&out, (const uint8_t *)tmp, strlen(tmp));
-    u = US;
-    aux_buffer_append(&out, &u, 1);
-    snprintf(tmp, sizeof tmp, "%.6g", yoff);
-    aux_buffer_append(&out, (const uint8_t *)tmp, strlen(tmp));
-    uint8_t r = RS;
-    aux_buffer_append(&out, &r, 1);
-  }
-
-  hb_buffer_destroy(buf);
-  vl_push_lstring(S, (const char *)out.data, (int)out.len);
-  aux_buffer_free(&out);
-  return 1;
-}
-
-// Parse a double from ascii (len-limited), fallback 0
-static double parse_d(const uint8_t *s, size_t n) {
-  char buf[64];
-  if (n >= sizeof buf) n = sizeof buf - 1;
-  memcpy(buf, s, n);
-  buf[n] = 0;
-  return atof(buf);
-}
-
-// font.rasterize(id, usv[, aa=true]) -> w,h,ox,oy, a8
-static int vlf_raster(VL_State *S) {
-  int id = (int)ft_check_int(S, 1);
-  const char *usv = ft_check_str(S, 2);
-  int aa = ft_opt_bool(S, 3, 1);
-  if (!chk_id(id)) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-
-  FT_Face face = g_faces[id].face;
-  const uint8_t *p = (const uint8_t *)usv;
-  size_t n = strlen(usv);
-
-  // First pass: compute bbox
-  double pen_x = 0.0, pen_y = 0.0;
-  double min_x = 1e9, min_y = 1e9, max_x = -1e9, max_y = -1e9;
-
-  size_t i = 0;
-  while (i <= n) {
-    int at_end = (i == n);
-    uint8_t c = at_end ? RS : p[i];
-    if (c == RS || c == US) {
-      // parse row fields when hitting RS: we need gid and offsets and advances
-      // We backtrack find row start
-    }
-    // Parse row: gid|cluster|xadv|yadv|xoff|yoff RS
-    // Implement a small parser per row
-    size_t start = i;
-    // find end of row
-    while (i < n && p[i] != RS) i++;
-    size_t row_end = i;
-    if (row_end == start) {
-      i++;
-      continue;
-    }  // empty row
-    // split by US into 6 fields
-    const uint8_t *f[6] = {0};
-    size_t L[6] = {0};
-    int fi = 0;
-    size_t k = start;
-    size_t last = start;
-    while (k < row_end && fi < 6) {
-      if (p[k] == US) {
-        f[fi] = p + last;
-        L[fi] = k - last;
-        fi++;
-        last = k + 1;
-      }
-      k++;
-    }
-    if (fi < 5) {
-      i++;
-      continue;
-    }  // malformed
-    f[fi] = p + last;
-    L[fi] = row_end - last;  // sixth
-    // read values
-    // gid
-    unsigned gid = 0;
-    for (size_t t = 0; t < L[0]; t++) {
-      if (f[0][t] < '0' || f[0][t] > '9') {
-        gid = 0;
-        break;
-      }
-      gid = gid * 10 + (unsigned)(f[0][t] - '0');
-    }
-    double xadv = parse_d(f[2], L[2]);
-    double yadv = parse_d(f[3], L[3]);
-    double xoff = parse_d(f[4], L[4]);
-    double yoff = parse_d(f[5], L[5]);
-
-    // load glyph to get bitmap bbox
-    if (FT_Load_Glyph(face, (FT_UInt)gid, FT_LOAD_DEFAULT)) { /*skip*/
-    } else {
-      if (FT_Render_Glyph(face->glyph, aa ? FT_RENDER_MODE_NORMAL
-                                          : FT_RENDER_MODE_MONO) == 0) {
-        FT_GlyphSlot g = face->glyph;
-        double gx = pen_x + xoff + g->bitmap_left;
-        double gy = pen_y - yoff - g->bitmap_top;  // y grows down in bitmaps
-        double gw = g->bitmap.width;
-        double gh = g->bitmap.rows;
-        if (gw > 0 && gh > 0) {
-          if (gx < min_x) min_x = gx;
-          if (gy < min_y) min_y = gy;
-          if (gx + gw > max_x) max_x = gx + gw;
-          if (gy + gh > max_y) max_y = gy + gh;
-        }
-      }
-    }
-    pen_x += xadv;
-    pen_y += yadv;
-
-    i = (row_end < n) ? row_end + 1 : row_end;
-  }
-
-  if (!(max_x > min_x && max_y > min_y)) {
-    vl_push_int(S, 0);
-    vl_push_int(S, 0);
-    vl_push_int(S, 0);
-    vl_push_int(S, 0);
-    vl_push_lstring(S, "", 0);
-    return 5;
-  }
-
-  int ox = (int)floor(min_x);
-  int oy = (int)floor(min_y);
-  int w = (int)ceil(max_x) - ox;
-  int h = (int)ceil(max_y) - oy;
-
-  uint8_t *a8 = (uint8_t *)calloc((size_t)w * (size_t)h, 1);
-  if (!a8) {
-    vl_push_nil(S);
-    vl_push_string(S, "ENOMEM");
-    return 2;
-  }
-
-  // Second pass: blit
-  pen_x = 0.0;
-  pen_y = 0.0;
-  i = 0;
-  while (i <= n) {
-    size_t start = i;
-    while (i < n && p[i] != RS) i++;
-    size_t row_end = i;
-    if (row_end == start) {
-      i++;
-      continue;
-    }
-    const uint8_t *f[6] = {0};
-    size_t L[6] = {0};
-    int fi = 0;
-    size_t k = start;
-    size_t last = start;
-    while (k < row_end && fi < 6) {
-      if (p[k] == US) {
-        f[fi] = p + last;
-        L[fi] = k - last;
-        fi++;
-        last = k + 1;
-      }
-      k++;
-    }
-    if (fi < 5) {
-      i = (row_end < n) ? row_end + 1 : row_end;
-      continue;
-    }
-    f[fi] = p + last;
-    L[fi] = row_end - last;
-
-    unsigned gid = 0;
-    for (size_t t = 0; t < L[0]; t++) {
-      if (f[0][t] < '0' || f[0][t] > '9') {
-        gid = 0;
-        break;
-      }
-      gid = gid * 10 + (unsigned)(f[0][t] - '0');
-    }
-    double xadv = parse_d(f[2], L[2]);
-    double yadv = parse_d(f[3], L[3]);
-    double xoff = parse_d(f[4], L[4]);
-    double yoff = parse_d(f[5], L[5]);
-
-    if (FT_Load_Glyph(face, (FT_UInt)gid, FT_LOAD_DEFAULT) == 0) {
-      if (FT_Render_Glyph(face->glyph, aa ? FT_RENDER_MODE_NORMAL
-                                          : FT_RENDER_MODE_MONO) == 0) {
-        FT_GlyphSlot g = face->glyph;
-        int dst_x = (int)floor(pen_x + xoff + g->bitmap_left) - ox;
-        int dst_y = (int)floor(pen_y - yoff - g->bitmap_top) - oy;
-        FT_Bitmap *bm = &g->bitmap;
-
-        if (bm->pixel_mode == FT_PIXEL_MODE_GRAY) {
-          for (int yy = 0; yy < (int)bm->rows; yy++) {
-            int ty = dst_y + yy;
-            if (ty < 0 || ty >= h) continue;
-            const uint8_t *src = bm->buffer + (size_t)yy * bm->pitch;
-            uint8_t *dst = a8 + (size_t)ty * w;
-            for (int xx = 0; xx < (int)bm->width; xx++) {
-              int tx = dst_x + xx;
-              if (tx < 0 || tx >= w) continue;
-              uint8_t s = src[xx];
-              // simple "over" on A8: max
-              uint8_t *pd = &dst[tx];
-              *pd = (s > *pd) ? s : *pd;
-            }
-          }
-        } else if (bm->pixel_mode == FT_PIXEL_MODE_MONO) {
-          for (int yy = 0; yy < (int)bm->rows; yy++) {
-            int ty = dst_y + yy;
-            if (ty < 0 || ty >= h) continue;
-            const uint8_t *src = bm->buffer + (size_t)yy * bm->pitch;
-            uint8_t *dst = a8 + (size_t)ty * w;
-            for (int xx = 0; xx < (int)bm->width; xx++) {
-              int tx = dst_x + xx;
-              if (tx < 0 || tx >= w) continue;
-              int bit = (src[xx >> 3] >> (7 - (xx & 7))) & 1;
-              if (bit) {
-                uint8_t *pd = &dst[tx];
-                *pd = 255;
-              }
-            }
-          }
-        }
-      }
-    }
-
-    pen_x += xadv;
-    pen_y += yadv;
-    i = (row_end < n) ? row_end + 1 : row_end;
-  }
-
-  vl_push_int(S, (int64_t)w);
-  vl_push_int(S, (int64_t)h);
-  vl_push_int(S,
-              (int64_t)(-ox));  // origin_x: where baseline x=0 maps in bitmap
-  vl_push_int(S,
-              (int64_t)(-oy));  // origin_y: where baseline y=0 maps in bitmap
-  vl_push_lstring(S, (const char *)a8, w * h);
-  free(a8);
-  return 5;
-}
-
-#endif  // real impl
-
-// ---------------------------------------------------------------------
-// Registration
-// ---------------------------------------------------------------------
-static const VL_Reg fontlib[] = {
-    {"init", vlf_init},   {"done", vlf_done},        {"version", vlf_version},
-
-    {"load", vlf_load},   {"free", vlf_free},        {"set_size", vlf_set_size},
-    {"info", vlf_info},
-
-    {"shape", vlf_shape}, {"rasterize", vlf_raster},
-
-    {NULL, NULL}};
-
-void vl_open_fontlib(VL_State *S) { vl_register_lib(S, "font", fontlib); }

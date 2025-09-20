@@ -1,640 +1,448 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// curl.c — Client HTTP(S) C17 complet pour Vitte Light (wrapper libcurl)
+// curl.c — Client HTTP minimal pour Vitte Light (C17, portable)
+// Namespace: "http"
 //
-// Capacités :
-// - HTTP/1.1 et HTTP/2 (ALPN/TLS) si supporté par libcurl
-// - GET, POST, PUT, DELETE, HEAD, méthode personnalisée
-// - Suivi de redirections, timeouts, proxy, auth Basic, en-têtes
-// - TLS: vérification peer/host, CA bundle/path personnalisable
-// - Décompression auto (gzip/deflate/br) via libcurl
-// - Écriture mémoire (buffer) ou fichier, callbacks de progression
-// - Extraction métadonnées: code HTTP, URL effective, version HTTP, timings
-// - Multi-plateforme (POSIX/Windows)
-// - Fallback propres si libcurl n’est pas disponible (stubs ENOSYS)
+// Build:
+//   Avec libcurl (recommandé):
+//     cc -std=c17 -O2 -Wall -Wextra -pedantic -DVL_HAVE_LIBCURL curl.c -lcurl -c
+//   Sans libcurl (fallback via binaire `curl`):
+//     cc -std=c17 -O2 -Wall -Wextra -pedantic -c curl.c
 //
-// Dépendances :
-//   - libcurl (>= 7.58+ recommandé), headers <curl/curl.h>
-//   - includes/auxlib.h (AUX_* + AuxBuffer + AuxStatus)
-//   - includes/curl.h (facultatif, sinon prototypes internes)
-// Build (exemple) :
-//   cc -std=c17 -O2 -Wall -Wextra -pedantic -DVL_HAVE_LIBCURL -c curl.c
-//   cc ... curl.o -lcurl
+// API:
+//   // Erreur thread-locale (NULL si aucune):
+//   const char* http_err(void);
 //
-// Remarque : Cette implémentation n’impose pas d’allocation globale ; seule
-// curl_global_init/cleanup est exposée pour initialiser libcurl au lancement.
+//   // GET dans mémoire (alloue, à libérer par free()):
+//   int http_get(const char* url,
+//                const char* headers_csv,   // ex: "Accept: application/json,Authorization: Bearer xyz"
+//                long timeout_ms,           // 0 = défaut (30s)
+//                char** out_data, size_t* out_size);
+//
+//   // POST binaire dans mémoire (Content-Type optionnel, ex: "application/json"):
+//   int http_post(const char* url,
+//                 const void* body, size_t body_len, const char* content_type,
+//                 const char* headers_csv,
+//                 long timeout_ms,
+//                 char** out_data, size_t* out_size);
+//
+//   // Téléchargement direct vers fichier:
+//   int http_download_file(const char* url, const char* out_path, long timeout_ms);
+//
+// Notes:
+//   - User-Agent par défaut: "VitteLight/0.1".
+//   - Vérification TLS activée (fallback CLI: --proto-default https, --fail, --tlsv1.2).
+//   - headers_csv: liste séparée par virgules. Espaces tolérés.
 
-#include "curl.h"  // si absent, voir prototypes internes plus bas
-
-#include <errno.h>
-#include <inttypes.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
+#include <errno.h>
 
-#include "auxlib.h"
-
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#if defined(_WIN32)
+  #define HTTP_THREAD_LOCAL __declspec(thread)
+  #define PATH_SEP '\\'
+#else
+  #define HTTP_THREAD_LOCAL __thread
+  #define PATH_SEP '/'
+  #include <unistd.h>
 #endif
 
-#ifdef VL_HAVE_LIBCURL
+#ifndef HTTP_DEFAULT_TIMEOUT_MS
+#define HTTP_DEFAULT_TIMEOUT_MS 30000L
+#endif
+
+static HTTP_THREAD_LOCAL char g_http_err[256];
+static void http_set_err(const char* s){
+    if (!s) { g_http_err[0] = '\0'; return; }
+    snprintf(g_http_err, sizeof(g_http_err), "%s", s);
+}
+const char* http_err(void){ return g_http_err[0] ? g_http_err : NULL; }
+
+// -------- util mémoire --------
+typedef struct { char* p; size_t n, cap; } mem_t;
+static int mem_init(mem_t* m){ m->p=NULL; m->n=0; m->cap=0; return 0; }
+static int mem_reserve(mem_t* m, size_t more){
+    size_t need = m->n + more + 1;
+    if (need <= m->cap) return 0;
+    size_t ncap = m->cap? m->cap*2 : 4096;
+    while (ncap < need) ncap *= 2;
+    char* np = (char*)realloc(m->p, ncap);
+    if (!np) return -1;
+    m->p=np; m->cap=ncap; return 0;
+}
+static int mem_append(mem_t* m, const void* buf, size_t len){
+    if (len==0) return 0;
+    if (mem_reserve(m, len)!=0) return -1;
+    memcpy(m->p + m->n, buf, len);
+    m->n += len; m->p[m->n] = '\0';
+    return 0;
+}
+static void mem_move_out(mem_t* m, char** out, size_t* out_sz){
+    if (out) *out = m->p; else free(m->p);
+    if (out_sz) *out_sz = m->n;
+    m->p=NULL; m->n=0; m->cap=0;
+}
+
+// -------- parser headers_csv simple --------
+static char** split_headers(const char* csv, size_t* out_count){
+    *out_count = 0;
+    if (!csv || !*csv) return NULL;
+    // Compter virgules
+    size_t cnt = 1;
+    for (const char* p=csv; *p; ++p) if (*p==',') cnt++;
+    char** arr = (char**)calloc(cnt, sizeof(char*));
+    if (!arr) return NULL;
+    const char* s = csv;
+    size_t i=0;
+    while (*s && i<cnt) {
+        const char* e = strchr(s, ',');
+        size_t len = e? (size_t)(e - s) : strlen(s);
+        // trim espaces
+        while (len && (*s==' '||*s=='\t')) { s++; len--; }
+        while (len && (s[len-1]==' '||s[len-1]=='\t')) len--;
+        if (len) {
+            arr[i] = (char*)malloc(len+1);
+            if (!arr[i]) { // free partiel
+                for (size_t k=0;k<i;k++) free(arr[k]);
+                free(arr); return NULL;
+            }
+            memcpy(arr[i], s, len); arr[i][len]='\0';
+            i++;
+        }
+        if (!e) break;
+        s = e+1;
+    }
+    *out_count = i;
+    return arr;
+}
+static void free_headers(char** arr, size_t n){ if(!arr) return; for(size_t i=0;i<n;i++) free(arr[i]); free(arr); }
+
+// =====================================================================================
+// = libcurl ==========================================================================
+// =====================================================================================
+#if defined(VL_HAVE_LIBCURL)
 #include <curl/curl.h>
-#endif
 
-#ifndef VL_HTTP_DEFAULT_UA
-#define VL_HTTP_DEFAULT_UA "VitteLight/0.1 (+https://example.invalid)"
-#endif
-
-#ifndef VL_HTTP_MAX_URL
-#define VL_HTTP_MAX_URL 2048
-#endif
-
-#ifndef VL_HTTP_MAX_ERR
-#define VL_HTTP_MAX_ERR 256
-#endif
-
-// ======================================================================
-// API publique minimale (si includes/curl.h non fourni)
-// ======================================================================
-#ifndef VITTE_LIGHT_INCLUDES_CURL_H
-#define VITTE_LIGHT_INCLUDES_CURL_H 1
-
-typedef struct {
-  const char *name;   // "Header-Name"
-  const char *value;  // "value"
-} VlReqHeader;
-
-typedef int (*VlHttpProgressCb)(double dltotal, double dlnow, double ultotal,
-                                double ulnow, void *user);
-
-typedef size_t (*VlHttpWriteCb)(const void *data, size_t len, void *user);
-
-typedef struct {
-  // Requête
-  const char *url;     // requis
-  const char *method;  // "GET" par défaut
-  const void *body;
-  size_t body_len;          // POST/PUT payload
-  const char *upload_path;  // PUT upload depuis fichier (exclusif avec body)
-  const VlReqHeader *headers;
-  size_t headers_len;
-  const char *content_type;  // si non spécifié via headers
-  const char *user_agent;    // défaut VL_HTTP_DEFAULT_UA
-  const char *proxy;         // ex: "http://user:pass@host:port"
-  const char *auth_basic;    // ex: "user:pass"
-  const char *ca_path;       // chemin bundle CA ou certificat
-  const char *range;         // ex: "0-1023"
-  long timeout_ms;           // 0 = pas de timeout
-  long connect_timeout_ms;   // 0 = pas de timeout
-  long max_redirects;  // -1 = libcurl défaut, 0 = pas de redir, >0 = limite
-  unsigned follow_redirects : 1;
-  unsigned verify_peer : 1;  // défaut 1
-  unsigned verify_host : 1;  // défaut 2 (strict)
-  unsigned http2 : 1;        // tenter HTTP/2
-  unsigned no_signal : 1;    // CURLOPT_NOSIGNAL
-  // Sortie
-  const char *download_path;  // si non NULL, écrire dans ce fichier
-  VlHttpWriteCb write_cb;
-  void *write_ud;  // sinon accumulateur mémoire
-  VlHttpProgressCb progress_cb;
-  void *progress_ud;
-} VlHttpRequest;
-
-typedef struct {
-  long status;          // code HTTP
-  AuxBuffer body;       // rempli si pas de write_cb/download_path
-  char *effective_url;  // alloué dynamiquement
-  char *ip;             // adresse IP effective si dispos
-  long http_version;    // 10=1.0, 11=1.1, 20=2.0, etc. (voir libcurl)
-  double total_time_ms;
-  double namelookup_ms, connect_ms, appconnect_ms, pretransfer_ms,
-      starttransfer_ms;
-  uint64_t downloaded, uploaded;
-  // En-têtes de réponse brutes concaténées (option simple)
-  AuxBuffer headers_raw;  // CRLF-joined, si capturé
-} VlHttpResponse;
-
-// Init/Shutdown libcurl
-AuxStatus vl_http_global_init(void);
-void vl_http_global_cleanup(void);
-
-// Exécution d’une requête générique
-AuxStatus vl_http_execute(const VlHttpRequest *req, VlHttpResponse *resp);
-
-// Helpers simples
-AuxStatus vl_http_get(const char *url, VlHttpResponse *resp, long timeout_ms);
-AuxStatus vl_http_post(const char *url, const void *data, size_t len,
-                       const char *content_type, VlHttpResponse *resp,
-                       long timeout_ms);
-AuxStatus vl_http_download_file(const char *url, const char *path,
-                                long timeout_ms);
-
-// Libération des ressources de réponse
-void vl_http_response_free(VlHttpResponse *resp);
-
-#endif  // VITTE_LIGHT_INCLUDES_CURL_H
-
-// ======================================================================
-// Implémentation
-// ======================================================================
-
-static void resp_init(VlHttpResponse *r) {
-  if (!r) return;
-  memset(r, 0, sizeof *r);
+static size_t write_cb(void* ptr, size_t sz, size_t nm, void* userdata){
+    mem_t* m = (mem_t*)userdata;
+    size_t n = sz*nm;
+    return mem_append(m, ptr, n)==0 ? n : 0;
 }
 
-static void resp_free(VlHttpResponse *r) {
-  if (!r) return;
-  aux_buffer_free(&r->body);
-  aux_buffer_free(&r->headers_raw);
-  if (r->effective_url) {
-    free(r->effective_url);
-    r->effective_url = NULL;
-  }
-  if (r->ip) {
-    free(r->ip);
-    r->ip = NULL;
-  }
+static CURL* easy_common(const char* url, long timeout_ms, struct curl_slist** hdrs, const char* headers_csv){
+    CURL* h = curl_easy_init();
+    if (!h) { http_set_err("curl_easy_init failed"); return NULL; }
+    curl_easy_setopt(h, CURLOPT_URL, url);
+    curl_easy_setopt(h, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(h, CURLOPT_USERAGENT, "VitteLight/0.1");
+    curl_easy_setopt(h, CURLOPT_FAILONERROR, 1L);
+    curl_easy_setopt(h, CURLOPT_SSL_VERIFYPEER, 1L);
+    curl_easy_setopt(h, CURLOPT_SSL_VERIFYHOST, 2L);
+    curl_easy_setopt(h, CURLOPT_ACCEPT_ENCODING, ""); // autorise gzip/deflate
+    long to = timeout_ms > 0 ? timeout_ms : HTTP_DEFAULT_TIMEOUT_MS;
+    curl_easy_setopt(h, CURLOPT_TIMEOUT_MS, to);
+
+    // headers optionnels
+    if (headers_csv && *headers_csv) {
+        size_t n=0; char** H = split_headers(headers_csv, &n);
+        for (size_t i=0;i<n;i++) *hdrs = curl_slist_append(*hdrs, H[i]);
+        free_headers(H, n);
+        if (*hdrs) curl_easy_setopt(h, CURLOPT_HTTPHEADER, *hdrs);
+    }
+    return h;
 }
 
-void vl_http_response_free(VlHttpResponse *r) { resp_free(r); }
-
-// ----------------------------------------------
-// Stubs si libcurl indisponible
-// ----------------------------------------------
-#ifndef VL_HAVE_LIBCURL
-
-AuxStatus vl_http_global_init(void) { return AUX_ENOSYS; }
-void vl_http_global_cleanup(void) {}
-
-AuxStatus vl_http_execute(const VlHttpRequest *req, VlHttpResponse *resp) {
-  (void)req;
-  (void)resp;
-  return AUX_ENOSYS;
+static int perform_to_mem(CURL* h, mem_t* m){
+    curl_easy_setopt(h, CURLOPT_WRITEFUNCTION, write_cb);
+    curl_easy_setopt(h, CURLOPT_WRITEDATA, m);
+    CURLcode rc = curl_easy_perform(h);
+    if (rc != CURLE_OK) {
+        http_set_err(curl_easy_strerror(rc));
+        return -1;
+    }
+    long code=0; curl_easy_getinfo(h, CURLINFO_RESPONSE_CODE, &code);
+    if (code >= 400) { http_set_err("HTTP error"); return -1; }
+    return 0;
 }
 
-AuxStatus vl_http_get(const char *url, VlHttpResponse *resp, long timeout_ms) {
-  (void)url;
-  (void)resp;
-  (void)timeout_ms;
-  return AUX_ENOSYS;
+int http_get(const char* url, const char* headers_csv, long timeout_ms, char** out_data, size_t* out_size){
+    if (!url || !out_data || !out_size) { errno=EINVAL; return -1; }
+    http_set_err(NULL);
+    mem_t m; mem_init(&m);
+    struct curl_slist* sl=NULL;
+    CURL* h = easy_common(url, timeout_ms, &sl, headers_csv);
+    if (!h) { errno=EIO; return -1; }
+    int rc = perform_to_mem(h, &m);
+    curl_slist_free_all(sl);
+    curl_easy_cleanup(h);
+    if (rc!=0) { free(m.p); errno=EIO; return -1; }
+    mem_move_out(&m, out_data, out_size);
+    return 0;
 }
 
-AuxStatus vl_http_post(const char *url, const void *data, size_t len,
-                       const char *content_type, VlHttpResponse *resp,
-                       long timeout_ms) {
-  (void)url;
-  (void)data;
-  (void)len;
-  (void)content_type;
-  (void)resp;
-  (void)timeout_ms;
-  return AUX_ENOSYS;
+int http_post(const char* url,
+              const void* body, size_t body_len, const char* content_type,
+              const char* headers_csv,
+              long timeout_ms,
+              char** out_data, size_t* out_size)
+{
+    if (!url || (!body && body_len) || !out_data || !out_size) { errno=EINVAL; return -1; }
+    http_set_err(NULL);
+    mem_t m; mem_init(&m);
+    struct curl_slist* sl=NULL;
+    CURL* h = easy_common(url, timeout_ms, &sl, headers_csv);
+    if (!h) { errno=EIO; return -1; }
+    curl_easy_setopt(h, CURLOPT_POST, 1L);
+    curl_easy_setopt(h, CURLOPT_POSTFIELDS, body? body : "");
+    curl_easy_setopt(h, CURLOPT_POSTFIELDSIZE, (long)body_len);
+    if (content_type && *content_type) {
+        char tmp[128];
+        snprintf(tmp, sizeof(tmp), "Content-Type: %s", content_type);
+        sl = curl_slist_append(sl, tmp);
+        curl_easy_setopt(h, CURLOPT_HTTPHEADER, sl);
+    }
+    int rc = perform_to_mem(h, &m);
+    curl_slist_free_all(sl);
+    curl_easy_cleanup(h);
+    if (rc!=0) { free(m.p); errno=EIO; return -1; }
+    mem_move_out(&m, out_data, out_size);
+    return 0;
 }
 
-AuxStatus vl_http_download_file(const char *url, const char *path,
-                                long timeout_ms) {
-  (void)url;
-  (void)path;
-  (void)timeout_ms;
-  return AUX_ENOSYS;
+int http_download_file(const char* url, const char* out_path, long timeout_ms){
+    if (!url || !out_path) { errno=EINVAL; return -1; }
+    http_set_err(NULL);
+    FILE* f = fopen(out_path, "wb");
+    if (!f) return -1;
+    struct curl_slist* sl=NULL;
+    CURL* h = easy_common(url, timeout_ms, &sl, NULL);
+    if (!h) { fclose(f); errno=EIO; return -1; }
+    curl_easy_setopt(h, CURLOPT_WRITEDATA, f);
+    curl_easy_setopt(h, CURLOPT_WRITEFUNCTION, NULL); // fwrite direct
+    CURLcode rc = curl_easy_perform(h);
+    long code=0; curl_easy_getinfo(h, CURLINFO_RESPONSE_CODE, &code);
+    curl_slist_free_all(sl);
+    curl_easy_cleanup(h);
+    int ok = (rc==CURLE_OK && code<400) ? 0 : -1;
+    if (ok!=0) { http_set_err(rc!=CURLE_OK ? curl_easy_strerror(rc) : "HTTP error"); }
+    if (f) { if (fflush(f)!=0) ok=-1; if (fclose(f)!=0) ok=-1; }
+    if (ok!=0) { (void)remove(out_path); errno=EIO; }
+    return ok;
 }
 
-#else  // VL_HAVE_LIBCURL
-
-// ----------------------------------------------
-// libcurl helpers
-// ----------------------------------------------
-
-AuxStatus vl_http_global_init(void) {
-  static int inited = 0;
-  if (inited) return AUX_OK;
-  CURLcode cc = curl_global_init(CURL_GLOBAL_DEFAULT);
-  if (cc != CURLE_OK) return AUX_EIO;
-  inited = 1;
-  return AUX_OK;
-}
-
-void vl_http_global_cleanup(void) { curl_global_cleanup(); }
-
-typedef struct {
-  AuxBuffer *buf;
-} WriteMemCtx;
-
-static size_t write_mem_cb(char *ptr, size_t sz, size_t nmemb, void *ud) {
-  size_t n = sz * nmemb;
-  if (n == 0) return 0;
-  WriteMemCtx *ctx = (WriteMemCtx *)ud;
-  AuxBuffer *b = ctx->buf;
-  size_t old = b->len;
-  uint8_t *p = (uint8_t *)realloc(b->data, old + n + 1);
-  if (!p) return 0;
-  b->data = p;
-  memcpy(b->data + old, ptr, n);
-  b->len = old + n;
-  b->data[b->len] = 0;
-  return n;
-}
-
-typedef struct {
-  FILE *f;
-} WriteFileCtx;
-
-static size_t write_file_cb(char *ptr, size_t sz, size_t nmemb, void *ud) {
-  size_t n = sz * nmemb;
-  if (n == 0) return 0;
-  WriteFileCtx *ctx = (WriteFileCtx *)ud;
-  return fwrite(ptr, 1, n, ctx->f);
-}
-
-typedef struct {
-  AuxBuffer *headers;
-} HeaderCollectCtx;
-
-static size_t header_collect_cb(char *ptr, size_t sz, size_t nmemb, void *ud) {
-  size_t n = sz * nmemb;
-  if (n == 0) return 0;
-  HeaderCollectCtx *ctx = (HeaderCollectCtx *)ud;
-  // Accumule brut (libcurl inclut déjà CRLF)
-  size_t old = ctx->headers->len;
-  uint8_t *p = (uint8_t *)realloc(ctx->headers->data, old + n + 1);
-  if (!p) return 0;
-  ctx->headers->data = p;
-  memcpy(ctx->headers->data + old, ptr, n);
-  ctx->headers->len = old + n;
-  ctx->headers->data[ctx->headers->len] = 0;
-  return n;
-}
-
-typedef struct {
-  VlHttpProgressCb cb;
-  void *ud;
-} ProgressCtx;
-
-static int xferinfo_cb(void *ud, curl_off_t dltotal, curl_off_t dlnow,
-                       curl_off_t ultotal, curl_off_t ulnow) {
-  ProgressCtx *pc = (ProgressCtx *)ud;
-  if (!pc || !pc->cb) return 0;
-  return pc->cb((double)dltotal, (double)dlnow, (double)ultotal, (double)ulnow,
-                pc->ud);
-}
-
-static CURLcode set_common_opts(
-    CURL *c, const VlHttpRequest *req, char errbuf[VL_HTTP_MAX_ERR],
-    struct curl_slist **out_headers, FILE **out_file, WriteMemCtx *mem_ctx,
-    WriteFileCtx *file_ctx, HeaderCollectCtx *hdr_ctx, ProgressCtx *prog_ctx) {
-  (void)out_file;
-  curl_easy_setopt(c, CURLOPT_ERRORBUFFER, errbuf);
-  curl_easy_setopt(c, CURLOPT_URL, req->url);
-  curl_easy_setopt(c, CURLOPT_ACCEPT_ENCODING, "");  // auto
-  curl_easy_setopt(c, CURLOPT_USERAGENT,
-                   req->user_agent ? req->user_agent : VL_HTTP_DEFAULT_UA);
-  curl_easy_setopt(c, CURLOPT_NOSIGNAL,
-                   req->no_signal ? 1L : 1L);  // toujours 1L safe
-
-  // Méthode
-  const char *m = req->method ? req->method : "GET";
-  if (strcmp(m, "GET") == 0) {
-    curl_easy_setopt(c, CURLOPT_HTTPGET, 1L);
-  } else if (strcmp(m, "POST") == 0) {
-    curl_easy_setopt(c, CURLOPT_POST, 1L);
-  } else if (strcmp(m, "PUT") == 0) {
-    curl_easy_setopt(c, CURLOPT_UPLOAD, 1L);
-  } else if (strcmp(m, "HEAD") == 0) {
-    curl_easy_setopt(c, CURLOPT_NOBODY, 1L);
-  } else if (strcmp(m, "DELETE") == 0) {
-    curl_easy_setopt(c, CURLOPT_CUSTOMREQUEST, "DELETE");
-  } else {
-    curl_easy_setopt(c, CURLOPT_CUSTOMREQUEST, m);
-  }
-
-  // Corps (body) vs upload fichier
-  if (req->body && req->body_len > 0 &&
-      (strcmp(m, "POST") == 0 || strcmp(m, "PUT") == 0 || req->method)) {
-    curl_easy_setopt(c, CURLOPT_POSTFIELDS, req->body);
-    curl_easy_setopt(c, CURLOPT_POSTFIELDSIZE, (long)req->body_len);
-  } else if (req->upload_path && strcmp(m, "PUT") == 0) {
-    FILE *f = fopen(req->upload_path, "rb");
-    if (!f) return CURLE_READ_ERROR;
-    *out_file = f;  // réutilisé comme in-file
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    rewind(f);
-    curl_easy_setopt(c, CURLOPT_READDATA, f);
-    curl_easy_setopt(c, CURLOPT_INFILESIZE_LARGE, (curl_off_t)sz);
-  }
-
-  // En-têtes
-  struct curl_slist *hs = NULL;
-  if (req->content_type) {
-    char line[256];
-    snprintf(line, sizeof line, "Content-Type: %s", req->content_type);
-    hs = curl_slist_append(hs, line);
-  }
-  for (size_t i = 0; i < req->headers_len; i++) {
-    const VlReqHeader *h = &req->headers[i];
-    if (!h->name || !*h->name) continue;
-    char *line = NULL;
-    size_t need = strlen(h->name) + 2 + (h->value ? strlen(h->value) : 0) + 1;
-    line = (char *)malloc(need);
-    if (!line) continue;
-    if (h->value)
-      snprintf(line, need, "%s: %s", h->name, h->value);
-    else
-      snprintf(line, need, "%s:", h->name);
-    hs = curl_slist_append(hs, line);
-    free(line);
-  }
-  if (hs) {
-    curl_easy_setopt(c, CURLOPT_HTTPHEADER, hs);
-  }
-  *out_headers = hs;
-
-  // TLS
-  curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, req->verify_peer ? 1L : 0L);
-  curl_easy_setopt(c, CURLOPT_SSL_VERIFYHOST, req->verify_host ? 2L : 0L);
-  if (req->ca_path && *req->ca_path) {
-    curl_easy_setopt(c, CURLOPT_CAINFO, req->ca_path);  // fichier
-    curl_easy_setopt(c, CURLOPT_CAPATH, req->ca_path);  // répertoire
-  }
-
-  // HTTP version
-  if (req->http2) {
-#if defined(CURL_HTTP_VERSION_2TLS)
-    curl_easy_setopt(c, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2TLS);
-#elif defined(CURL_HTTP_VERSION_2_0)
-    curl_easy_setopt(c, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2_0);
 #else
-    curl_easy_setopt(c, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
-#endif
-  }
+// =====================================================================================
+// = Fallback via binaire `curl` =======================================================
+// =====================================================================================
 
-  // Proxy
-  if (req->proxy && *req->proxy) {
-    curl_easy_setopt(c, CURLOPT_PROXY, req->proxy);
-  }
-
-  // Auth
-  if (req->auth_basic && *req->auth_basic) {
-    curl_easy_setopt(c, CURLOPT_HTTPAUTH, (long)CURLAUTH_BASIC);
-    curl_easy_setopt(c, CURLOPT_USERPWD, req->auth_basic);
-  }
-
-  // Redirects
-  if (req->follow_redirects) {
-    curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
-    if (req->max_redirects > 0) {
-      curl_easy_setopt(c, CURLOPT_MAXREDIRS, req->max_redirects);
-    }
-  }
-
-  // Range
-  if (req->range && *req->range) {
-    curl_easy_setopt(c, CURLOPT_RANGE, req->range);
-  }
-
-  // Timeouts
-  if (req->timeout_ms > 0)
-    curl_easy_setopt(c, CURLOPT_TIMEOUT_MS, req->timeout_ms);
-  if (req->connect_timeout_ms > 0)
-    curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT_MS, req->connect_timeout_ms);
-
-  // Écriture corps
-  if (req->download_path && !req->write_cb) {
-    FILE *f = fopen(req->download_path, "wb");
-    if (!f) return CURLE_WRITE_ERROR;
-    file_ctx->f = f;
-    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, write_file_cb);
-    curl_easy_setopt(c, CURLOPT_WRITEDATA, file_ctx);
-  } else if (req->write_cb) {
-    // callback utilisateur
-    curl_easy_setopt(
-        c, CURLOPT_WRITEFUNCTION,
-        +[](char *ptr, size_t sz, size_t nm, void *ud) -> size_t {
-          VlHttpWriteCb cb = (VlHttpWriteCb)ud;
-          (void)cb;
-          // Impossible d’envoyer user directement ici ; on passe via WRITEDATA
-          return 0;
-        });
-    // Ce chemin n’est pas portable en C17 sans trampoline. On gère via
-    // WRITEDATA = pair(cb, ud)
-    struct Pair {
-      VlHttpWriteCb cb;
-      void *ud;
-    } *pair = malloc(sizeof *pair);
-    if (!pair) return CURLE_WRITE_ERROR;
-    pair->cb = req->write_cb;
-    pair->ud = req->write_ud;
-    curl_easy_setopt(c, CURLOPT_WRITEDATA, pair);
-    // Remplace proprement le writefunction par un wrapper C
-    curl_easy_setopt(
-        c, CURLOPT_WRITEFUNCTION,
-        +[](char *ptr, size_t sz, size_t nm, void *ud) -> size_t {
-          size_t n = sz * nm;
-          struct Pair {
-            VlHttpWriteCb cb;
-            void *ud;
-          } *p = (struct Pair *)ud;
-          if (!p || !p->cb) return n;
-          return p->cb(ptr, n, p->ud);
-        });
-  } else {
-    mem_ctx->buf = NULL;  // init plus bas
-    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, write_mem_cb);
-    curl_easy_setopt(c, CURLOPT_WRITEDATA, mem_ctx);
-  }
-
-  // En-têtes de réponse
-  curl_easy_setopt(c, CURLOPT_HEADERFUNCTION, header_collect_cb);
-  curl_easy_setopt(c, CURLOPT_HEADERDATA, hdr_ctx);
-
-  // Progression
-#if LIBCURL_VERSION_NUM >= 0x072000
-  if (req->progress_cb) {
-    curl_easy_setopt(c, CURLOPT_NOPROGRESS, 0L);
-    curl_easy_setopt(c, CURLOPT_XFERINFOFUNCTION, xferinfo_cb);
-    curl_easy_setopt(c, CURLOPT_XFERINFODATA, prog_ctx);
-  } else {
-    curl_easy_setopt(c, CURLOPT_NOPROGRESS, 1L);
-  }
+static int have_cli(void){
+#if defined(_WIN32)
+    return system("where curl >NUL 2>NUL") == 0;
 #else
-  curl_easy_setopt(c, CURLOPT_NOPROGRESS, 1L);
+    return system("command -v curl >/dev/null 2>&1") == 0;
 #endif
-
-  return CURLE_OK;
 }
 
-AuxStatus vl_http_execute(const VlHttpRequest *req, VlHttpResponse *resp) {
-  if (!req || !req->url || !resp) return AUX_EINVAL;
-  AuxStatus st = vl_http_global_init();
-  if (st != AUX_OK) return st;
-
-  resp_init(resp);
-  CURL *c = curl_easy_init();
-  if (!c) return AUX_EIO;
-
-  char errbuf[VL_HTTP_MAX_ERR] = {0};
-  struct curl_slist *hs = NULL;
-  FILE *file_in = NULL;   // pour PUT
-  FILE *file_out = NULL;  // pour download
-  WriteMemCtx mem_ctx = {.buf = &resp->body};
-  WriteFileCtx file_ctx = {.f = NULL};
-  HeaderCollectCtx hdr_ctx = {.headers = &resp->headers_raw};
-  ProgressCtx prog_ctx = {.cb = req->progress_cb, .ud = req->progress_ud};
-
-  CURLcode cc;
-
-  // Si écriture fichier, on ouvre ici pour pouvoir fermer même si
-  // set_common_opts échoue
-  if (req->download_path && !req->write_cb) {
-    file_out = fopen(req->download_path, "wb");
-    if (!file_out) {
-      curl_easy_cleanup(c);
-      return AUX_EIO;
+static void sh_quote(char* out, size_t n, const char* in){
+#if defined(_WIN32)
+    // "C:\path with spaces"
+    snprintf(out, n, "\"%s\"", in? in:"");
+#else
+    if (!in) { snprintf(out,n,"''"); return; }
+    size_t used=0; out[0]='\0';
+    if (used+1<n) out[used++]='\'', out[used]='\0';
+    for (const char* p=in; *p && used+4<n; ++p){
+        if (*p=='\'') used += snprintf(out+used, n-used, "'\\''");
+        else out[used++]=*p, out[used]='\0';
     }
-    file_ctx.f = file_out;
-  }
-
-  cc = set_common_opts(c, req, errbuf, &hs, &file_in, &mem_ctx, &file_ctx,
-                       &hdr_ctx, &prog_ctx);
-  if (cc != CURLE_OK) {
-    if (hs) curl_slist_free_all(hs);
-    if (file_in) fclose(file_in);
-    if (file_out) fclose(file_out);
-    curl_easy_cleanup(c);
-    return AUX_EIO;
-  }
-
-  cc = curl_easy_perform(c);
-
-  // Récup infos
-  long code = 0;
-  double tm = 0, v = 0;
-  char *eff = NULL;
-  char *ip = NULL;
-  long httpver = 0;
-  curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &code);
-  curl_easy_getinfo(c, CURLINFO_TOTAL_TIME, &tm);
-  curl_easy_getinfo(c, CURLINFO_NAMELOOKUP_TIME, &v);
-  resp->namelookup_ms = v * 1000.0;
-  curl_easy_getinfo(c, CURLINFO_CONNECT_TIME, &v);
-  resp->connect_ms = v * 1000.0;
-#if LIBCURL_VERSION_NUM >= 0x071000
-  curl_easy_getinfo(c, CURLINFO_APPCONNECT_TIME, &v);
-  resp->appconnect_ms = v * 1000.0;
+    if (used+1<n) out[used++]='\'', out[used]='\0';
 #endif
-  curl_easy_getinfo(c, CURLINFO_PRETRANSFER_TIME, &v);
-  resp->pretransfer_ms = v * 1000.0;
-  curl_easy_getinfo(c, CURLINFO_STARTTRANSFER_TIME, &v);
-  resp->starttransfer_ms = v * 1000.0;
-  curl_easy_getinfo(c, CURLINFO_EFFECTIVE_URL, &eff);
-#if LIBCURL_VERSION_NUM >= 0x073D00  // 7.61.0
-  curl_easy_getinfo(c, CURLINFO_PRIMARY_IP, &ip);
-#endif
-#if LIBCURL_VERSION_NUM >= 0x072100  // 7.33.0
-  curl_easy_getinfo(c, CURLINFO_HTTP_VERSION, &httpver);
-#endif
-  double dsz = 0, usz = 0;
-  curl_easy_getinfo(c, CURLINFO_SIZE_DOWNLOAD, &dsz);
-  curl_easy_getinfo(c, CURLINFO_SIZE_UPLOAD, &usz);
+}
 
-  resp->status = code;
-  resp->total_time_ms = tm * 1000.0;
-  resp->downloaded = (uint64_t)(dsz < 0 ? 0 : dsz);
-  resp->uploaded = (uint64_t)(usz < 0 ? 0 : usz);
-  resp->http_version = httpver;
-  if (eff) {
-    size_t n = strlen(eff);
-    resp->effective_url = (char *)malloc(n + 1);
-    if (resp->effective_url) {
-      memcpy(resp->effective_url, eff, n + 1);
+static int read_whole(const char* path, char** out, size_t* out_sz){
+    *out=NULL; if(out_sz) *out_sz=0;
+    FILE* f=fopen(path,"rb"); if(!f) return -1;
+    if (fseek(f,0,SEEK_END)!=0){ fclose(f); return -1; }
+    long L=ftell(f); if(L<0){ fclose(f); return -1; }
+    if (fseek(f,0,SEEK_SET)!=0){ fclose(f); return -1; }
+    char* buf=(char*)malloc((size_t)L+1); if(!buf){ fclose(f); return -1; }
+    size_t rd=fread(buf,1,(size_t)L,f); fclose(f);
+    if (rd!=(size_t)L){ free(buf); return -1; }
+    buf[L]='\0'; *out=buf; if(out_sz)*out_sz=(size_t)L; return 0;
+}
+
+static int run_cmd(const char* cmd){
+#if defined(_WIN32)
+    int rc = system(cmd);
+    return rc==0 ? 0 : -1;
+#else
+    int rc = system(cmd);
+    if (rc==-1) return -1;
+    if (WIFEXITED(rc) && WEXITSTATUS(rc)==0) return 0;
+    return -1;
+#endif
+}
+
+static int build_headers_args(char* dst, size_t n, const char* headers_csv){
+    dst[0]='\0';
+    if (!headers_csv || !*headers_csv) return 0;
+    size_t count=0; char** H = split_headers(headers_csv, &count);
+    for (size_t i=0;i<count;i++){
+#if defined(_WIN32)
+        char q[512]; sh_quote(q,sizeof(q),H[i]);
+        int r = snprintf(dst+strlen(dst), n - strlen(dst), " -H %s", q);
+#else
+        char q[512]; sh_quote(q,sizeof(q),H[i]);
+        int r = snprintf(dst+strlen(dst), n - strlen(dst), " -H %s", q);
+#endif
+        if (r<0 || (size_t)r >= n - strlen(dst)) { free_headers(H,count); return -1; }
     }
-  }
-  if (ip) {
-    size_t n = strlen(ip);
-    resp->ip = (char *)malloc(n + 1);
-    if (resp->ip) {
-      memcpy(resp->ip, ip, n + 1);
+    free_headers(H,count);
+    return 0;
+}
+
+int http_get(const char* url, const char* headers_csv, long timeout_ms, char** out_data, size_t* out_size){
+    if (!url || !out_data || !out_size) { errno=EINVAL; return -1; }
+    http_set_err(NULL);
+    if (!have_cli()) { http_set_err("curl CLI not found"); errno=ENOENT; return -1; }
+
+    char qurl[1024]; sh_quote(qurl,sizeof(qurl),url);
+    char hdr[2048]; if (build_headers_args(hdr,sizeof(hdr),headers_csv)!=0) { errno=E2BIG; return -1; }
+
+#if defined(_WIN32)
+    char tmp[] = "curl_out_XXXXXX.tmp";
+    // crude unique name: append PID
+    snprintf(tmp, sizeof(tmp), "curl_out_%lu.tmp", (unsigned long)GetCurrentProcessId());
+#else
+    char tmp[64]; snprintf(tmp,sizeof(tmp), "/tmp/vl_curl_%d.out", getpid());
+#endif
+
+    long to = timeout_ms>0? timeout_ms : HTTP_DEFAULT_TIMEOUT_MS;
+#if defined(_WIN32)
+    char cmd[4096];
+    snprintf(cmd,sizeof(cmd),
+        "curl --proto-default https --silent --show-error --fail --location "
+        "--max-time %.0f --compressed -A \"VitteLight/0.1\"%s %s > %s 2>NUL",
+        (double)(to/1000.0), hdr, qurl, tmp);
+#else
+    char cmd[4096];
+    snprintf(cmd,sizeof(cmd),
+        "curl --proto-default https --silent --show-error --fail --location "
+        "--max-time %.0f --compressed -A 'VitteLight/0.1'%s %s > %s 2>/dev/null",
+        (double)(to/1000.0), hdr, qurl, tmp);
+#endif
+    if (run_cmd(cmd)!=0) { http_set_err("curl failed"); (void)remove(tmp); errno=EIO; return -1; }
+    int rc = read_whole(tmp, out_data, out_size);
+    (void)remove(tmp);
+    if (rc!=0){ http_set_err("read failed"); errno=EIO; return -1; }
+    return 0;
+}
+
+int http_post(const char* url,
+              const void* body, size_t body_len, const char* content_type,
+              const char* headers_csv,
+              long timeout_ms,
+              char** out_data, size_t* out_size)
+{
+    if (!url || (!body && body_len) || !out_data || !out_size) { errno=EINVAL; return -1; }
+    http_set_err(NULL);
+    if (!have_cli()) { http_set_err("curl CLI not found"); errno=ENOENT; return -1; }
+
+    char qurl[1024]; sh_quote(qurl,sizeof(qurl),url);
+    char hdr[2048]; if (build_headers_args(hdr,sizeof(hdr),headers_csv)!=0) { errno=E2BIG; return -1; }
+
+#if defined(_WIN32)
+    char tf[] = "curl_body_XXXXXX.tmp"; snprintf(tf,sizeof(tf), "curl_body_%lu.tmp",(unsigned long)GetCurrentProcessId());
+    char of[] = "curl_out_XXXXXX.tmp"; snprintf(of,sizeof(of), "curl_out_%lu.tmp",(unsigned long)GetCurrentProcessId());
+#else
+    char tf[64]; snprintf(tf,sizeof(tf), "/tmp/vl_curl_%d.body", getpid());
+    char of[64]; snprintf(of,sizeof(of), "/tmp/vl_curl_%d.out",  getpid());
+#endif
+    // écrire body
+    if (body_len){
+        FILE* f = fopen(tf,"wb"); if(!f){ errno=EIO; return -1; }
+        if (fwrite(body,1,body_len,f) != body_len){ fclose(f); (void)remove(tf); errno=EIO; return -1; }
+        if (fflush(f)!=0 || fclose(f)!=0){ (void)remove(tf); errno=EIO; return -1; }
+    } else {
+        // créer fichier vide
+        FILE* f=fopen(tf,"wb"); if (f) fclose(f);
     }
-  }
 
-  // Nettoyage
-  if (hs) curl_slist_free_all(hs);
-  if (file_in) fclose(file_in);
-  if (file_out) fclose(file_out);
-  curl_easy_cleanup(c);
+    long to = timeout_ms>0? timeout_ms : HTTP_DEFAULT_TIMEOUT_MS;
+    char ctarg[256]="";
+    if (content_type && *content_type){
+        char qct[128]; sh_quote(qct,sizeof(qct),content_type);
+#if defined(_WIN32)
+        snprintf(ctarg,sizeof(ctarg)," -H \"Content-Type: %s\"", content_type);
+#else
+        snprintf(ctarg,sizeof(ctarg)," -H %s%s%s", "'Content-Type: ", content_type, "'");
+#endif
+    }
 
-  if (cc != CURLE_OK) {
-    AUX_LOG_ERROR("HTTP error: %s (code=%d, http=%ld, url=%s)",
-                  errbuf[0] ? errbuf : curl_easy_strerror(cc), (int)cc,
-                  resp->status, req->url);
-    return AUX_EIO;
-  }
-  return AUX_OK;
+#if defined(_WIN32)
+    char qtf[1024]; sh_quote(qtf,sizeof(qtf),tf);
+    char cmd[4096];
+    snprintf(cmd,sizeof(cmd),
+        "curl --proto-default https --silent --show-error --fail --location "
+        "--max-time %.0f --compressed -A \"VitteLight/0.1\"%s%s -X POST --data-binary @%s %s > %s 2>NUL",
+        (double)(to/1000.0), hdr, ctarg, qtf, qurl, of);
+#else
+    char qtf[1024]; sh_quote(qtf,sizeof(qtf),tf);
+    char cmd[4096];
+    snprintf(cmd,sizeof(cmd),
+        "curl --proto-default https --silent --show-error --fail --location "
+        "--max-time %.0f --compressed -A 'VitteLight/0.1'%s%s -X POST --data-binary @%s %s > %s 2>/dev/null",
+        (double)(to/1000.0), hdr, ctarg, qtf, qurl, of);
+#endif
+
+    int ok = run_cmd(cmd);
+    (void)remove(tf);
+    if (ok!=0){ http_set_err("curl failed"); (void)remove(of); errno=EIO; return -1; }
+    int rc = read_whole(of, out_data, out_size);
+    (void)remove(of);
+    if (rc!=0){ http_set_err("read failed"); errno=EIO; return -1; }
+    return 0;
 }
 
-// ----------------------------------------------
-// Helpers simples
-// ----------------------------------------------
+int http_download_file(const char* url, const char* out_path, long timeout_ms){
+    if (!url || !out_path) { errno=EINVAL; return -1; }
+    http_set_err(NULL);
+    if (!have_cli()) { http_set_err("curl CLI not found"); errno=ENOENT; return -1; }
 
-AuxStatus vl_http_get(const char *url, VlHttpResponse *resp, long timeout_ms) {
-  VlHttpRequest r = {0};
-  r.url = url;
-  r.method = "GET";
-  r.timeout_ms = timeout_ms;
-  r.connect_timeout_ms = timeout_ms ? (timeout_ms / 2) : 0;
-  r.follow_redirects = 1;
-  r.max_redirects = 10;
-  r.verify_peer = 1;
-  r.verify_host = 1;
-  r.http2 = 1;
-  r.no_signal = 1;
-  return vl_http_execute(&r, resp);
+    char qurl[1024]; sh_quote(qurl,sizeof(qurl),url);
+    char qout[1024]; sh_quote(qout,sizeof(qout),out_path);
+    long to = timeout_ms>0? timeout_ms : HTTP_DEFAULT_TIMEOUT_MS;
+
+#if defined(_WIN32)
+    char cmd[4096];
+    snprintf(cmd,sizeof(cmd),
+        "curl --proto-default https --silent --show-error --fail --location "
+        "--tlsv1.2 --max-time %.0f --compressed -A \"VitteLight/0.1\" -o %s %s 1>NUL 2>NUL",
+        (double)(to/1000.0), qout, qurl);
+#else
+    char cmd[4096];
+    snprintf(cmd,sizeof(cmd),
+        "curl --proto-default https --silent --show-error --fail --location "
+        "--tlsv1.2 --max-time %.0f --compressed -A 'VitteLight/0.1' -o %s %s >/dev/null 2>&1",
+        (double)(to/1000.0), qout, qurl);
+#endif
+    if (run_cmd(cmd)!=0){ http_set_err("curl failed"); (void)remove(out_path); errno=EIO; return -1; }
+    return 0;
 }
+#endif
 
-AuxStatus vl_http_post(const char *url, const void *data, size_t len,
-                       const char *content_type, VlHttpResponse *resp,
-                       long timeout_ms) {
-  VlHttpRequest r = {0};
-  r.url = url;
-  r.method = "POST";
-  r.body = data;
-  r.body_len = len;
-  r.content_type = content_type ? content_type : "application/octet-stream";
-  r.timeout_ms = timeout_ms;
-  r.connect_timeout_ms = timeout_ms ? (timeout_ms / 2) : 0;
-  r.follow_redirects = 1;
-  r.max_redirects = 10;
-  r.verify_peer = 1;
-  r.verify_host = 1;
-  r.http2 = 1;
-  r.no_signal = 1;
-  return vl_http_execute(&r, resp);
+// -------- Demo optionnel --------
+#ifdef CURL_DEMO
+#include <stdio.h>
+int main(void){
+    char* data=NULL; size_t n=0;
+    if (http_get("https://httpbin.org/get", "Accept: application/json", 5000, &data, &n)==0){
+        printf("GET %zu bytes\n%.*s\n", n, (int)(n>200?n=200:n), data);
+        free(data);
+    } else {
+        fprintf(stderr,"err: %s\n", http_err());
+    }
+    return 0;
 }
-
-AuxStatus vl_http_download_file(const char *url, const char *path,
-                                long timeout_ms) {
-  VlHttpRequest r = {0};
-  r.url = url;
-  r.method = "GET";
-  r.download_path = path;
-  r.timeout_ms = timeout_ms;
-  r.connect_timeout_ms = timeout_ms ? (timeout_ms / 2) : 0;
-  r.follow_redirects = 1;
-  r.max_redirects = 10;
-  r.verify_peer = 1;
-  r.verify_host = 1;
-  r.http2 = 1;
-  r.no_signal = 1;
-
-  VlHttpResponse resp = {0};
-  AuxStatus st = vl_http_execute(&r, &resp);
-  vl_http_response_free(&resp);
-  return st;
-}
-
-#endif  // VL_HAVE_LIBCURL
+#endif

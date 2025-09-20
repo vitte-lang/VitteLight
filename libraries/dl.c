@@ -1,385 +1,357 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // dl.c — Cross-platform dynamic loader for Vitte Light (C17)
-//
-// Features:
-//   - vl_dl_open, vl_dl_open_self, vl_dl_close
-//   - vl_dl_sym (typed safe-ish getter), vl_dl_sym_ptr
-//   - Portable flags: LAZY/NOW, LOCAL/GLOBAL
-//   - Path helpers: try extensions and lib prefixes per OS
-//   - Thread-local last error string
-//
-// Depends: includes/auxlib.h (AuxStatus) and optional includes/dl.h
+// Namespace: "dl"  —  version 1.1 “plus complet”
 //
 // Build:
-//   POSIX:   cc -std=c17 -O2 -Wall -Wextra -pedantic -ldl -c dl.c
-//   Windows: cl /std:c17 /O2 dl.c
+//   POSIX:   cc -std=c17 -O2 -Wall -Wextra -pedantic -c dl.c -ldl
+//   Windows: cl /std:c17 /O2 /W4 /c dl.c
 //
+// What’s new vs minimal:
+//   - dl_open_any(): open by stem or filename, searches common paths.
+//   - Custom search paths: dl_add_search_path, dl_clear_search_paths.
+//   - Helpers: dl_ext, dl_prefix, dl_format_name, dl_join, dl_is_abs, dl_exists.
+//   - Error buffer is thread-local; dl_error() returns NULL if none.
+//   - dl_sym_optional(): returns NULL without setting errno.
+//   - Windows: accepts UTF-8 narrow (ANSI); keep simple.
+//
+// API:
+//   typedef struct dl_lib dl_lib;
+//   const char* dl_ext(void);                 // ".so" | ".dll" | ".dylib"
+//   const char* dl_prefix(void);              // "lib" on POSIX, "" on Windows
+//   int  dl_format_name(char* out, size_t n, const char* stem);
+//   int  dl_join(char* out, size_t n, const char* a, const char* b);
+//   int  dl_is_abs(const char* path);         // 1/0
+//   int  dl_exists(const char* path);         // 1/0
+//
+//   // Search path management (process-local in this TU):
+//   int  dl_add_search_path(const char* dir); // appended; returns 0/-1
+//   void dl_clear_search_paths(void);
+//
+//   // Openers:
+//   dl_lib* dl_open(const char* path);        // exact path
+//   dl_lib* dl_open_any(const char* name);    // stem or filename; searches
+//   void    dl_close(dl_lib* lib);
+//
+//   // Symbols:
+//   void*   dl_sym(dl_lib* lib, const char* name);          // sets errno on error
+//   void*   dl_sym_optional(dl_lib* lib, const char* name); // NULL if not found
+//
+//   // Last error (thread-local string or NULL):
+//   const char* dl_error(void);
+//
+// Notes:
+//   - dl_open_any() resolution order:
+//       1) If name has a path sep or is absolute → dl_open(name).
+//       2) If name ends with platform ext → search paths + cwd for name.
+//       3) Else format with prefix+ext (e.g. libNAME.so) and try:
+//            - user search paths (added via dl_add_search_path)
+//            - current working dir
+//            - env paths (Windows PATH; POSIX LD_LIBRARY_PATH + standard dirs)
+//            - standard system dirs (best-effort)
 
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#include "auxlib.h"
+#include <errno.h>
 
 #if defined(_WIN32)
-#define WIN32_LEAN_AND_MEAN
-#include <synchapi.h>
-#include <windows.h>
+  #define WIN32_LEAN_AND_MEAN
+  #include <windows.h>
+  #include <io.h>
+  typedef HMODULE dl_handle_t;
+  #define DL_SEP '\\'
+  #define PATH_SEP ';'
+  #define access_ok(p) (_access(p, 0) == 0)
 #else
-#include <dlfcn.h>
-#include <limits.h>
-#include <pthread.h>
-#include <unistd.h>
-#ifdef __APPLE__
-#include <TargetConditionals.h>
+  #include <dlfcn.h>
+  #include <unistd.h>
+  typedef void* dl_handle_t;
+  #define DL_SEP '/'
+  #define PATH_SEP ':'
+  #define access_ok(p) (access(p, F_OK) == 0)
 #endif
+
+#ifndef DL_MAX_PATH
+#define DL_MAX_PATH 4096
 #endif
 
-// ======================================================================
-// Public header fallback
-// ======================================================================
-#ifndef VITTE_LIGHT_INCLUDES_DL_H
-#define VITTE_LIGHT_INCLUDES_DL_H 1
+typedef struct dl_lib { dl_handle_t h; } dl_lib;
 
-typedef struct VlDl VlDl;
-
-typedef enum {
-  VL_DL_LAZY = 1 << 0,   // resolve symbols lazily
-  VL_DL_NOW = 1 << 1,    // resolve now
-  VL_DL_LOCAL = 1 << 2,  // symbols not made available
-  VL_DL_GLOBAL = 1 << 3  // symbols made available for subsequently loaded libs
-} VlDlFlags;
-
-// Open/close
-AuxStatus vl_dl_open(const char *path, int flags, VlDl **out);
-AuxStatus vl_dl_open_self(int flags, VlDl **out);  // main program handle
-AuxStatus vl_dl_close(VlDl *h);
-
-// Lookup
-AuxStatus vl_dl_sym(VlDl *h, const char *name, void **out);
-void *vl_dl_sym_ptr(VlDl *h, const char *name);  // convenience
-
-// Helpers
-AuxStatus vl_dl_open_ext(const char *stem, int flags,
-                         VlDl **out);  // try platform extensions
-const char *vl_dl_last_error(void);    // thread-local error string
-void vl_dl_clear_error(void);
-
-#endif  // VITTE_LIGHT_INCLUDES_DL_H
-
-// ======================================================================
-// Internal
-// ======================================================================
-
-struct VlDl {
+// -------- error buffer (thread-local) --------
 #if defined(_WIN32)
-  HMODULE h;
+static __declspec(thread) char g_err[256];
 #else
-  void *h;
+static __thread char g_err[256];
 #endif
-};
+static void set_err(const char* s){ if(!s){g_err[0]='\0';return;} snprintf(g_err,sizeof(g_err),"%s",s); }
+const char* dl_error(void){ return g_err[0] ? g_err : NULL; }
 
+// -------- tiny utils --------
+static int ends_with(const char* s, const char* suf){
+    size_t ls = s?strlen(s):0, lu = suf?strlen(suf):0;
+    return (lu && ls>=lu && memcmp(s+ls-lu, suf, lu)==0) ? 1 : 0;
+}
+static int has_sep(const char* p){ for(;p && *p; ++p) if(*p=='/'||*p=='\\') return 1; return 0; }
+
+const char* dl_ext(void){
 #if defined(_WIN32)
-#define TLS_SPEC __declspec(thread)
+    return ".dll";
+#elif defined(__APPLE__)
+    return ".dylib";
 #else
-#define TLS_SPEC __thread
+    return ".so";
 #endif
-
-static TLS_SPEC char g_dl_err[512];
-
-static void set_errf(const char *fmt, ...) {
-  va_list ap;
-  va_start(ap, fmt);
-  vsnprintf(g_dl_err, sizeof g_dl_err, fmt, ap);
-  va_end(ap);
 }
-
-const char *vl_dl_last_error(void) { return g_dl_err[0] ? g_dl_err : NULL; }
-void vl_dl_clear_error(void) { g_dl_err[0] = 0; }
-
-// ======================================================================
-// Platform shims
-// ======================================================================
-
+const char* dl_prefix(void){
 #if defined(_WIN32)
-
-// Map flags
-static DWORD map_load_flags(int flags) {
-  (void)flags;
-  // LAZY/NOW not meaningful. Prefer default search semantics with safe flags.
-  return LOAD_LIBRARY_SEARCH_DEFAULT_DIRS
-#if _WIN32_WINNT >= 0x0602
-         | LOAD_LIBRARY_SEARCH_SYSTEM32
+    return "";
+#else
+    return "lib";
 #endif
-      ;
+}
+int dl_is_abs(const char* path){
+    if(!path||!*path) return 0;
+#if defined(_WIN32)
+    if ((strlen(path)>=2 && path[1]==':') || (path[0]=='\\' && path[1]=='\\')) return 1;
+    return (path[0]=='\\') ? 1 : 0;
+#else
+    return path[0]=='/' ? 1 : 0;
+#endif
+}
+int dl_join(char* out, size_t n, const char* a, const char* b){
+    if(!out||n==0||!a||!b){ errno=EINVAL; return -1; }
+    size_t la=strlen(a);
+    int need = (la>0 && a[la-1]!=DL_SEP);
+    int rc = snprintf(out,n,"%s%s%s",a,need?(char[]){DL_SEP,0}:"",b);
+    if(rc<0 || (size_t)rc>=n){ errno=ENAMETOOLONG; return -1; }
+    return 0;
+}
+int dl_exists(const char* path){ return (path && *path && access_ok(path)) ? 1 : 0; }
+
+int dl_format_name(char* out, size_t n, const char* stem){
+    if(!out||n==0||!stem||!*stem){ errno=EINVAL; return -1; }
+    int rc = snprintf(out,n,"%s%s%s", dl_prefix(), stem, dl_ext());
+    if(rc<0 || (size_t)rc>=n){ errno=ENAMETOOLONG; return -1; }
+    return 0;
 }
 
-static AuxStatus open_impl(const char *path, int flags, VlDl **out) {
-  if (!out) return AUX_EINVAL;
-  vl_dl_clear_error();
-  *out = NULL;
-  if (!path) return AUX_EINVAL;
+// -------- search path store --------
+typedef struct { char** v; size_t n, cap; } vec_t;
+static vec_t g_paths;
 
-  DWORD f = map_load_flags(flags);
-  HMODULE h = NULL;
-
-  // Prefer LoadLibraryEx with explicit flags when available
-  h = LoadLibraryExA(path, NULL, f);
-  if (!h) {
-    DWORD e = GetLastError();
-    LPSTR msg = NULL;
-    FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
-                       FORMAT_MESSAGE_IGNORE_INSERTS,
-                   NULL, e, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-                   (LPSTR)&msg, 0, NULL);
-    set_errf("LoadLibraryEx failed (%lu)%s%s", (unsigned long)e,
-             msg ? ": " : "", msg ? msg : "");
-    if (msg) LocalFree(msg);
-    return AUX_EIO;
-  }
-  VlDl *obj = (VlDl *)calloc(1, sizeof *obj);
-  if (!obj) {
-    FreeLibrary(h);
-    return AUX_ENOMEM;
-  }
-  obj->h = h;
-  *out = obj;
-  return AUX_OK;
-}
-
-static AuxStatus open_self_impl(int flags, VlDl **out) {
-  (void)flags;
-  if (!out) return AUX_EINVAL;
-  vl_dl_clear_error();
-  // Get module of the current process
-  HMODULE h = GetModuleHandleA(NULL);
-  if (!h) {
-    set_errf("GetModuleHandle(NULL) failed");
-    return AUX_EIO;
-  }
-  VlDl *obj = (VlDl *)calloc(1, sizeof *obj);
-  if (!obj) return AUX_ENOMEM;
-  obj->h = h;
-  *out = obj;
-  return AUX_OK;
-}
-
-static AuxStatus sym_impl(VlDl *h, const char *name, void **out) {
-  if (!h || !name || !out) return AUX_EINVAL;
-  vl_dl_clear_error();
-  FARPROC p = GetProcAddress(h->h, name);
-  if (!p) {
-    DWORD e = GetLastError();
-    set_errf("GetProcAddress('%s') failed (%lu)", name, (unsigned long)e);
-    return AUX_EIO;
-  }
-  *out = (void *)(uintptr_t)p;
-  return AUX_OK;
-}
-
-static AuxStatus close_impl(VlDl *h) {
-  if (!h) return AUX_OK;
-  if (h->h) {
-    if (!FreeLibrary(h->h)) {
-      set_errf("FreeLibrary failed");
-      free(h);
-      return AUX_EIO;
+static int vec_push(vec_t* s, const char* str){
+    if(s->n==s->cap){
+        size_t nc = s->cap? s->cap*2 : 8;
+        char** nv = (char**)realloc(s->v, nc*sizeof(*nv));
+        if(!nv) return -1;
+        s->v = nv; s->cap = nc;
     }
-  }
-  free(h);
-  return AUX_OK;
+    s->v[s->n] = (char*)malloc(strlen(str)+1);
+    if(!s->v[s->n]) return -1;
+    strcpy(s->v[s->n], str);
+    s->n++;
+    return 0;
+}
+int dl_add_search_path(const char* dir){
+    if(!dir||!*dir){ errno=EINVAL; return -1; }
+    return vec_push(&g_paths, dir);
+}
+void dl_clear_search_paths(void){
+    for(size_t i=0;i<g_paths.n;i++) free(g_paths.v[i]);
+    free(g_paths.v); g_paths.v=NULL; g_paths.n=0; g_paths.cap=0;
 }
 
-static int path_has_ext(const char *p) {
-  const char *dot = strrchr(p, '.');
-  const char *slash = strrchr(p, '\\');
-  if (!slash) slash = strrchr(p, '/');
-  return dot && (!slash || dot > slash);
-}
-
-static AuxStatus try_candidates_win(const char *stem, int flags, VlDl **out) {
-  // If stem already has .dll, try as is
-  if (path_has_ext(stem)) {
-    return open_impl(stem, flags, out);
-  }
-  // Try "<stem>.dll"
-  char buf[PATH_MAX];
-  int w = snprintf(buf, sizeof buf, "%s.dll", stem);
-  if (w < 0 || (size_t)w >= sizeof buf) return AUX_ERANGE;
-  AuxStatus s = open_impl(buf, flags, out);
-  if (s == AUX_OK) return s;
-  // Also try with "lib<stem>.dll" if stem has no path sep
-  if (!strchr(stem, '\\') && !strchr(stem, '/')) {
-    w = snprintf(buf, sizeof buf, "lib%s.dll", stem);
-    if (w >= 0 && (size_t)w < sizeof buf) {
-      s = open_impl(buf, flags, out);
-      if (s == AUX_OK) return s;
-    }
-  }
-  return AUX_EIO;
-}
-
-#else  // POSIX
-
-static int map_dl_flags(int flags) {
-  int f = 0;
-  if (flags & VL_DL_NOW) f |= RTLD_NOW;
-  if (flags & VL_DL_LAZY) f |= RTLD_LAZY;
-  if (flags & VL_DL_GLOBAL) f |= RTLD_GLOBAL;
-  if (flags & VL_DL_LOCAL) f |= RTLD_LOCAL;
-  if (f == 0) f = RTLD_NOW | RTLD_LOCAL;
-  return f;
-}
-
-static AuxStatus open_impl(const char *path, int flags, VlDl **out) {
-  if (!out) return AUX_EINVAL;
-  *out = NULL;
-  vl_dl_clear_error();
-  if (!path) return AUX_EINVAL;
-
-  void *h = dlopen(path, map_dl_flags(flags));
-  if (!h) {
-    const char *e = dlerror();
-    set_errf("dlopen('%s') failed: %s", path, e ? e : "unknown");
-    return AUX_EIO;
-  }
-  VlDl *obj = (VlDl *)calloc(1, sizeof *obj);
-  if (!obj) {
-    dlclose(h);
-    return AUX_ENOMEM;
-  }
-  obj->h = h;
-  *out = obj;
-  return AUX_OK;
-}
-
-static AuxStatus open_self_impl(int flags, VlDl **out) {
-  if (!out) return AUX_EINVAL;
-  *out = NULL;
-  vl_dl_clear_error();
-  // POSIX: dlopen(NULL, flags) returns the main program handle
-  void *h = dlopen(NULL, map_dl_flags(flags));
-  if (!h) {
-    const char *e = dlerror();
-    set_errf("dlopen(NULL) failed: %s", e ? e : "unknown");
-    return AUX_EIO;
-  }
-  VlDl *obj = (VlDl *)calloc(1, sizeof *obj);
-  if (!obj) {
-    dlclose(h);
-    return AUX_ENOMEM;
-  }
-  obj->h = h;
-  *out = obj;
-  return AUX_OK;
-}
-
-static AuxStatus sym_impl(VlDl *h, const char *name, void **out) {
-  if (!h || !name || !out) return AUX_EINVAL;
-  vl_dl_clear_error();
-  dlerror();  // clear prior
-  void *p = dlsym(h->h, name);
-  const char *e = dlerror();
-  if (e != NULL) {
-    set_errf("dlsym('%s') failed: %s", name, e);
-    return AUX_EIO;
-  }
-  *out = p;
-  return AUX_OK;
-}
-
-static AuxStatus close_impl(VlDl *h) {
-  if (!h) return AUX_OK;
-  if (h->h) {
-    if (dlclose(h->h) != 0) {
-      const char *e = dlerror();
-      set_errf("dlclose failed: %s", e ? e : "unknown");
-      free(h);
-      return AUX_EIO;
-    }
-  }
-  free(h);
-  return AUX_OK;
-}
-
-static int path_has_ext(const char *p) {
-  const char *dot = strrchr(p, '.');
-  const char *slash = strrchr(p, '/');
-  return dot && (!slash || dot > slash);
-}
-
-static AuxStatus try_candidates_unix(const char *stem, int flags, VlDl **out) {
-  // If explicit path and extension present: try as is
-  if (path_has_ext(stem)) return open_impl(stem, flags, out);
-
-  char buf[PATH_MAX];
-
-#if defined(__APPLE__)
-  // Try lib<stem>.dylib then <stem>.dylib then lib<stem>.so
-  int w = snprintf(buf, sizeof buf, "lib%s.dylib", stem);
-  if (w >= 0 && (size_t)w < sizeof buf && open_impl(buf, flags, out) == AUX_OK)
-    return AUX_OK;
-
-  w = snprintf(buf, sizeof buf, "%s.dylib", stem);
-  if (w >= 0 && (size_t)w < sizeof buf && open_impl(buf, flags, out) == AUX_OK)
-    return AUX_OK;
-
-  w = snprintf(buf, sizeof buf, "lib%s.so", stem);
-  if (w >= 0 && (size_t)w < sizeof buf && open_impl(buf, flags, out) == AUX_OK)
-    return AUX_OK;
-#else
-  // Linux/BSD: try lib<stem>.so then <stem>.so
-  int w = snprintf(buf, sizeof buf, "lib%s.so", stem);
-  if (w >= 0 && (size_t)w < sizeof buf && open_impl(buf, flags, out) == AUX_OK)
-    return AUX_OK;
-
-  w = snprintf(buf, sizeof buf, "%s.so", stem);
-  if (w >= 0 && (size_t)w < sizeof buf && open_impl(buf, flags, out) == AUX_OK)
-    return AUX_OK;
-#endif
-
-  return AUX_EIO;
-}
-
-#endif  // platform split
-
-// ======================================================================
-// Public API
-// ======================================================================
-
-AuxStatus vl_dl_open(const char *path, int flags, VlDl **out) {
-  if (!path || !*path) return AUX_EINVAL;
-  return open_impl(path, flags, out);
-}
-
-AuxStatus vl_dl_open_self(int flags, VlDl **out) {
-  return open_self_impl(flags, out);
-}
-
-AuxStatus vl_dl_close(VlDl *h) { return close_impl(h); }
-
-AuxStatus vl_dl_sym(VlDl *h, const char *name, void **out) {
-  if (!h || !name || !out) return AUX_EINVAL;
-  return sym_impl(h, name, out);
-}
-
-void *vl_dl_sym_ptr(VlDl *h, const char *name) {
-  void *p = NULL;
-  if (vl_dl_sym(h, name, &p) != AUX_OK) return NULL;
-  return p;
-}
-
-AuxStatus vl_dl_open_ext(const char *stem, int flags, VlDl **out) {
-  if (!stem || !*stem || !out) return AUX_EINVAL;
+// -------- open/close/sym --------
+dl_lib* dl_open(const char* path){
+    set_err(NULL);
+    if(!path||!*path){ set_err("dl: null path"); errno=EINVAL; return NULL; }
 #if defined(_WIN32)
-  return try_candidates_win(stem, flags, out);
+    HMODULE h = LoadLibraryA(path);
+    if(!h){
+        DWORD e = GetLastError();
+        FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM|FORMAT_MESSAGE_IGNORE_INSERTS,
+            NULL,e,MAKELANGID(LANG_NEUTRAL,SUBLANG_DEFAULT), g_err, (DWORD)sizeof(g_err), NULL);
+        return NULL;
+    }
 #else
-  return try_candidates_unix(stem, flags, out);
+    void* h = dlopen(path, RTLD_NOW|RTLD_LOCAL);
+    if(!h){ set_err(dlerror()); return NULL; }
+#endif
+    dl_lib* L = (dl_lib*)calloc(1,sizeof(*L));
+    if(!L){
+#if defined(_WIN32)
+        FreeLibrary(h);
+#else
+        dlclose(h);
+#endif
+        set_err("dl: oom");
+        return NULL;
+    }
+    L->h = h;
+    return L;
+}
+
+void dl_close(dl_lib* lib){
+    if(!lib) return;
+#if defined(_WIN32)
+    if(lib->h) FreeLibrary(lib->h);
+#else
+    if(lib->h) dlclose(lib->h);
+#endif
+    free(lib);
+}
+
+void* dl_sym(dl_lib* lib, const char* name){
+    set_err(NULL);
+    if(!lib||!lib->h||!name){ set_err("dl: bad args"); errno=EINVAL; return NULL; }
+#if defined(_WIN32)
+    FARPROC p = GetProcAddress(lib->h, name);
+    if(!p){
+        DWORD e = GetLastError();
+        FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM|FORMAT_MESSAGE_IGNORE_INSERTS,
+            NULL,e,MAKELANGID(LANG_NEUTRAL,SUBLANG_DEFAULT), g_err, (DWORD)sizeof(g_err), NULL);
+        return NULL;
+    }
+    return (void*)p;
+#else
+    dlerror();
+    void* p = dlsym(lib->h, name);
+    const char* e = dlerror();
+    if(e){ set_err(e); return NULL; }
+    return p;
 #endif
 }
 
-// ======================================================================
-// End
-// ======================================================================
+void* dl_sym_optional(dl_lib* lib, const char* name){
+    // Same as dl_sym but does not touch errno or g_err on miss.
+    if(!lib||!lib->h||!name) return NULL;
+#if defined(_WIN32)
+    return (void*)GetProcAddress(lib->h, name);
+#else
+    dlerror();
+    void* p = dlsym(lib->h, name);
+    (void)dlerror(); // discard
+    return p;
+#endif
+}
+
+// -------- environment paths helpers --------
+static void try_env_paths(const char* envkey, int (*cb)(const char* dir, void* u), void* u){
+    const char* v = getenv(envkey);
+    if(!v||!*v) return;
+    const char* s = v;
+    while(*s){
+        const char* e = strchr(s, PATH_SEP);
+        size_t len = e? (size_t)(e-s) : strlen(s);
+        if(len){
+            char dir[DL_MAX_PATH];
+            if(len >= sizeof(dir)) len = sizeof(dir)-1;
+            memcpy(dir, s, len); dir[len] = '\0';
+            if(cb(dir,u)!=0) return;
+        }
+        s = e? e+1 : s+len;
+    }
+}
+
+struct search_need { const char* candidate; dl_lib* out; };
+
+static int try_open_here(const char* dir, void* u){
+    struct search_need* need = (struct search_need*)u;
+    char path[DL_MAX_PATH];
+    if (dl_join(path,sizeof(path),dir,need->candidate)!=0) return 0;
+    if (dl_exists(path)){
+        dl_lib* L = dl_open(path);
+        if(L){ need->out = L; return 1; }
+    }
+    return 0;
+}
+
+// -------- dl_open_any: main resolver --------
+dl_lib* dl_open_any(const char* name){
+    set_err(NULL);
+    if(!name||!*name){ set_err("dl: empty name"); errno=EINVAL; return NULL; }
+
+    // 1) If absolute or has separator → open directly
+    if (dl_is_abs(name) || has_sep(name)) {
+        return dl_open(name);
+    }
+
+    // Prepare candidates:
+    // if already has extension, try as is; else build prefixed name.
+    char cand1[DL_MAX_PATH];
+    if (ends_with(name, dl_ext())) {
+        snprintf(cand1, sizeof(cand1), "%s", name);
+    } else {
+        if (dl_format_name(cand1, sizeof(cand1), name) != 0) return NULL;
+    }
+
+    // 2) Try user search paths (in order)
+    struct search_need need = { cand1, NULL };
+    for(size_t i=0;i<g_paths.n;i++){
+        if(try_open_here(g_paths.v[i], &need)) return need.out;
+    }
+
+    // 3) Try current working directory
+    if (dl_exists(cand1)) {
+        dl_lib* L = dl_open(cand1);
+        if (L) return L;
+    }
+
+    // 4) Try environment paths
+#if defined(_WIN32)
+    try_env_paths("PATH", try_open_here, &need);
+#else
+    try_env_paths("LD_LIBRARY_PATH", try_open_here, &need);
+    if(need.out) return need.out;
+    try_env_paths("DYLD_LIBRARY_PATH", try_open_here, &need); // macOS if allowed
+#endif
+    if(need.out) return need.out;
+
+    // 5) Try standard system dirs (best-effort)
+#if defined(_WIN32)
+    char sysdir[DL_MAX_PATH];
+    UINT n = GetSystemDirectoryA(sysdir, (UINT)sizeof(sysdir));
+    if(n>0 && n < sizeof(sysdir)){
+        if(try_open_here(sysdir, &need)) return need.out;
+    }
+#else
+    const char* std_dirs[] = {
+    #if defined(__APPLE__)
+        "/usr/local/lib", "/opt/homebrew/lib", "/usr/lib",
+    #else
+        "/usr/local/lib", "/usr/lib64", "/usr/lib", "/lib64", "/lib",
+    #endif
+    };
+    for (size_t i=0;i<sizeof(std_dirs)/sizeof(std_dirs[0]);++i){
+        if(try_open_here(std_dirs[i], &need)) return need.out;
+    }
+#endif
+
+    set_err("dl: not found");
+    errno = ENOENT;
+    return NULL;
+}
+
+// -------- Optional demo --------
+#ifdef DL_DEMO
+#include <stdio.h>
+typedef int (*puts_fn)(const char*);
+int main(void){
+#if defined(_WIN32)
+    const char* stem = "msvcrt";
+#elif defined(__APPLE__)
+    const char* stem = "System"; // /usr/lib/libSystem.dylib
+#else
+    const char* stem = "c";      // libc
+#endif
+    dl_add_search_path("."); // example
+    dl_lib* L = dl_open_any(stem);
+    if(!L){ fprintf(stderr,"open_any failed: %s\n", dl_error()); return 1; }
+    puts_fn P = (puts_fn)dl_sym(L,"puts");
+    if(!P){ fprintf(stderr,"sym failed: %s\n", dl_error()); dl_close(L); return 1; }
+    P("dl_open_any demo ok");
+    dl_close(L);
+    return 0;
+}
+#endif

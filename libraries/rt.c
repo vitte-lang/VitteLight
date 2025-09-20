@@ -1,652 +1,374 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// rt.c — Runtime core (event loop, timers, cross-thread posting) for Vitte
-// Light (C17, ultra complet)
-// ---------------------------------------------------------------------------------------------------
-// Features:
-//   - Monotonic time helpers: vl_rt_now_ms(), vl_rt_now_ns()
-//   - Loop: create/free, run, run_once, stop, idle callback
-//   - Task queue: thread-safe vl_rt_post(loop, fn, arg)
-//   - Timers: one-shot and periodic, O(log N) min-heap scheduler
-//   - Thread-safety: mutex-protected queues + wake-up pipe (POSIX) / event
-//   (Windows)
-//   - Optional VM bindings (namespace "rt"): now_ms(), hrtime_ns(),
-//   run_once([ms]), stop()
+// rt.c — Outils temps/horloge/tempo portables, “plus complet” (C17)
+// Namespace: "rt"
 //
-// Design notes:
-//   - All callbacks run on the loop thread.
-//   - Timers and tasks may be added from other threads; they wake the loop.
-//   - No file-descriptor watchers to keep portability simple. Extend at will.
+// Fournit:
+//   Horloges:
+//     - rt_mono_ns()/ms()/us         : monotonic haute résolution
+//     - rt_real_ns()/ms()/us         : temps réel (Unix epoch)
+//     - rt_tsc_supported(), rt_tsc(), rt_tsc_hz()  (x86/x64, sinon 0)
+//   Sommeil:
+//     - rt_sleep_ms(ms), rt_sleep_us(us)
+//     - rt_sleep_until_mono_ns(t_ns) : deadline monotonic
+//   Deadline:
+//     - rt_deadline_init(ms)
+//     - rt_deadline_left_ms(), rt_deadline_expired()
+//   Stopwatch:
+//     - rt_sw_reset/start/stop/lap_ms/elapsed_ns/ms
+//   Rate limiter (token bucket):
+//     - rt_rl_init(rate_per_s, burst)
+//     - rt_rl_allow(cost), rt_rl_wait_time_ms(cost)
+//   Backoff exponentiel avec jitter:
+//     - rt_backoff_init(base, cap, seed)
+//     - rt_backoff_next_ms(), rt_backoff_reset()
+//   Formatage / parse:
+//     - rt_fmt_duration_ns(ns, buf, cap) -> "1h23m45.678s"
+//     - rt_fmt_iso8601_real(buf, cap)    -> "YYYY-MM-DDTHH:MM:SS.sssZ"
+//     - rt_parse_iso8601_real(str, *out_ns)  (fraction ms, ‘Z’ ou offset ±HH:MM)
+//   Utilitaires timespec:
+//     - rt_ns_to_timespec(ns, *ts), rt_timespec_to_ns(*ts)
 //
-// Depends: includes/auxlib.h (AuxStatus, logging, time, arrays), optional:
-// state.h/object.h/vm.h
+// Build:
+//   cc -std=c17 -O2 -Wall -Wextra -pedantic -c rt.c
+//
+// Démo (RT_TEST):
+//   cc -std=c17 -O2 -Wall -Wextra -pedantic -DRT_TEST rt.c && ./a.out
 
-#include "auxlib.h"
-#ifdef HAVE_VM_HEADERS
-#include "object.h"
-#include "state.h"
-#include "vm.h"
-#endif
-
-#include <errno.h>
 #include <stdint.h>
-#include <stdlib.h>
+#include <stddef.h>
 #include <string.h>
+#include <stdio.h>
 
 #if defined(_WIN32)
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+  #define WIN32_LEAN_AND_MEAN
+  #include <windows.h>
+  #include <mmsystem.h>
+  #pragma comment(lib,"winmm.lib")
 #else
-#include <fcntl.h>
-#include <sys/select.h>
-#include <unistd.h>
-#ifndef INVALID_HANDLE_VALUE
-#define INVALID_HANDLE_VALUE (-1)
-#endif
+  #include <time.h>
+  #include <unistd.h>
+  #include <sys/time.h>
 #endif
 
-// ======================================================================
-// Public header fallback
-// ======================================================================
-#ifndef VITTE_LIGHT_INCLUDES_RT_H
-#define VITTE_LIGHT_INCLUDES_RT_H 1
+#ifndef RT_API
+#define RT_API
+#endif
 
-typedef struct VlRtLoop VlRtLoop;
-typedef struct VlRtTimer VlRtTimer;
-
-typedef void (*VlRtTaskFn)(void *arg);
-typedef void (*VlRtTimerFn)(void *arg);
-typedef void (*VlRtIdleFn)(void *arg);  // optional per-iteration idle hook
-
-// Time
-uint64_t vl_rt_now_ms(void);  // monotonic
-uint64_t vl_rt_now_ns(void);  // monotonic
-
-// Loop lifecycle
-AuxStatus vl_rt_loop_new(VlRtLoop **out);
-void vl_rt_loop_free(VlRtLoop *L);
-
-// Loop control
-void vl_rt_loop_set_idle(VlRtLoop *L, VlRtIdleFn fn,
-                         void *arg);  // NULL to clear
-AuxStatus vl_rt_run(VlRtLoop *L);     // runs until vl_rt_stop()
-AuxStatus vl_rt_run_once(VlRtLoop *L,
-                         uint64_t max_wait_ms);  // process once (tasks+timers),
-                                                 // wait up to max_wait_ms
-void vl_rt_stop(VlRtLoop *L);
-
-// Task queue (thread-safe)
-AuxStatus vl_rt_post(VlRtLoop *L, VlRtTaskFn fn, void *arg);
-
-// Timers
-AuxStatus vl_rt_timer_init(VlRtTimer **out);
-void vl_rt_timer_dispose(VlRtTimer *t);  // safe if inactive
-// Start at delay_ms from now, repeat every repeat_ms if >0
-AuxStatus vl_rt_timer_start(VlRtLoop *L, VlRtTimer *t, VlRtTimerFn cb,
-                            void *arg, uint64_t delay_ms, uint64_t repeat_ms);
-AuxStatus vl_rt_timer_stop(VlRtLoop *L, VlRtTimer *t);
-int vl_rt_timer_active(const VlRtTimer *t);
-
-// Introspection
-size_t vl_rt_pending_tasks(const VlRtLoop *L);
-size_t vl_rt_active_timers(const VlRtLoop *L);
-
-#endif  // VITTE_LIGHT_INCLUDES_RT_H
-
-// ======================================================================
-// Internals
-// ======================================================================
-
-typedef struct VlRtTask {
-  VlRtTaskFn fn;
-  void *arg;
-  struct VlRtTask *next;
-} VlRtTask;
-
-struct VlRtTimer {
-  VlRtTimerFn cb;
-  void *arg;
-  uint64_t due_ms;
-  uint64_t repeat_ms;
-  size_t heap_idx;  // 1-based index in heap (0 == not in heap)
-};
-
-typedef struct VlRtHeap {
-  VlRtTimer **a;  // 1-based array
-  size_t n, cap;
-} VlRtHeap;
+/* ====================== Horloges ====================== */
 
 #if defined(_WIN32)
+static uint64_t _qpf_hz(void){
+    static LARGE_INTEGER f = {0};
+    if (!f.QuadPart) QueryPerformanceFrequency(&f);
+    return (uint64_t)f.QuadPart;
+}
+static uint64_t _qpc_ticks(void){
+    LARGE_INTEGER c; QueryPerformanceCounter(&c);
+    return (uint64_t)c.QuadPart;
+}
+#endif
+
+RT_API uint64_t rt_mono_ns(void){
+#if defined(_WIN32)
+    uint64_t t = _qpc_ticks();
+    uint64_t f = _qpf_hz();
+    long double ns = ((long double)t * 1.0e9L) / (long double)f;
+    return (uint64_t)ns;
+#else
+  #if defined(CLOCK_MONOTONIC)
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+  #else
+    struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts);
+  #endif
+    return (uint64_t)ts.tv_sec*1000000000ull + (uint64_t)ts.tv_nsec;
+#endif
+}
+RT_API uint64_t rt_mono_ms(void){ return rt_mono_ns()/1000000ull; }
+RT_API uint64_t rt_mono_us(void){ return rt_mono_ns()/1000ull; }
+
+RT_API uint64_t rt_real_ns(void){
+#if defined(_WIN32)
+    FILETIME ft; GetSystemTimePreciseAsFileTime(&ft);
+    uint64_t t100 = ((uint64_t)ft.dwHighDateTime<<32) | ft.dwLowDateTime; /* 100ns since 1601 */
+    uint64_t unix_1601_1970_100ns = 116444736000000000ull;
+    uint64_t t_unix_100 = (t100 - unix_1601_1970_100ns);
+    return t_unix_100 * 100ull;
+#else
+    struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts);
+    return (uint64_t)ts.tv_sec*1000000000ull + (uint64_t)ts.tv_nsec;
+#endif
+}
+RT_API uint64_t rt_real_ms(void){ return rt_real_ns()/1000000ull; }
+RT_API uint64_t rt_real_us(void){ return rt_real_ns()/1000ull; }
+
+/* ====================== TSC (best effort) ====================== */
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386) || defined(_M_IX86)
+  #if defined(_MSC_VER)
+    #include <intrin.h>
+    static inline uint64_t _rdtsc64(void){ return __rdtsc(); }
+  #else
+    static inline uint64_t _rdtsc64(void){ unsigned int lo,hi; __asm__ __volatile__("rdtsc":"=a"(lo),"=d"(hi)); return ((uint64_t)hi<<32)|lo; }
+  #endif
+  static uint64_t _tsc_hz_cached=0;
+#endif
+
+RT_API int rt_tsc_supported(void){
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386) || defined(_M_IX86)
+    return 1;
+#else
+    return 0;
+#endif
+}
+RT_API uint64_t rt_tsc(void){
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386) || defined(_M_IX86)
+    return _rdtsc64();
+#else
+    return 0;
+#endif
+}
+/* Calibre en ~50ms via QPC/clock_gettime. */
+RT_API uint64_t rt_tsc_hz(void){
+#if !(defined(__x86_64__) || defined(_M_X64) || defined(__i386) || defined(_M_IX86))
+    return 0;
+#else
+    if (_tsc_hz_cached) return _tsc_hz_cached;
+    uint64_t t0 = rt_mono_ns(), c0 = _rdtsc64();
+    /* attendre ~50ms */
+#if defined(_WIN32)
+    Sleep(50);
+#else
+    struct timespec ts={0,50*1000000L}; nanosleep(&ts,NULL);
+#endif
+    uint64_t t1 = rt_mono_ns(), c1 = _rdtsc64();
+    uint64_t dt_ns = (t1>t0)? (t1-t0) : 1;
+    uint64_t dc = (c1>c0)? (c1-c0) : 1;
+    long double hz = ((long double)dc * 1.0e9L) / (long double)dt_ns;
+    _tsc_hz_cached = (uint64_t)(hz+0.5L);
+    return _tsc_hz_cached;
+#endif
+}
+
+/* ====================== Sleep ====================== */
+
+RT_API void rt_sleep_ms(uint32_t ms){
+#if defined(_WIN32)
+    Sleep(ms);
+#else
+    struct timespec ts; ts.tv_sec=ms/1000u; ts.tv_nsec=(long)(ms%1000u)*1000000L;
+    while (nanosleep(&ts,&ts)==-1) {}
+#endif
+}
+RT_API void rt_sleep_us(uint32_t us){
+#if defined(_WIN32)
+    /* Windows: résolution ~1ms. Busy-wait court pour <1ms. */
+    if (us<=1000){ uint64_t end=rt_mono_ns()+ (uint64_t)us*1000ull; while (rt_mono_ns()<end) { /* spin */ } return; }
+    Sleep((us+999)/1000);
+#else
+    struct timespec ts; ts.tv_sec=us/1000000u; ts.tv_nsec=(long)(us%1000000u)*1000L;
+    while (nanosleep(&ts,&ts)==-1) {}
+#endif
+}
+/* dort jusqu’à t_ns (monotonic). Retour 0 si atteint, >0 ms restants si réveil anticipé. */
+RT_API uint32_t rt_sleep_until_mono_ns(uint64_t t_ns){
+    while (1){
+        uint64_t now = rt_mono_ns();
+        if (now>=t_ns) return 0;
+        uint64_t left_ns = t_ns - now;
+        if (left_ns > 2e6) rt_sleep_us((uint32_t)(left_ns/1000ull) - 1000u); /* garder une marge */
+        else { while (rt_mono_ns()<t_ns) {} return 0; }
+    }
+}
+
+/* ====================== Deadline ====================== */
+
+typedef struct { uint64_t end_ns; } rt_deadline;
+
+RT_API void rt_deadline_init(rt_deadline* d, uint32_t timeout_ms){
+    if (!d) return; d->end_ns = rt_mono_ns() + (uint64_t)timeout_ms*1000000ull;
+}
+RT_API int rt_deadline_expired(const rt_deadline* d){
+    if (!d) return 1; return rt_mono_ns() >= d->end_ns;
+}
+RT_API uint32_t rt_deadline_left_ms(const rt_deadline* d){
+    if (!d) return 0;
+    uint64_t now=rt_mono_ns();
+    if (now>=d->end_ns) return 0;
+    uint64_t ms=(d->end_ns-now)/1000000ull;
+    return (ms>0xFFFFFFFFull)?0xFFFFFFFFu:(uint32_t)ms;
+}
+
+/* ====================== Stopwatch ====================== */
+
+typedef struct { uint64_t t0_ns, acc_ns; int running; } rt_sw;
+RT_API void rt_sw_reset(rt_sw* s){ if(!s) return; s->t0_ns=0; s->acc_ns=0; s->running=0; }
+RT_API void rt_sw_start(rt_sw* s){ if(!s) return; if(!s->running){ s->t0_ns=rt_mono_ns(); s->running=1; } }
+RT_API void rt_sw_stop (rt_sw* s){ if(!s) return; if(s->running){ s->acc_ns += rt_mono_ns()-s->t0_ns; s->running=0; } }
+RT_API uint64_t rt_sw_elapsed_ns(const rt_sw* s){ if(!s) return 0; return s->running? s->acc_ns + (rt_mono_ns()-s->t0_ns) : s->acc_ns; }
+RT_API uint64_t rt_sw_elapsed_ms(const rt_sw* s){ return rt_sw_elapsed_ns(s)/1000000ull; }
+RT_API uint64_t rt_sw_lap_ms(rt_sw* s){
+    if(!s) return 0; if(!s->running){ rt_sw_start(s); return 0; }
+    uint64_t now=rt_mono_ns(); uint64_t lap=now - s->t0_ns; s->t0_ns=now; return lap/1000000ull;
+}
+
+/* ====================== Rate limiter ====================== */
+
 typedef struct {
-  HANDLE evt;  // manual-reset event
-} VlWake;
-#else
+    double rate_per_s, burst, tokens;
+    uint64_t last_ns;
+} rt_rl;
+
+RT_API void rt_rl_init(rt_rl* rl, double rate_per_s, double burst){
+    if(!rl) return;
+    if (rate_per_s<0) rate_per_s=0;
+    if (burst<1) burst=1;
+    rl->rate_per_s=rate_per_s; rl->burst=burst; rl->tokens=burst; rl->last_ns=rt_mono_ns();
+}
+RT_API int rt_rl_allow(rt_rl* rl, double cost){
+    if(!rl) return 0;
+    uint64_t now=rt_mono_ns();
+    double dt=(double)(now-rl->last_ns)/1e9; rl->last_ns=now;
+    rl->tokens += rl->rate_per_s * dt; if (rl->tokens>rl->burst) rl->tokens=rl->burst;
+    if (rl->tokens >= cost){ rl->tokens -= cost; return 1; }
+    return 0;
+}
+RT_API uint32_t rt_rl_wait_time_ms(const rt_rl* rl, double cost){
+    if(!rl) return 0xFFFFFFFFu;
+    if (rl->tokens >= cost) return 0;
+    double need = cost - rl->tokens;
+    if (rl->rate_per_s <= 0) return 0xFFFFFFFFu;
+    double ms = (need / rl->rate_per_s) * 1000.0;
+    if (ms<0) ms=0; if (ms>4294967295.0) return 0xFFFFFFFFu;
+    return (uint32_t)(ms+0.5);
+}
+
+/* ====================== Backoff exponentiel ====================== */
+
 typedef struct {
-  int rd, wr;  // pipe ends
-} VlWake;
-#endif
+    uint32_t base_ms, cap_ms, cur_ms;
+    uint64_t seed;
+} rt_backoff;
 
-typedef struct VlMutexLite {
+static uint64_t _xs64(uint64_t* s){ uint64_t x=*s; x^=x<<13; x^=x>>7; x^=x<<17; *s=x; return x; }
+
+RT_API void rt_backoff_init(rt_backoff* b, uint32_t base_ms, uint32_t cap_ms, uint64_t seed){
+    if(!b) return; if(!base_ms) base_ms=1; if (cap_ms<base_ms) cap_ms=base_ms;
+    b->base_ms=base_ms; b->cap_ms=cap_ms; b->cur_ms=base_ms;
+    b->seed = seed?seed:(rt_mono_ns()^0x9E3779B97F4A7C15ull);
+}
+RT_API uint32_t rt_backoff_next_ms(rt_backoff* b){
+    if(!b) return 0;
+    uint64_t r=_xs64(&b->seed); double jitter=0.5 + (double)(r&0xFFFF)/65535.0*0.5;
+    uint32_t d=(uint32_t)((double)b->cur_ms*jitter + 0.5);
+    uint64_t next=(uint64_t)b->cur_ms*2u; if (next>b->cap_ms) next=b->cap_ms; b->cur_ms=(uint32_t)next;
+    return d;
+}
+RT_API void rt_backoff_reset(rt_backoff* b){ if(!b) return; b->cur_ms=b->base_ms; }
+
+/* ====================== Format / Parse ====================== */
+
+RT_API void rt_ns_to_timespec(uint64_t ns, struct timespec* ts){
 #if defined(_WIN32)
-  CRITICAL_SECTION cs;
-#else
-  // simple non-recursive mutex; could be replaced by pthread_mutex_t in
-  // pthread.c if desired But we stay self-contained using a minimal spin +
-  // futex-less fallback with select sleep. For portability and simplicity: use
-  // a POSIX mutex when available. We assume POSIX here.
-  pthread_mutex_t m;
+    /* struct timespec existe en C17 mais non utilisée par Win32 API; ok pour outils */
 #endif
-} VlMutexLite;
+    if (!ts) return; ts->tv_sec = (time_t)(ns/1000000000ull); ts->tv_nsec = (long)(ns%1000000000ull);
+}
+RT_API uint64_t rt_timespec_to_ns(const struct timespec* ts){
+    if (!ts) return 0; return (uint64_t)ts->tv_sec*1000000000ull + (uint64_t)ts->tv_nsec;
+}
 
-struct VlRtLoop {
-  volatile int stop_flag;
+/* "1h23m45.678s" ou "123ms" selon la grandeur. */
+RT_API int rt_fmt_duration_ns(uint64_t ns, char* out, size_t cap){
+    if (!out||cap==0) return -1;
+    uint64_t s = ns/1000000000ull; uint64_t rem_ns = ns%1000000000ull;
+    uint64_t h=s/3600ull, m=(s%3600ull)/60ull, sec=s%60ull;
+    if (h){ return snprintf(out,cap,"%lluh%02llum%02llu.%03llus",
+            (unsigned long long)h,(unsigned long long)m,(unsigned long long)sec,(unsigned long long)(rem_ns/1000000ull)); }
+    if (m){ return snprintf(out,cap,"%llum%02llu.%03llus",
+            (unsigned long long)m,(unsigned long long)sec,(unsigned long long)(rem_ns/1000000ull)); }
+    if (s){ return snprintf(out,cap,"%llu.%03llus",(unsigned long long)sec,(unsigned long long)(rem_ns/1000000ull)); }
+    if (ns>=1000000ull) return snprintf(out,cap,"%llums",(unsigned long long)(ns/1000000ull));
+    if (ns>=1000ull)    return snprintf(out,cap,"%lluus",(unsigned long long)(ns/1000ull));
+    return snprintf(out,cap,"%lluns",(unsigned long long)ns);
+}
 
-  // tasks
-  VlMutexLite q_mtx;
-  VlRtTask *q_head;
-  VlRtTask *q_tail;
-  size_t q_count;
-
-  // timers
-  VlMutexLite t_mtx;  // protects heap operations
-  VlRtHeap heap;
-
-  // idle
-  VlRtIdleFn idle_fn;
-  void *idle_arg;
-
-  // wakeup
-  VlWake wake;
-};
-
-// ---------- time helpers ----------
-uint64_t vl_rt_now_ms(void) { return aux_now_millis(); }
-uint64_t vl_rt_now_ns(void) { return aux_now_nanos(); }
-
-// ---------- tiny mutex ----------
-static void mtx_init(VlMutexLite *m) {
+/* ISO8601 UTC pour temps réel courant. Exemple: 2025-09-19T12:34:56.789Z */
+RT_API int rt_fmt_iso8601_real(char* out, size_t cap){
+    if (!out||cap<25) return -1;
+    uint64_t ns = rt_real_ns(); uint64_t ms = ns/1000000ull;
+    time_t sec = (time_t)(ms/1000ull); int msec = (int)(ms%1000ull);
 #if defined(_WIN32)
-  InitializeCriticalSection(&m->cs);
-#else
-  pthread_mutexattr_t a;
-  pthread_mutexattr_init(&a);
-  pthread_mutexattr_settype(&a, PTHREAD_MUTEX_NORMAL);
-  pthread_mutex_init(&m->m, &a);
-  pthread_mutexattr_destroy(&a);
+    SYSTEMTIME st; FILETIME ft; ULARGE_INTEGER li;
+    /* reconvertir sec->SYSTEMTIME local est coûteux; utiliser gmtime_r-like portable */
 #endif
-}
-static void mtx_destroy(VlMutexLite *m) {
+    struct tm t; 
 #if defined(_WIN32)
-  DeleteCriticalSection(&m->cs);
+    gmtime_s(&t, &sec);
 #else
-  pthread_mutex_destroy(&m->m);
+    gmtime_r(&sec, &t);
 #endif
-}
-static void mtx_lock(VlMutexLite *m) {
-#if defined(_WIN32)
-  EnterCriticalSection(&m->cs);
-#else
-  pthread_mutex_lock(&m->m);
-#endif
-}
-static void mtx_unlock(VlMutexLite *m) {
-#if defined(_WIN32)
-  LeaveCriticalSection(&m->cs);
-#else
-  pthread_mutex_unlock(&m->m);
-#endif
+    return snprintf(out,cap,"%04d-%02d-%02dT%02d:%02d:%02d.%03dZ",
+        t.tm_year+1900, t.tm_mon+1, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec, msec);
 }
 
-// ---------- wake mechanism ----------
-static AuxStatus wake_init(VlWake *w) {
-#if defined(_WIN32)
-  w->evt = CreateEventA(NULL, TRUE, FALSE, NULL);  // manual-reset, non-signaled
-  return w->evt ? AUX_OK : AUX_EIO;
-#else
-  int p[2];
-#if defined(__linux__)
-  if (pipe(p) != 0) return AUX_EIO;
-#else
-  if (pipe(p) != 0) return AUX_EIO;
-#endif
-  // non-blocking optional
-  int fl;
-  fl = fcntl(p[0], F_GETFL, 0);
-  fcntl(p[0], F_SETFL, fl | O_NONBLOCK);
-  fl = fcntl(p[1], F_GETFL, 0);
-  fcntl(p[1], F_SETFL, fl | O_NONBLOCK);
-  w->rd = p[0];
-  w->wr = p[1];
-  return AUX_OK;
-#endif
-}
-static void wake_destroy(VlWake *w) {
-#if defined(_WIN32)
-  if (w->evt) CloseHandle(w->evt);
-  w->evt = NULL;
-#else
-  if (w->rd != INVALID_HANDLE_VALUE) close(w->rd);
-  if (w->wr != INVALID_HANDLE_VALUE) close(w->wr);
-  w->rd = w->wr = INVALID_HANDLE_VALUE;
-#endif
-}
-static void wake_signal(VlWake *w) {
-#if defined(_WIN32)
-  SetEvent(w->evt);
-#else
-  const uint8_t b = 1;
-  (void)write(w->wr, &b, 1);  // ignore EAGAIN
-#endif
-}
-static void wake_consume(VlWake *w) {
-#if defined(_WIN32)
-  ResetEvent(w->evt);
-#else
-  uint8_t buf[64];
-  while (read(w->rd, buf, sizeof buf) > 0) {
-  }  // drain
-#endif
-}
-
-// ---------- timer heap ----------
-static void heap_swap(VlRtHeap *h, size_t i, size_t j) {
-  VlRtTimer *ti = h->a[i], *tj = h->a[j];
-  h->a[i] = tj;
-  h->a[j] = ti;
-  tj->heap_idx = i;
-  ti->heap_idx = j;
-}
-static int heap_less(VlRtTimer *a, VlRtTimer *b) {
-  if (a->due_ms < b->due_ms) return 1;
-  if (a->due_ms > b->due_ms) return 0;
-  return (uintptr_t)a < (uintptr_t)b;  // tie-breaker for stability
-}
-static void heap_up(VlRtHeap *h, size_t i) {
-  while (i > 1) {
-    size_t p = i >> 1;
-    if (heap_less(h->a[p], h->a[i])) break;
-    heap_swap(h, i, p);
-    i = p;
-  }
-}
-static void heap_down(VlRtHeap *h, size_t i) {
-  for (;;) {
-    size_t l = i << 1, r = l + 1, m = i;
-    if (l <= h->n && heap_less(h->a[l], h->a[m])) m = l;
-    if (r <= h->n && heap_less(h->a[r], h->a[m])) m = r;
-    if (m == i) break;
-    heap_swap(h, i, m);
-    i = m;
-  }
-}
-static AuxStatus heap_reserve(VlRtHeap *h, size_t cap) {
-  if (cap <= h->cap) return AUX_OK;
-  size_t ncap = h->cap ? h->cap : 8;
-  while (ncap < cap) ncap <<= 1;
-  VlRtTimer **na = (VlRtTimer **)realloc(h->a, (ncap + 1) * sizeof *na);
-  if (!na) return AUX_ENOMEM;
-  h->a = na;
-  h->cap = ncap;
-  return AUX_OK;
-}
-static AuxStatus heap_push(VlRtHeap *h, VlRtTimer *t) {
-  AuxStatus s = heap_reserve(h, h->n + 1);
-  if (s != AUX_OK) return s;
-  h->a[++h->n] = t;
-  t->heap_idx = h->n;
-  heap_up(h, h->n);
-  return AUX_OK;
-}
-static VlRtTimer *heap_pop(VlRtHeap *h) {
-  if (h->n == 0) return NULL;
-  VlRtTimer *t = h->a[1];
-  h->a[1] = h->a[h->n--];
-  if (h->n) {
-    h->a[1]->heap_idx = 1;
-    heap_down(h, 1);
-  }
-  t->heap_idx = 0;
-  return t;
-}
-static void heap_erase(VlRtHeap *h, VlRtTimer *t) {
-  size_t i = t->heap_idx;
-  if (i == 0 || i > h->n) return;
-  if (i == h->n) {
-    h->a[h->n--] = NULL;
-    t->heap_idx = 0;
-    return;
-  }
-  h->a[i] = h->a[h->n];
-  h->a[i]->heap_idx = i;
-  h->a[h->n--] = NULL;
-  t->heap_idx = 0;
-  heap_down(h, i);
-  heap_up(h, i);
-}
-
-// ======================================================================
-// Public API
-// ======================================================================
-
-AuxStatus vl_rt_loop_new(VlRtLoop **out) {
-  if (!out) return AUX_EINVAL;
-  VlRtLoop *L = (VlRtLoop *)calloc(1, sizeof *L);
-  if (!L) return AUX_ENOMEM;
-  mtx_init(&L->q_mtx);
-  mtx_init(&L->t_mtx);
-#if defined(_WIN32)
-  L->wake.evt = NULL;
-#else
-  L->wake.rd = L->wake.wr = INVALID_HANDLE_VALUE;
-#endif
-  AuxStatus s = wake_init(&L->wake);
-  if (s != AUX_OK) {
-    mtx_destroy(&L->q_mtx);
-    mtx_destroy(&L->t_mtx);
-    free(L);
-    return s;
-  }
-  *out = L;
-  return AUX_OK;
-}
-
-void vl_rt_loop_free(VlRtLoop *L) {
-  if (!L) return;
-  L->stop_flag = 1;
-  wake_signal(&L->wake);
-
-  // drain tasks
-  mtx_lock(&L->q_mtx);
-  VlRtTask *t = L->q_head;
-  while (t) {
-    VlRtTask *n = t->next;
-    free(t);
-    t = n;
-  }
-  L->q_head = L->q_tail = NULL;
-  L->q_count = 0;
-  mtx_unlock(&L->q_mtx);
-
-  // clear timers
-  mtx_lock(&L->t_mtx);
-  for (size_t i = 1; i <= L->heap.n; ++i) {
-    if (L->heap.a[i]) L->heap.a[i]->heap_idx = 0;
-  }
-  free(L->heap.a);
-  L->heap.a = NULL;
-  L->heap.n = L->heap.cap = 0;
-  mtx_unlock(&L->t_mtx);
-
-  wake_destroy(&L->wake);
-  mtx_destroy(&L->q_mtx);
-  mtx_destroy(&L->t_mtx);
-  free(L);
-}
-
-void vl_rt_loop_set_idle(VlRtLoop *L, VlRtIdleFn fn, void *arg) {
-  if (!L) return;
-  L->idle_fn = fn;
-  L->idle_arg = arg;
-}
-
-AuxStatus vl_rt_post(VlRtLoop *L, VlRtTaskFn fn, void *arg) {
-  if (!L || !fn) return AUX_EINVAL;
-  VlRtTask *t = (VlRtTask *)calloc(1, sizeof *t);
-  if (!t) return AUX_ENOMEM;
-  t->fn = fn;
-  t->arg = arg;
-  mtx_lock(&L->q_mtx);
-  if (L->q_tail)
-    L->q_tail->next = t;
-  else
-    L->q_head = t;
-  L->q_tail = t;
-  L->q_count++;
-  mtx_unlock(&L->q_mtx);
-  wake_signal(&L->wake);
-  return AUX_OK;
-}
-
-AuxStatus vl_rt_timer_init(VlRtTimer **out) {
-  if (!out) return AUX_EINVAL;
-  VlRtTimer *t = (VlRtTimer *)calloc(1, sizeof *t);
-  if (!t) return AUX_ENOMEM;
-  *out = t;
-  return AUX_OK;
-}
-
-void vl_rt_timer_dispose(VlRtTimer *t) {
-  if (!t) return;
-  // If still active, user should have stopped it before disposing.
-  free(t);
-}
-
-AuxStatus vl_rt_timer_start(VlRtLoop *L, VlRtTimer *t, VlRtTimerFn cb,
-                            void *arg, uint64_t delay_ms, uint64_t repeat_ms) {
-  if (!L || !t || !cb) return AUX_EINVAL;
-  if (repeat_ms && repeat_ms < 1) repeat_ms = 1;
-  t->cb = cb;
-  t->arg = arg;
-  t->repeat_ms = repeat_ms;
-  t->due_ms = vl_rt_now_ms() + delay_ms;
-  // insert into heap
-  mtx_lock(&L->t_mtx);
-  // if already active, remove first
-  if (t->heap_idx) heap_erase(&L->heap, t);
-  AuxStatus s = heap_push(&L->heap, t);
-  mtx_unlock(&L->t_mtx);
-  if (s != AUX_OK) return s;
-  wake_signal(&L->wake);
-  return AUX_OK;
-}
-
-AuxStatus vl_rt_timer_stop(VlRtLoop *L, VlRtTimer *t) {
-  if (!L || !t) return AUX_EINVAL;
-  mtx_lock(&L->t_mtx);
-  if (t->heap_idx) heap_erase(&L->heap, t);
-  mtx_unlock(&L->t_mtx);
-  return AUX_OK;
-}
-
-int vl_rt_timer_active(const VlRtTimer *t) { return t && t->heap_idx != 0; }
-
-size_t vl_rt_pending_tasks(const VlRtLoop *L) { return L ? L->q_count : 0; }
-size_t vl_rt_active_timers(const VlRtLoop *L) {
-  size_t n = 0;
-  if (!L) return 0;
-  mtx_lock((VlMutexLite *)&L->t_mtx);
-  n = L->heap.n;
-  mtx_unlock((VlMutexLite *)&L->t_mtx);
-  return n;
-}
-
-void vl_rt_stop(VlRtLoop *L) {
-  if (!L) return;
-  L->stop_flag = 1;
-  wake_signal(&L->wake);
-}
-
-// ---------- core processing ----------
-
-static void process_tasks(VlRtLoop *L) {
-  // swap queue under lock, then run without lock
-  mtx_lock(&L->q_mtx);
-  VlRtTask *head = L->q_head;
-  VlRtTask *tail = L->q_tail;
-  L->q_head = L->q_tail = NULL;
-  size_t n = L->q_count;
-  L->q_count = 0;
-  (void)n;
-  (void)tail;
-  mtx_unlock(&L->q_mtx);
-
-  for (VlRtTask *t = head; t;) {
-    VlRtTask *nxt = t->next;
-    if (t->fn) t->fn(t->arg);
-    free(t);
-    t = nxt;
-  }
-}
-
-static uint64_t process_timers(VlRtLoop *L, uint64_t now_ms) {
-  // Run all due timers. Return ms until next timer, or UINT64_MAX if none.
-  uint64_t next_wait = UINT64_MAX;
-
-  mtx_lock(&L->t_mtx);
-  for (;;) {
-    if (L->heap.n == 0) {
-      next_wait = UINT64_MAX;
-      break;
+/* Parse ISO8601 restreint: "YYYY-MM-DDTHH:MM:SS(.sss)?(Z|±HH:MM)". Retour 0 ok, -1 sinon. */
+RT_API int rt_parse_iso8601_real(const char* s, uint64_t* out_ns){
+    if (!s||!out_ns) return -1;
+    int Y,M,D,h,m; int sec; int ms=0; int off_sign=0, off_h=0, off_min=0; char z=0;
+    /* scan basique */
+    if (sscanf(s,"%4d-%2d-%2dT%2d:%2d:%2d", &Y,&M,&D,&h,&m,&sec)!=6) return -1;
+    const char* p = s; int dots=0;
+    const char* dot = strchr(s,'T'); if (dot) dot=strchr(dot, '.');
+    if (dot){ if (sscanf(dot, ".%3d", &ms)!=1) ms=0; }
+    const char* tz = strrchr(s,'Z'); if (tz && tz[1]==0) z='Z';
+    if (!z){
+        const char* pm = strrchr(s,'+'); if (!pm) pm = strrchr(s,'-');
+        if (pm){
+            off_sign = (*pm=='-')? -1 : 1;
+            if (sscanf(pm+1,"%2d:%2d",&off_h,&off_min)!=2) return -1;
+        }
     }
-    VlRtTimer *t = L->heap.a[1];
-    if (t->due_ms > now_ms) {
-      uint64_t delta = t->due_ms - now_ms;
-      next_wait = delta;
-      break;
-    }
-    // pop and run outside lock? We need to re-arm periodic ones.
-    (void)heap_pop(&L->heap);
-    uint64_t repeat = t->repeat_ms;
-    // Use a small local copy
-    VlRtTimerFn cb = t->cb;
-    void *arg = t->arg;
-    mtx_unlock(&L->t_mtx);
-
-    // callback without locks
-    if (cb) cb(arg);
-
-    // re-acquire to possibly reinsert
-    mtx_lock(&L->t_mtx);
-    if (repeat) {
-      uint64_t due = now_ms + repeat;
-      // In case callback took long, compute based on "now", not previous due
-      t->due_ms = due;
-      (void)heap_push(&L->heap, t);
-    } else {
-      t->heap_idx = 0;
-    }
-    // loop to check further due timers
-    now_ms = vl_rt_now_ms();
-  }
-  mtx_unlock(&L->t_mtx);
-  return next_wait;
-}
-
-AuxStatus vl_rt_run_once(VlRtLoop *L, uint64_t max_wait_ms) {
-  if (!L) return AUX_EINVAL;
-
-  // 1) Drain tasks immediately
-  process_tasks(L);
-  if (L->stop_flag) return AUX_OK;
-
-  // 2) Timers due now
-  uint64_t now = vl_rt_now_ms();
-  uint64_t wait_ms = process_timers(L, now);
-  if (L->stop_flag) return AUX_OK;
-
-  // 3) Idle hook
-  if (L->idle_fn) L->idle_fn(L->idle_arg);
-
-  // 4) Wait for either wake or next timer
-  uint64_t cap = max_wait_ms;
-  if (wait_ms == UINT64_MAX) {
-    // no timers
-    wait_ms = cap;
-  } else {
-    if (cap < wait_ms) wait_ms = cap;
-  }
-
+    /* convertir YMDhms -> epoch (UTC) */
+    struct tm t={0}; t.tm_year=Y-1900; t.tm_mon=M-1; t.tm_mday=D; t.tm_hour=h; t.tm_min=m; t.tm_sec=sec;
 #if defined(_WIN32)
-  DWORD to = (wait_ms == UINT64_MAX)
-                 ? INFINITE
-                 : (DWORD)((wait_ms > 0xFFFFFFFEu) ? 0xFFFFFFFEu : wait_ms);
-  DWORD rc = WaitForSingleObject(L->wake.evt, to);
-  if (rc == WAIT_OBJECT_0) wake_consume(&L->wake);
+    /* timegm portable */
+    time_t epoch = _mkgmtime(&t);
 #else
-  struct timeval tv, *ptv = NULL;
-  if (wait_ms != UINT64_MAX) {
-    tv.tv_sec = (time_t)(wait_ms / 1000ULL);
-    tv.tv_usec = (suseconds_t)((wait_ms % 1000ULL) * 1000ULL);
-    ptv = &tv;
-  }
-  fd_set rfds;
-  FD_ZERO(&rfds);
-  FD_SET(L->wake.rd, &rfds);
-  (void)select(L->wake.rd + 1, &rfds, NULL, NULL, ptv);
-  if (FD_ISSET(L->wake.rd, &rfds)) wake_consume(&L->wake);
+    time_t epoch = timegm(&t);
 #endif
-
-  return AUX_OK;
+    if (epoch==(time_t)-1) return -1;
+    int total_off = (z?0:(off_sign*(off_h*60+off_min)));
+    int64_t adj = (int64_t)epoch - (int64_t)total_off*60; /* soustraire offset pour UTC */
+    if (adj<0) return -1;
+    *out_ns = (uint64_t)adj*1000000000ull + (uint64_t)ms*1000000ull;
+    return 0;
 }
 
-AuxStatus vl_rt_run(VlRtLoop *L) {
-  if (!L) return AUX_EINVAL;
-  L->stop_flag = 0;
-  for (;;) {
-    if (L->stop_flag) break;
-    AuxStatus s = vl_rt_run_once(L, /*max_wait_ms*/ 1000);
-    if (s != AUX_OK) return s;
-  }
-  return AUX_OK;
+/* ====================== Test ====================== */
+#ifdef RT_TEST
+int main(void){
+    char buf[64];
+    printf("mono=%llu ms real=%llu ms\n",
+        (unsigned long long)rt_mono_ms(), (unsigned long long)rt_real_ms());
+    rt_sleep_ms(20);
+    rt_sw sw; rt_sw_reset(&sw); rt_sw_start(&sw); rt_sleep_ms(50); printf("lap=%llums\n",(unsigned long long)rt_sw_lap_ms(&sw)); rt_sleep_ms(30); rt_sw_stop(&sw);
+    printf("elapsed=%llums\n",(unsigned long long)rt_sw_elapsed_ms(&sw));
+
+    rt_deadline d; rt_deadline_init(&d, 120);
+    while(!rt_deadline_expired(&d)){ printf("left~%u ms\n", rt_deadline_left_ms(&d)); rt_sleep_ms(30); }
+
+    rt_rl rl; rt_rl_init(&rl, 5.0, 5.0); int ok=0, deny=0; for(int i=0;i<20;i++){ if(rt_rl_allow(&rl,1.0)) ok++; else deny++; rt_sleep_ms(50); }
+    printf("rate allow=%d deny=%d\n", ok, deny);
+
+    rt_backoff bo; rt_backoff_init(&bo, 10, 200, 0); for(int i=0;i<6;i++){ printf("backoff=%u ms\n", rt_backoff_next_ms(&bo)); }
+
+    printf("dur=%s\n", (rt_fmt_duration_ns(5023678000000ull, buf, sizeof buf), buf));
+    printf("iso now=%s\n", (rt_fmt_iso8601_real(buf,sizeof buf), buf));
+    uint64_t ns=0; if (rt_parse_iso8601_real("2025-09-19T12:34:56.789Z",&ns)==0) printf("parsed ns=%llu\n",(unsigned long long)ns);
+
+#if (defined(__x86_64__) || defined(_M_X64) || defined(__i386) || defined(_M_IX86))
+    printf("tsc_supported=%d hz=%llu\n", rt_tsc_supported(), (unsigned long long)rt_tsc_hz());
+#endif
+    return 0;
 }
-
-// ======================================================================
-// Optional VM bindings (minimal, no function scheduling)
-//   Namespace "rt":
-//     rt.now_ms()            -> int64
-//     rt.hrtime_ns()         -> int64
-//     rt.run_once([ms])      -> true
-//     rt.stop()              -> true
-//   The embedding code can keep a global loop and drive it via VM.
-// ======================================================================
-#ifdef HAVE_VM_HEADERS
-
-static VlRtLoop *g_rt_loop = NULL;
-
-static int vmrt_now_ms(VL_State *S) {
-  (void)S;
-  vl_push_int(S, (int64_t)vl_rt_now_ms());
-  return 1;
-}
-static int vmrt_hrtime_ns(VL_State *S) {
-  (void)S;
-  vl_push_int(S, (int64_t)vl_rt_now_ns());
-  return 1;
-}
-static int vmrt_run_once(VL_State *S) {
-  uint64_t ms = 1000;
-  if (vl_get(S, 1) && (vl_isint(S, 1) || vl_isfloat(S, 1))) {
-    ms = (uint64_t)(vl_isint(S, 1) ? vl_toint(S, vl_get(S, 1))
-                                   : (int64_t)vl_tonumber(S, vl_get(S, 1)));
-  }
-  if (!g_rt_loop) {
-    if (vl_rt_loop_new(&g_rt_loop) != AUX_OK) {
-      vl_push_nil(S);
-      vl_push_string(S, "EIO");
-      return 2;
-    }
-  }
-  vl_rt_run_once(g_rt_loop, ms);
-  vl_push_bool(S, 1);
-  return 1;
-}
-static int vmrt_stop(VL_State *S) {
-  (void)S;
-  if (g_rt_loop) vl_rt_stop(g_rt_loop);
-  vl_push_bool(S, 1);
-  return 1;
-}
-
-static const VL_Reg rtlib[] = {{"now_ms", vmrt_now_ms},
-                               {"hrtime_ns", vmrt_hrtime_ns},
-                               {"run_once", vmrt_run_once},
-                               {"stop", vmrt_stop},
-                               {NULL, NULL}};
-
-void vl_open_rtlib(VL_State *S) { vl_register_lib(S, "rt", rtlib); }
-
-#endif  // HAVE_VM_HEADERS
-
-// ======================================================================
-// End
-// ======================================================================
+#endif

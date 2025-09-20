@@ -1,671 +1,432 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// amqp.c — RabbitMQ AMQP 0-9-1 bindings for Vitte Light VM (C17, complet)
+// amqp.c — Client AMQP 0-9-1 minimal pour Vitte Light (C17, sans dépendances externes)
 // Namespace: "amqp"
 //
+// Objectif : se connecter à un broker (ex: RabbitMQ), ouvrir un canal, (option) déclarer une queue,
+// publier un message (basic.publish) et fermer proprement.
+//
+// Support : Linux/macOS (POSIX sockets) et Windows (Winsock2)
+//
 // Build:
-//   cc -std=c17 -O2 -Wall -Wextra -pedantic -DVL_HAVE_RABBITMQ_C -c amqp.c
-//   cc ... amqp.o -lrabbitmq
+//   cc -std=c17 -O2 -Wall -Wextra -pedantic -c amqp.c
 //
-// Portabilité:
-//   - Impl. réelle si VL_HAVE_RABBITMQ_C et <amqp.h> présents (rabbitmq-c).
-//   - Sinon: stubs -> (nil, "ENOSYS").
+// Démo (voir AMQP_TEST en bas):
+//   cc -std=c17 -O2 -Wall -Wextra -pedantic -DAMQP_TEST amqp.c && \
+//     ./a.out 127.0.0.1 5672 guest guest / qname "hello world"
 //
-// Modèle:
-//   - 1 identifiant = 1 connexion AMQP (socket TCP).
-//   - Canaux explicites (ch:int). Le canal 1 peut être ouvert après connect.
-//   - Consommation bloquante avec timeout via amqp_consume_message().
-//   - Propriétés publiées minimales: content_type, delivery_mode.
+// Limites :
+//   - Pas de TLS, pas de SASL avancé (PLAIN uniquement).
+//   - Pas de consumer. Publication simple (confirmations non gérées).
+//   - frame_max simple (on ne segmente pas le corps si > frame_max).
 //
-// API:
-//
-//   Connexion
-//     amqp.connect(host, port:int, vhost, user, pass[, heartbeat=60[,
-//     frame_max=131072]])
-//         -> id:int | (nil, errmsg)
-//     amqp.open_channel(id, ch:int)   -> true | (nil, errmsg)
-//     amqp.close_channel(id, ch:int)  -> true | (nil, errmsg)
-//     amqp.close(id)                  -> true | (nil, errmsg)
-//     amqp.errstr([code:int])         -> string
-//     amqp.lib_version()              -> string
-//
-//   QoS
-//     amqp.qos(id, ch, prefetch_count:int[, global=false]) -> true | (nil,
-//     errmsg)
-//
-//   Exchanges/queues
-//     amqp.exchange_declare(id, ch, exchange, type[, durable=true[,
-//     auto_delete=false]]) -> true | (nil, errmsg) amqp.exchange_delete(id, ch,
-//     exchange[, if_unused=false])                          -> true | (nil,
-//     errmsg) amqp.queue_declare(id, ch, queue[, durable=true[,
-//     exclusive=false[, auto_delete=false]]])
-//         -> name:string | (nil, errmsg)
-//     amqp.queue_bind(id, ch, queue, exchange, routing_key) -> true | (nil,
-//     errmsg) amqp.queue_delete(id, ch, queue[, if_unused=false[,
-//     if_empty=false]]) -> true | (nil, errmsg)
-//
-//   Publication
-//     amqp.publish(id, ch, exchange, routing_key, body:string
-//                  [, content_type="application/octet-stream"[,
-//                  delivery_mode=2[, mandatory=false[, immediate=false]]]])
-//         -> true | (nil, errmsg)
-//
-//   Consommation / lecture
-//     amqp.consume(id, ch, queue[, consumer_tag=""[, no_ack=false[,
-//     exclusive=false]]]) -> consumer_tag:string | (nil, errmsg)
-//     amqp.consume_next(id[, timeout_ms=0])
-//         -> body:string, routing_key:string, exchange:string,
-//         delivery_tag:int64, redelivered:int, content_type:string |
-//         (nil,"timeout") | (nil, errmsg)
-//     amqp.get(id, ch, queue[, no_ack=false])
-//         -> body:string | (nil,"empty") | (nil, errmsg)
-//     amqp.ack(id, ch, delivery_tag:int64[, multiple=false]) -> true | (nil,
-//     errmsg) amqp.nack(id, ch, delivery_tag:int64[, requeue=true[,
-//     multiple=false]]) -> true | (nil, errmsg) amqp.reject(id, ch,
-//     delivery_tag:int64[, requeue=true]) -> true | (nil, errmsg)
-//
-// Dépendances: auxlib.h, state.h, object.h, vm.h
 
-#include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
+#include <time.h>
 
-#include "auxlib.h"
-#include "object.h"
-#include "state.h"
-#include "vm.h"
-
-#ifdef VL_HAVE_RABBITMQ_C
-#include <amqp.h>
-#include <amqp_framing.h>
-#include <amqp_tcp_socket.h>
-/* SSL (facultatif) : <amqp_ssl_socket.h> */
+#if defined(_WIN32)
+  #include <winsock2.h>
+  #include <ws2tcpip.h>
+  #pragma comment(lib, "Ws2_32.lib")
+  typedef SOCKET sock_t;
+  #define CLOSESOCK closesocket
+  #define socklen_cast int
+  static int net_init(void){ WSADATA w; return WSAStartup(MAKEWORD(2,2), &w); }
+  static void net_shutdown(void){ WSACleanup(); }
+#else
+  #include <unistd.h>
+  #include <errno.h>
+  #include <fcntl.h>
+  #include <sys/types.h>
+  #include <sys/socket.h>
+  #include <netdb.h>
+  typedef int sock_t;
+  #define INVALID_SOCKET (-1)
+  #define CLOSESOCK close
+  #define socklen_cast socklen_t
+  static int net_init(void){ return 0; }
+  static void net_shutdown(void){}
 #endif
 
-// ---------------------------------------------------------------------
-// VM arg helpers
-// ---------------------------------------------------------------------
-static const char *aq_check_str(VL_State *S, int idx) {
-  if (vl_get(S, idx) && vl_isstring(S, idx))
-    return vl_tocstring(S, vl_get(S, idx));
-  vl_errorf(S, "argument #%d: string expected", idx);
-  vl_error(S);
-  return NULL;
-}
-static int64_t aq_check_int(VL_State *S, int idx) {
-  if (vl_get(S, idx) && (vl_isint(S, idx) || vl_isfloat(S, idx)))
-    return vl_isint(S, idx) ? vl_toint(S, vl_get(S, idx))
-                            : (int64_t)vl_tonumber(S, vl_get(S, idx));
-  vl_errorf(S, "argument #%d: int expected", idx);
-  vl_error(S);
-  return 0;
-}
-static int aq_opt_bool(VL_State *S, int idx, int defv) {
-  if (!vl_get(S, idx)) return defv;
-  return vl_tobool(vl_get(S, idx)) ? 1 : 0;
-}
-static int aq_opt_int(VL_State *S, int idx, int defv) {
-  if (!vl_get(S, idx)) return defv;
-  if (vl_isint(S, idx) || vl_isfloat(S, idx)) return (int)aq_check_int(S, idx);
-  return defv;
-}
-
-#ifndef VL_HAVE_RABBITMQ_C
-// ---------------------------------------------------------------------
-// STUBS (rabbitmq-c absent)
-// ---------------------------------------------------------------------
-#define NOSYS_PAIR(S)            \
-  do {                           \
-    vl_push_nil(S);              \
-    vl_push_string(S, "ENOSYS"); \
-    return 2;                    \
-  } while (0)
-
-static int vlamqp_connect(VL_State *S) {
-  (void)aq_check_str(S, 1);
-  NOSYS_PAIR(S);
-}
-static int vlamqp_open_channel(VL_State *S) { NOSYS_PAIR(S); }
-static int vlamqp_close_channel(VL_State *S) { NOSYS_PAIR(S); }
-static int vlamqp_close(VL_State *S) { NOSYS_PAIR(S); }
-static int vlamqp_errstr(VL_State *S) {
-  (void)aq_opt_int(S, 1, 0);
-  vl_push_string(S, "rabbitmq-c not built");
-  return 1;
-}
-static int vlamqp_lib_version(VL_State *S) {
-  vl_push_string(S, "unavailable");
-  return 1;
-}
-static int vlamqp_qos(VL_State *S) { NOSYS_PAIR(S); }
-static int vlamqp_exchange_declare(VL_State *S) { NOSYS_PAIR(S); }
-static int vlamqp_exchange_delete(VL_State *S) { NOSYS_PAIR(S); }
-static int vlamqp_queue_declare(VL_State *S) { NOSYS_PAIR(S); }
-static int vlamqp_queue_bind(VL_State *S) { NOSYS_PAIR(S); }
-static int vlamqp_queue_delete(VL_State *S) { NOSYS_PAIR(S); }
-static int vlamqp_publish(VL_State *S) { NOSYS_PAIR(S); }
-static int vlamqp_consume(VL_State *S) { NOSYS_PAIR(S); }
-static int vlamqp_consume_next(VL_State *S) { NOSYS_PAIR(S); }
-static int vlamqp_get(VL_State *S) { NOSYS_PAIR(S); }
-static int vlamqp_ack(VL_State *S) { NOSYS_PAIR(S); }
-static int vlamqp_nack(VL_State *S) { NOSYS_PAIR(S); }
-static int vlamqp_reject(VL_State *S) { NOSYS_PAIR(S); }
-
-#else
-// ---------------------------------------------------------------------
-// Implémentation réelle (rabbitmq-c)
-// ---------------------------------------------------------------------
-
-typedef struct AmqpConn {
-  int used;
-  amqp_connection_state_t conn;
-  amqp_socket_t *sock;
-} AmqpConn;
-
-static AmqpConn *g_conns = NULL;
-static int g_conn_cap = 0;
-
-static int ensure_conn_cap(int need) {
-  if (need <= g_conn_cap) return 1;
-  int ncap = g_conn_cap ? g_conn_cap : 8;
-  while (ncap < need) ncap <<= 1;
-  AmqpConn *nc = (AmqpConn *)realloc(g_conns, (size_t)ncap * sizeof *nc);
-  if (!nc) return 0;
-  for (int i = g_conn_cap; i < ncap; i++) {
-    nc[i].used = 0;
-    nc[i].conn = NULL;
-    nc[i].sock = NULL;
-  }
-  g_conns = nc;
-  g_conn_cap = ncap;
-  return 1;
-}
-static int alloc_conn_slot(void) {
-  for (int i = 1; i < g_conn_cap; i++)
-    if (!g_conns[i].used) return i;
-  if (!ensure_conn_cap(g_conn_cap ? g_conn_cap * 2 : 8)) return 0;
-  for (int i = 1; i < g_conn_cap; i++)
-    if (!g_conns[i].used) return i;
-  return 0;
-}
-static int check_cid(int id) {
-  return id > 0 && id < g_conn_cap && g_conns[id].used && g_conns[id].conn &&
-         g_conns[id].sock;
-}
-
-static int push_amqp_err(VL_State *S, int liberr, const char *fallback) {
-  const char *m = amqp_error_string2(liberr);
-  vl_push_nil(S);
-  vl_push_string(S, (m && *m) ? m : (fallback ? fallback : "EIO"));
-  return 2;
-}
-static int push_rpc_err(VL_State *S, amqp_rpc_reply_t r) {
-  switch (r.reply_type) {
-    case AMQP_RESPONSE_NORMAL:
-      vl_push_bool(S, 1);
-      return 1;
-    case AMQP_RESPONSE_NONE:
-      vl_push_nil(S);
-      vl_push_string(S, "no response");
-      return 2;
-    case AMQP_RESPONSE_LIBRARY_EXCEPTION:
-      return push_amqp_err(S, r.library_errno, "library");
-    case AMQP_RESPONSE_SERVER_EXCEPTION:
-      // Best-effort textualisation
-      if (r.reply.id == AMQP_CONNECTION_CLOSE_METHOD) {
-        amqp_connection_close_t *m = (amqp_connection_close_t *)r.reply.decoded;
-        vl_push_nil(S);
-        vl_push_lstring(S, (const char *)m->reply_text.bytes,
-                        (int)m->reply_text.len);
-        return 2;
-      }
-      if (r.reply.id == AMQP_CHANNEL_CLOSE_METHOD) {
-        amqp_channel_close_t *m = (amqp_channel_close_t *)r.reply.decoded;
-        vl_push_nil(S);
-        vl_push_lstring(S, (const char *)m->reply_text.bytes,
-                        (int)m->reply_text.len);
-        return 2;
-      }
-      vl_push_nil(S);
-      vl_push_string(S, "server exception");
-      return 2;
-    default:
-      vl_push_nil(S);
-      vl_push_string(S, "EIO");
-      return 2;
-  }
-}
-
-static int vlamqp_lib_version(VL_State *S) {
-#ifdef AMQP_VERSION
-  vl_push_string(S, AMQP_VERSION);
-#else
-  vl_push_string(S, "rabbitmq-c");
+#ifndef AMQP_API
+#define AMQP_API
 #endif
-  return 1;
+
+/* ============================== Helpers ============================== */
+
+static int net_connect(const char* host, const char* port, int timeout_ms){
+    if (net_init()!=0) return INVALID_SOCKET;
+    struct addrinfo hints; memset(&hints,0,sizeof hints);
+    hints.ai_family = AF_UNSPEC; hints.ai_socktype = SOCK_STREAM;
+    struct addrinfo* res = NULL;
+    if (getaddrinfo(host, port, &hints, &res)!=0) return INVALID_SOCKET;
+    sock_t s = INVALID_SOCKET;
+    for (struct addrinfo* p=res; p; p=p->ai_next){
+        s = (sock_t)socket(p->ai_family, p->ai_socktype, p->ai_protocol);
+        if (s==INVALID_SOCKET) continue;
+#if !defined(_WIN32)
+        if (timeout_ms>0){
+            struct timeval tv; tv.tv_sec = timeout_ms/1000; tv.tv_usec = (timeout_ms%1000)*1000;
+            setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+            setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+        }
+#else
+        if (timeout_ms>0){
+            DWORD tv = (DWORD)timeout_ms;
+            setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
+            setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, (const char*)&tv, sizeof tv);
+        }
+#endif
+        if (connect(s, p->ai_addr, (socklen_cast)p->ai_addrlen)==0) break;
+        CLOSESOCK(s); s = INVALID_SOCKET;
+    }
+    freeaddrinfo(res);
+    return s;
 }
-static int vlamqp_errstr(VL_State *S) {
-  int code = aq_opt_int(S, 1, 0);
-  const char *m = amqp_error_string2(code);
-  vl_push_string(S, m ? m : "");
-  return 1;
+static int io_write_all(sock_t s, const void* buf, size_t n){
+    const unsigned char* p=(const unsigned char*)buf;
+    while (n){
+#if defined(_WIN32)
+        int k = send(s, (const char*)p, (int)n, 0);
+#else
+        ssize_t k = send(s, p, n, 0);
+#endif
+        if (k<=0) return -1;
+        p+=k; n-=k;
+    }
+    return 0;
 }
-
-// amqp.connect(host, port, vhost, user, pass, [heartbeat], [frame_max])
-static int vlamqp_connect(VL_State *S) {
-  const char *host = aq_check_str(S, 1);
-  int port = (int)aq_check_int(S, 2);
-  const char *vhost = aq_check_str(S, 3);
-  const char *user = aq_check_str(S, 4);
-  const char *pass = aq_check_str(S, 5);
-  int heartbeat = aq_opt_int(S, 6, 60);
-  int frame_max = aq_opt_int(S, 7, 131072);
-
-  int id = alloc_conn_slot();
-  if (!id) {
-    vl_push_nil(S);
-    vl_push_string(S, "ENOMEM");
-    return 2;
-  }
-
-  amqp_connection_state_t c = amqp_new_connection();
-  amqp_socket_t *sock = amqp_tcp_socket_new(c);
-  if (!sock) {
-    amqp_destroy_connection(c);
-    vl_push_nil(S);
-    vl_push_string(S, "socket");
-    return 2;
-  }
-
-  int rc = amqp_socket_open(sock, host, port);
-  if (rc != AMQP_STATUS_OK) {
-    amqp_destroy_connection(c);
-    return push_amqp_err(S, rc, "socket_open");
-  }
-
-  // Tune -> login
-  amqp_rpc_reply_t r =
-      amqp_login(c, vhost, 0 /*channel_max*/, frame_max, heartbeat,
-                 AMQP_SASL_METHOD_PLAIN, user, pass);
-  if (r.reply_type != AMQP_RESPONSE_NORMAL) {
-    amqp_connection_close(c, AMQP_REPLY_SUCCESS);
-    amqp_destroy_connection(c);
-    return push_rpc_err(S, r);
-  }
-
-  g_conns[id].used = 1;
-  g_conns[id].conn = c;
-  g_conns[id].sock = sock;
-
-  vl_push_int(S, (int64_t)id);
-  return 1;
-}
-
-static int vlamqp_close(VL_State *S) {
-  int id = (int)aq_check_int(S, 1);
-  if (!check_cid(id)) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-  amqp_connection_close(g_conns[id].conn, AMQP_REPLY_SUCCESS);
-  amqp_destroy_connection(g_conns[id].conn);
-  g_conns[id].conn = NULL;
-  g_conns[id].sock = NULL;
-  g_conns[id].used = 0;
-  vl_push_bool(S, 1);
-  return 1;
+static int io_read_all(sock_t s, void* buf, size_t n){
+    unsigned char* p=(unsigned char*)buf;
+    while (n){
+#if defined(_WIN32)
+        int k = recv(s, (char*)p, (int)n, 0);
+#else
+        ssize_t k = recv(s, p, n, 0);
+#endif
+        if (k<=0) return -1;
+        p+=k; n-=k;
+    }
+    return 0;
 }
 
-static int vlamqp_open_channel(VL_State *S) {
-  int id = (int)aq_check_int(S, 1);
-  int ch = (int)aq_check_int(S, 2);
-  if (!check_cid(id) || ch <= 0 || ch > 65535) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-  amqp_channel_open(g_conns[id].conn, ch);
-  amqp_rpc_reply_t r = amqp_get_rpc_reply(g_conns[id].conn);
-  if (r.reply_type != AMQP_RESPONSE_NORMAL) return push_rpc_err(S, r);
-  vl_push_bool(S, 1);
-  return 1;
+/* ============================== AMQP basics ============================== */
+
+#define AMQP_FRAME_METHOD   1u
+#define AMQP_FRAME_HEADER   2u
+#define AMQP_FRAME_BODY     3u
+#define AMQP_FRAME_HEARTBEAT 8u
+#define AMQP_FRAME_END      0xCEu
+
+/* Classes/Methods */
+#define CLASS_CONNECTION 10u
+#define METHOD_CONNECTION_START      10u
+#define METHOD_CONNECTION_START_OK   11u
+#define METHOD_CONNECTION_TUNE       30u
+#define METHOD_CONNECTION_TUNE_OK    31u
+#define METHOD_CONNECTION_OPEN       40u
+#define METHOD_CONNECTION_OPEN_OK    41u
+#define METHOD_CONNECTION_CLOSE      50u
+#define METHOD_CONNECTION_CLOSE_OK   51u
+
+#define CLASS_CHANNEL    20u
+#define METHOD_CHANNEL_OPEN    10u
+#define METHOD_CHANNEL_OPEN_OK 11u
+#define METHOD_CHANNEL_CLOSE   40u
+#define METHOD_CHANNEL_CLOSE_OK 41u
+
+#define CLASS_EXCHANGE   40u
+#define CLASS_QUEUE      50u
+#define METHOD_QUEUE_DECLARE    10u
+#define METHOD_QUEUE_DECLARE_OK 11u
+
+#define CLASS_BASIC      60u
+#define METHOD_BASIC_PUBLISH    40u
+
+/* Writer buffer */
+typedef struct {
+    unsigned char* p;
+    size_t cap, len;
+} bufw;
+
+static void bw_init(bufw* b, unsigned char* mem, size_t cap){ b->p=mem; b->cap=cap; b->len=0; }
+static int  bw_put(bufw* b, const void* src, size_t n){
+    if (b->len+n > b->cap) return -1;
+    memcpy(b->p+b->len, src, n); b->len += n; return 0;
+}
+static int  bw_u8(bufw* b, uint8_t v){ return bw_put(b,&v,1); }
+static int  bw_u16(bufw* b, uint16_t v){ unsigned char x[2]={ (unsigned char)(v>>8), (unsigned char)(v&0xFF)}; return bw_put(b,x,2); }
+static int  bw_u32(bufw* b, uint32_t v){ unsigned char x[4]={ (unsigned char)(v>>24),(unsigned char)(v>>16),(unsigned char)(v>>8),(unsigned char)v}; return bw_put(b,x,4); }
+static int  bw_u64(bufw* b, uint64_t v){
+    unsigned char x[8]={ (unsigned char)(v>>56),(unsigned char)(v>>48),(unsigned char)(v>>40),(unsigned char)(v>>32),
+                         (unsigned char)(v>>24),(unsigned char)(v>>16),(unsigned char)(v>>8),(unsigned char)v};
+    return bw_put(b,x,8);
+}
+static int  bw_shortstr(bufw* b, const char* s){
+    size_t n = s?strlen(s):0; if (n>255) n=255;
+    if (bw_u8(b,(uint8_t)n)!=0) return -1;
+    return bw_put(b, s, n);
+}
+static int  bw_longstr(bufw* b, const void* s, uint32_t n){
+    if (bw_u32(b, n)!=0) return -1;
+    return bw_put(b, s, n);
+}
+/* Table vide uniquement (longueur 0) */
+static int  bw_table_empty(bufw* b){ return bw_u32(b, 0); }
+
+/* Frame writer */
+static int amqp_send_frame(sock_t s, uint8_t type, uint16_t channel, const void* payload, uint32_t size){
+    unsigned char hdr[7];
+    hdr[0]=type; hdr[1]=(unsigned char)(channel>>8); hdr[2]=(unsigned char)channel;
+    hdr[3]=(unsigned char)(size>>24); hdr[4]=(unsigned char)(size>>16); hdr[5]=(unsigned char)(size>>8); hdr[6]=(unsigned char)size;
+    if (io_write_all(s, hdr, 7)!=0) return -1;
+    if (size && io_write_all(s, payload, size)!=0) return -1;
+    unsigned char end = AMQP_FRAME_END;
+    return io_write_all(s, &end, 1);
 }
 
-static int vlamqp_close_channel(VL_State *S) {
-  int id = (int)aq_check_int(S, 1);
-  int ch = (int)aq_check_int(S, 2);
-  if (!check_cid(id) || ch <= 0) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-  amqp_channel_close(g_conns[id].conn, ch, AMQP_REPLY_SUCCESS);
-  amqp_rpc_reply_t r = amqp_get_rpc_reply(g_conns[id].conn);
-  if (r.reply_type != AMQP_RESPONSE_NORMAL) return push_rpc_err(S, r);
-  vl_push_bool(S, 1);
-  return 1;
+/* Frame reader de base (renvoie type, chan, taille; stocke dans buf alloué par l'appelant) */
+static int amqp_read_frame(sock_t s, uint8_t* type, uint16_t* channel, unsigned char* payload, uint32_t* size){
+    unsigned char hdr[7];
+    if (io_read_all(s, hdr, 7)!=0) return -1;
+    *type = hdr[0];
+    *channel = ((uint16_t)hdr[1]<<8) | hdr[2];
+    uint32_t sz = ((uint32_t)hdr[3]<<24)|((uint32_t)hdr[4]<<16)|((uint32_t)hdr[5]<<8)|hdr[6];
+    *size = sz;
+    if (sz){
+        if (io_read_all(s, payload, sz)!=0) return -1;
+    }
+    unsigned char end=0;
+    if (io_read_all(s, &end, 1)!=0 || end!=AMQP_FRAME_END) return -1;
+    return 0;
 }
 
-static int vlamqp_qos(VL_State *S) {
-  int id = (int)aq_check_int(S, 1);
-  int ch = (int)aq_check_int(S, 2);
-  int prefetch = (int)aq_check_int(S, 3);
-  int global = aq_opt_bool(S, 4, 0);
-  if (!check_cid(id) || ch <= 0 || prefetch < 0) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-  amqp_basic_qos(g_conns[id].conn, ch, 0, prefetch, global ? 1 : 0);
-  amqp_rpc_reply_t r = amqp_get_rpc_reply(g_conns[id].conn);
-  if (r.reply_type != AMQP_RESPONSE_NORMAL) return push_rpc_err(S, r);
-  vl_push_bool(S, 1);
-  return 1;
+/* ============================== Handshake ============================== */
+
+typedef struct {
+    sock_t s;
+    uint16_t channel_max;
+    uint32_t frame_max;
+    uint16_t heartbeat;
+} amqp_conn;
+
+AMQP_API int amqp_connect_plain(amqp_conn* c,
+                                const char* host, const char* port,
+                                const char* user, const char* pass,
+                                const char* vhost,
+                                int timeout_ms){
+    memset(c, 0, sizeof *c);
+    c->s = net_connect(host, port, timeout_ms);
+    if (c->s==INVALID_SOCKET) return -1;
+
+    /* protocol header */
+    const unsigned char ph[8] = {'A','M','Q','P',0,0,9,1};
+    if (io_write_all(c->s, ph, 8)!=0) { CLOSESOCK(c->s); return -1; }
+
+    unsigned char buf[4096]; uint8_t type; uint16_t ch; uint32_t sz;
+
+    /* expect connection.start (class 10, method 10) */
+    if (amqp_read_frame(c->s,&type,&ch,buf,&sz)!=0 || type!=AMQP_FRAME_METHOD) { CLOSESOCK(c->s); return -1; }
+    uint16_t cls = ((uint16_t)buf[0]<<8)|buf[1];
+    uint16_t mth = ((uint16_t)buf[2]<<8)|buf[3];
+    if (cls!=CLASS_CONNECTION || mth!=METHOD_CONNECTION_START){ CLOSESOCK(c->s); return -1; }
+    /* skip server props + mechanisms + locales (nous répondons PLAIN/en_US) */
+
+    /* send connection.start-ok */
+    unsigned char payload[1024]; bufw w; bw_init(&w,payload,sizeof payload);
+    bw_u16(&w, CLASS_CONNECTION); bw_u16(&w, METHOD_CONNECTION_START_OK);
+    bw_table_empty(&w);                    /* client-properties */
+    bw_shortstr(&w, "PLAIN");              /* mechanism */
+    /* response: 0 user 0 pass (longstr) */
+    {
+        size_t ulen = user?strlen(user):0, plen = pass?strlen(pass):0;
+        size_t rlen = 1 + ulen + 1 + plen;
+        unsigned char* tmp = (unsigned char*)malloc(rlen);
+        tmp[0]=0; memcpy(tmp+1, user, ulen); tmp[1+ulen]=0; memcpy(tmp+2+ulen, pass, plen);
+        bw_longstr(&w, tmp, (uint32_t)rlen);
+        free(tmp);
+    }
+    bw_shortstr(&w, "en_US");              /* locale */
+    if (amqp_send_frame(c->s, AMQP_FRAME_METHOD, 0, payload, (uint32_t)w.len)!=0){ CLOSESOCK(c->s); return -1; }
+
+    /* expect connection.tune */
+    if (amqp_read_frame(c->s,&type,&ch,buf,&sz)!=0 || type!=AMQP_FRAME_METHOD) { CLOSESOCK(c->s); return -1; }
+    cls = ((uint16_t)buf[0]<<8)|buf[1];
+    mth = ((uint16_t)buf[2]<<8)|buf[3];
+    if (cls!=CLASS_CONNECTION || mth!=METHOD_CONNECTION_TUNE){ CLOSESOCK(c->s); return -1; }
+    c->channel_max = ((uint16_t)buf[4]<<8)|buf[5];
+    c->frame_max   = ((uint32_t)buf[6]<<24)|((uint32_t)buf[7]<<16)|((uint32_t)buf[8]<<8)|buf[9];
+    c->heartbeat   = ((uint16_t)buf[10]<<8)|buf[11];
+    if (c->channel_max==0) c->channel_max=2047;
+    if (c->frame_max==0) c->frame_max=131072;
+    /* send tune-ok with our choices (on accepte ce que le serveur dit) */
+    bw_init(&w,payload,sizeof payload);
+    bw_u16(&w, CLASS_CONNECTION); bw_u16(&w, METHOD_CONNECTION_TUNE_OK);
+    bw_u16(&w, c->channel_max);
+    bw_u32(&w, c->frame_max);
+    bw_u16(&w, c->heartbeat);
+    if (amqp_send_frame(c->s, AMQP_FRAME_METHOD, 0, payload, (uint32_t)w.len)!=0){ CLOSESOCK(c->s); return -1; }
+
+    /* connection.open vhost */
+    bw_init(&w,payload,sizeof payload);
+    bw_u16(&w, CLASS_CONNECTION); bw_u16(&w, METHOD_CONNECTION_OPEN);
+    bw_shortstr(&w, vhost && *vhost ? vhost : "/");
+    bw_shortstr(&w, "");         /* reserved-1: capabilities */
+    bw_u8(&w, 0);                /* insist=false */
+    if (amqp_send_frame(c->s, AMQP_FRAME_METHOD, 0, payload, (uint32_t)w.len)!=0){ CLOSESOCK(c->s); return -1; }
+
+    /* expect open-ok */
+    if (amqp_read_frame(c->s,&type,&ch,buf,&sz)!=0 || type!=AMQP_FRAME_METHOD){ CLOSESOCK(c->s); return -1; }
+    cls = ((uint16_t)buf[0]<<8)|buf[1];
+    mth = ((uint16_t)buf[2]<<8)|buf[3];
+    if (cls!=CLASS_CONNECTION || mth!=METHOD_CONNECTION_OPEN_OK){ CLOSESOCK(c->s); return -1; }
+
+    return 0;
 }
 
-static int vlamqp_exchange_declare(VL_State *S) {
-  int id = (int)aq_check_int(S, 1), ch = (int)aq_check_int(S, 2);
-  const char *ex = aq_check_str(S, 3);
-  const char *type = aq_check_str(S, 4);
-  int durable = aq_opt_bool(S, 5, 1);
-  int auto_delete = aq_opt_bool(S, 6, 0);
-  if (!check_cid(id) || ch <= 0) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-  amqp_exchange_declare(g_conns[id].conn, ch, amqp_cstring_bytes(ex),
-                        amqp_cstring_bytes(type), 0, durable, auto_delete, 0,
-                        amqp_empty_table);
-  amqp_rpc_reply_t r = amqp_get_rpc_reply(g_conns[id].conn);
-  if (r.reply_type != AMQP_RESPONSE_NORMAL) return push_rpc_err(S, r);
-  vl_push_bool(S, 1);
-  return 1;
+AMQP_API int amqp_channel_open(amqp_conn* c, uint16_t channel){
+    unsigned char payload[256]; bufw w; bw_init(&w,payload,sizeof payload);
+    bw_u16(&w, CLASS_CHANNEL); bw_u16(&w, METHOD_CHANNEL_OPEN);
+    bw_shortstr(&w, ""); /* out-of-band */
+    if (amqp_send_frame(c->s, AMQP_FRAME_METHOD, channel, payload, (uint32_t)w.len)!=0) return -1;
+
+    uint8_t type; uint16_t ch; uint32_t sz; unsigned char buf[1024];
+    if (amqp_read_frame(c->s,&type,&ch,buf,&sz)!=0 || type!=AMQP_FRAME_METHOD || ch!=channel) return -1;
+    uint16_t cls = ((uint16_t)buf[0]<<8)|buf[1];
+    uint16_t mth = ((uint16_t)buf[2]<<8)|buf[3];
+    return (cls==CLASS_CHANNEL && mth==METHOD_CHANNEL_OPEN_OK) ? 0 : -1;
 }
 
-static int vlamqp_exchange_delete(VL_State *S) {
-  int id = (int)aq_check_int(S, 1), ch = (int)aq_check_int(S, 2);
-  const char *ex = aq_check_str(S, 3);
-  int if_unused = aq_opt_bool(S, 4, 0);
-  if (!check_cid(id) || ch <= 0) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-  amqp_exchange_delete(g_conns[id].conn, ch, amqp_cstring_bytes(ex), if_unused);
-  amqp_rpc_reply_t r = amqp_get_rpc_reply(g_conns[id].conn);
-  if (r.reply_type != AMQP_RESPONSE_NORMAL) return push_rpc_err(S, r);
-  vl_push_bool(S, 1);
-  return 1;
+/* queue.declare (passive=0,durable=1,exclusive=0,auto_delete=0,no_wait=0,args={}) */
+AMQP_API int amqp_queue_declare(amqp_conn* c, uint16_t channel, const char* qname, int durable){
+    unsigned char payload[512]; bufw w; bw_init(&w,payload,sizeof payload);
+    bw_u16(&w, CLASS_QUEUE); bw_u16(&w, METHOD_QUEUE_DECLARE);
+    bw_u16(&w, 0);                 /* reserved-1 */
+    bw_shortstr(&w, qname?qname:"");
+    uint8_t bits = 0;
+    /* flags: bit positions are separate booleans in spec, we serialize as individual bits in 5 octets */
+    /* passive, durable, exclusive, auto-delete, no-wait */
+    bw_u8(&w, 0); /* passive=0 */
+    bw_u8(&w, durable?1:0);
+    bw_u8(&w, 0); /* exclusive=0 */
+    bw_u8(&w, 0); /* auto-delete=0 */
+    bw_u8(&w, 0); /* no-wait=0 */
+    (void)bits;
+    bw_table_empty(&w);            /* arguments */
+    if (amqp_send_frame(c->s, AMQP_FRAME_METHOD, channel, payload, (uint32_t)w.len)!=0) return -1;
+
+    uint8_t type; uint16_t ch; uint32_t sz; unsigned char buf[1024];
+    if (amqp_read_frame(c->s,&type,&ch,buf,&sz)!=0 || type!=AMQP_FRAME_METHOD || ch!=channel) return -1;
+    uint16_t cls = ((uint16_t)buf[0]<<8)|buf[1];
+    uint16_t mth = ((uint16_t)buf[2]<<8)|buf[3];
+    return (cls==CLASS_QUEUE && mth==METHOD_QUEUE_DECLARE_OK) ? 0 : -1;
 }
 
-static int vlamqp_queue_declare(VL_State *S) {
-  int id = (int)aq_check_int(S, 1), ch = (int)aq_check_int(S, 2);
-  const char *q = aq_check_str(S, 3);
-  int durable = aq_opt_bool(S, 4, 1);
-  int exclusive = aq_opt_bool(S, 5, 0);
-  int auto_delete = aq_opt_bool(S, 6, 0);
-  if (!check_cid(id) || ch <= 0) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-  amqp_queue_declare_ok_t *ok =
-      amqp_queue_declare(g_conns[id].conn, ch, amqp_cstring_bytes(q), 0,
-                         durable, exclusive, auto_delete, amqp_empty_table);
-  amqp_rpc_reply_t r = amqp_get_rpc_reply(g_conns[id].conn);
-  if (r.reply_type != AMQP_RESPONSE_NORMAL || !ok) return push_rpc_err(S, r);
-  // renvoie le nom effectif (utile si q == "")
-  vl_push_lstring(S, (const char *)ok->queue.bytes, (int)ok->queue.len);
-  return 1;
+/* basic.publish vers exchange "" (default), routing_key=qname */
+AMQP_API int amqp_basic_publish(amqp_conn* c, uint16_t channel,
+                                const char* exchange, const char* routing_key,
+                                const void* body, size_t body_len){
+    if (!body) body_len=0;
+    if (c->frame_max && body_len + 8 > c->frame_max){ /* pas de segmentation ici */
+        return -2;
+    }
+    unsigned char payload[512]; bufw w; bw_init(&w,payload,sizeof payload);
+    /* METHOD */
+    bw_u16(&w, CLASS_BASIC); bw_u16(&w, METHOD_BASIC_PUBLISH);
+    bw_u16(&w, 0); /* reserved-1 */
+    bw_shortstr(&w, exchange?exchange:"");
+    bw_shortstr(&w, routing_key?routing_key:"");
+    bw_u8(&w, 0);  /* mandatory=0, immediate=0 */
+    if (amqp_send_frame(c->s, AMQP_FRAME_METHOD, channel, payload, (uint32_t)w.len)!=0) return -1;
+
+    /* HEADER: content header (class-id, weight, body-size, property-flags=0) */
+    unsigned char hdr[14]; bufw h; bw_init(&h,hdr,sizeof hdr);
+    bw_u16(&h, CLASS_BASIC);
+    bw_u16(&h, 0);            /* weight */
+    bw_u64(&h, (uint64_t)body_len);
+    bw_u16(&h, 0);            /* property flags = 0 (no properties) */
+    if (amqp_send_frame(c->s, AMQP_FRAME_HEADER, channel, hdr, (uint32_t)h.len)!=0) return -1;
+
+    /* BODY (unique frame) */
+    if (body_len){
+        if (amqp_send_frame(c->s, AMQP_FRAME_BODY, channel, body, (uint32_t)body_len)!=0) return -1;
+    }
+    return 0;
 }
 
-static int vlamqp_queue_bind(VL_State *S) {
-  int id = (int)aq_check_int(S, 1), ch = (int)aq_check_int(S, 2);
-  const char *queue = aq_check_str(S, 3);
-  const char *ex = aq_check_str(S, 4);
-  const char *key = aq_check_str(S, 5);
-  if (!check_cid(id) || ch <= 0) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-  amqp_queue_bind(g_conns[id].conn, ch, amqp_cstring_bytes(queue),
-                  amqp_cstring_bytes(ex), amqp_cstring_bytes(key),
-                  amqp_empty_table);
-  amqp_rpc_reply_t r = amqp_get_rpc_reply(g_conns[id].conn);
-  if (r.reply_type != AMQP_RESPONSE_NORMAL) return push_rpc_err(S, r);
-  vl_push_bool(S, 1);
-  return 1;
+AMQP_API int amqp_channel_close(amqp_conn* c, uint16_t channel){
+    unsigned char payload[64]; bufw w; bw_init(&w,payload,sizeof payload);
+    bw_u16(&w, CLASS_CHANNEL); bw_u16(&w, METHOD_CHANNEL_CLOSE);
+    bw_u16(&w, 0); /* reply-code */
+    bw_shortstr(&w, "");
+    bw_u16(&w, 0); /* class-id */
+    bw_u16(&w, 0); /* method-id */
+    if (amqp_send_frame(c->s, AMQP_FRAME_METHOD, channel, payload, (uint32_t)w.len)!=0) return -1;
+
+    /* expect close-ok */
+    uint8_t type; uint16_t ch; uint32_t sz; unsigned char buf[256];
+    if (amqp_read_frame(c->s,&type,&ch,buf,&sz)!=0 || type!=AMQP_FRAME_METHOD || ch!=channel) return -1;
+    uint16_t cls = ((uint16_t)buf[0]<<8)|buf[1];
+    uint16_t mth = ((uint16_t)buf[2]<<8)|buf[3];
+    return (cls==CLASS_CHANNEL && mth==METHOD_CHANNEL_CLOSE_OK)?0:-1;
 }
 
-static int vlamqp_queue_delete(VL_State *S) {
-  int id = (int)aq_check_int(S, 1), ch = (int)aq_check_int(S, 2);
-  const char *queue = aq_check_str(S, 3);
-  int if_unused = aq_opt_bool(S, 4, 0);
-  int if_empty = aq_opt_bool(S, 5, 0);
-  if (!check_cid(id) || ch <= 0) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-  amqp_queue_delete(g_conns[id].conn, ch, amqp_cstring_bytes(queue), if_unused,
-                    if_empty);
-  amqp_rpc_reply_t r = amqp_get_rpc_reply(g_conns[id].conn);
-  if (r.reply_type != AMQP_RESPONSE_NORMAL) return push_rpc_err(S, r);
-  vl_push_bool(S, 1);
-  return 1;
+AMQP_API int amqp_connection_close(amqp_conn* c){
+    unsigned char payload[64]; bufw w; bw_init(&w,payload,sizeof payload);
+    bw_u16(&w, CLASS_CONNECTION); bw_u16(&w, METHOD_CONNECTION_CLOSE);
+    bw_u16(&w, 0); /* reply-code */
+    bw_shortstr(&w, "");
+    bw_u16(&w, 0); /* class-id */
+    bw_u16(&w, 0); /* method-id */
+    if (amqp_send_frame(c->s, AMQP_FRAME_METHOD, 0, payload, (uint32_t)w.len)!=0) return -1;
+
+    /* expect close-ok */
+    uint8_t type; uint16_t ch; uint32_t sz; unsigned char buf[256];
+    if (amqp_read_frame(c->s,&type,&ch,buf,&sz)!=0 || type!=AMQP_FRAME_METHOD || ch!=0) return -1;
+    uint16_t cls = ((uint16_t)buf[0]<<8)|buf[1];
+    uint16_t mth = ((uint16_t)buf[2]<<8)|buf[3];
+    int ok = (cls==CLASS_CONNECTION && mth==METHOD_CONNECTION_CLOSE_OK)?0:-1;
+    CLOSESOCK(c->s); net_shutdown();
+    return ok;
 }
 
-static int vlamqp_publish(VL_State *S) {
-  int id = (int)aq_check_int(S, 1), ch = (int)aq_check_int(S, 2);
-  const char *ex = aq_check_str(S, 3);
-  const char *key = aq_check_str(S, 4);
-  const char *body = aq_check_str(S, 5);
-  const char *ctype = (vl_get(S, 6) && vl_isstring(S, 6))
-                          ? aq_check_str(S, 6)
-                          : "application/octet-stream";
-  int delivery_mode = aq_opt_int(S, 7, 2);  // 2 = persistent
-  int mandatory = aq_opt_bool(S, 8, 0);
-  int immediate = aq_opt_bool(S, 9, 0);
-  if (!check_cid(id) || ch <= 0) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-
-  amqp_basic_properties_t props;
-  props._flags = AMQP_BASIC_CONTENT_TYPE_FLAG | AMQP_BASIC_DELIVERY_MODE_FLAG;
-  props.content_type = amqp_cstring_bytes(ctype);
-  props.delivery_mode = (uint8_t)delivery_mode;
-
-  int rc = amqp_basic_publish(g_conns[id].conn, ch, amqp_cstring_bytes(ex),
-                              amqp_cstring_bytes(key), mandatory, immediate,
-                              &props, amqp_cstring_bytes(body));
-  if (rc != AMQP_STATUS_OK) return push_amqp_err(S, rc, "publish");
-  vl_push_bool(S, 1);
-  return 1;
+/* Helper de haut niveau: connect + open ch + (optionnel) declare + publish + close */
+AMQP_API int amqp_simple_publish(const char* host, const char* port,
+                                 const char* user, const char* pass,
+                                 const char* vhost,
+                                 const char* queue_name,
+                                 const void* body, size_t body_len,
+                                 int declare_queue, int durable){
+    amqp_conn c;
+    if (amqp_connect_plain(&c, host, port, user, pass, vhost, 5000)!=0) return -1;
+    if (amqp_channel_open(&c, 1)!=0){ amqp_connection_close(&c); return -1; }
+    if (declare_queue){
+        if (amqp_queue_declare(&c, 1, queue_name, durable)!=0){
+            amqp_channel_close(&c,1); amqp_connection_close(&c); return -1;
+        }
+    }
+    if (amqp_basic_publish(&c, 1, "", queue_name, body, body_len)!=0){
+        amqp_channel_close(&c,1); amqp_connection_close(&c); return -1;
+    }
+    amqp_channel_close(&c,1);
+    amqp_connection_close(&c);
+    return 0;
 }
 
-static int vlamqp_consume(VL_State *S) {
-  int id = (int)aq_check_int(S, 1), ch = (int)aq_check_int(S, 2);
-  const char *queue = aq_check_str(S, 3);
-  const char *tag =
-      (vl_get(S, 4) && vl_isstring(S, 4)) ? aq_check_str(S, 4) : "";
-  int no_ack = aq_opt_bool(S, 5, 0);
-  int exclusive = aq_opt_bool(S, 6, 0);
-  if (!check_cid(id) || ch <= 0) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-  amqp_basic_consume_ok_t *ok = amqp_basic_consume(
-      g_conns[id].conn, ch, amqp_cstring_bytes(queue), amqp_cstring_bytes(tag),
-      0 /*no_local*/, no_ack, exclusive, amqp_empty_table);
-  amqp_rpc_reply_t r = amqp_get_rpc_reply(g_conns[id].conn);
-  if (r.reply_type != AMQP_RESPONSE_NORMAL || !ok) return push_rpc_err(S, r);
-  vl_push_lstring(S, (const char *)ok->consumer_tag.bytes,
-                  (int)ok->consumer_tag.len);
-  return 1;
+/* ============================== Test ============================== */
+#ifdef AMQP_TEST
+int main(int argc, char** argv){
+    if (argc < 8){
+        fprintf(stderr,"usage: %s host port user pass vhost queue \"message\"\n", argv[0]);
+        return 2;
+    }
+    const char* host=argv[1], *port=argv[2], *user=argv[3], *pass=argv[4], *vhost=argv[5], *q=argv[6], *msg=argv[7];
+    int rc = amqp_simple_publish(host, port, user, pass, vhost, q, msg, (size_t)strlen(msg), 1, 1);
+    if (rc!=0){ fprintf(stderr,"publish failed (%d)\n", rc); return 1; }
+    puts("ok");
+    return 0;
 }
-
-// amqp.consume_next(id[, timeout_ms=0]) -> body, routing_key, exchange,
-// delivery_tag, redelivered, content_type | (nil,"timeout")
-static int vlamqp_consume_next(VL_State *S) {
-  int id = (int)aq_check_int(S, 1);
-  int timeout_ms = aq_opt_int(S, 2, 0);
-  if (!check_cid(id)) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-  amqp_envelope_t env;
-  amqp_maybe_release_buffers(g_conns[id].conn);
-  struct timeval tv, *ptv = NULL;
-  if (timeout_ms > 0) {
-    tv.tv_sec = timeout_ms / 1000;
-    tv.tv_usec = (timeout_ms % 1000) * 1000;
-    ptv = &tv;
-  }
-  amqp_rpc_reply_t r = amqp_consume_message(g_conns[id].conn, &env, ptv, 0);
-  if (r.reply_type == AMQP_RESPONSE_LIBRARY_EXCEPTION &&
-      r.library_errno == AMQP_STATUS_TIMEOUT) {
-    vl_push_nil(S);
-    vl_push_string(S, "timeout");
-    return 2;
-  }
-  if (r.reply_type != AMQP_RESPONSE_NORMAL) {
-    return push_rpc_err(S, r);
-  }
-  // Returns: body, routing_key, exchange, delivery_tag, redelivered,
-  // content_type
-  vl_push_lstring(S, (const char *)env.message.body.bytes,
-                  (int)env.message.body.len);
-  vl_push_lstring(S, (const char *)env.routing_key.bytes,
-                  (int)env.routing_key.len);
-  vl_push_lstring(S, (const char *)env.exchange.bytes, (int)env.exchange.len);
-  vl_push_int(S, (int64_t)env.delivery_tag);
-  vl_push_int(S, env.redelivered ? 1 : 0);
-
-  const char *ctype = "";
-  if (env.message.properties._flags & AMQP_BASIC_CONTENT_TYPE_FLAG) {
-    ctype = (const char *)env.message.properties.content_type.bytes;
-  }
-  vl_push_string(S, ctype ? ctype : "");
-  amqp_destroy_envelope(&env);
-  return 6;
-}
-
-// amqp.get(id, ch, queue[, no_ack=false]) -> body | (nil,"empty")
-static int vlamqp_get(VL_State *S) {
-  int id = (int)aq_check_int(S, 1), ch = (int)aq_check_int(S, 2);
-  const char *queue = aq_check_str(S, 3);
-  int no_ack = aq_opt_bool(S, 4, 0);
-  if (!check_cid(id) || ch <= 0) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-
-  amqp_rpc_reply_t r = amqp_basic_get(
-      g_conns[id].conn, ch, amqp_cstring_bytes(queue), no_ack ? 1 : 0);
-  if (r.reply_type != AMQP_RESPONSE_NORMAL) {
-    return push_rpc_err(S, r);
-  }
-  amqp_message_t msg;
-  memset(&msg, 0, sizeof msg);
-  r = amqp_read_message(g_conns[id].conn, ch, &msg, 0);
-  if (r.reply_type == AMQP_RESPONSE_NORMAL) {
-    vl_push_lstring(S, (const char *)msg.body.bytes, (int)msg.body.len);
-    amqp_destroy_message(&msg);
-    return 1;
-  }
-  if (r.reply_type == AMQP_RESPONSE_LIBRARY_EXCEPTION &&
-      r.library_errno == AMQP_STATUS_NOT_FOUND) {
-    vl_push_nil(S);
-    vl_push_string(S, "empty");
-    return 2;
-  }
-  return push_rpc_err(S, r);
-}
-
-static int vlamqp_ack(VL_State *S) {
-  int id = (int)aq_check_int(S, 1), ch = (int)aq_check_int(S, 2);
-  int64_t tag = aq_check_int(S, 3);
-  int multiple = aq_opt_bool(S, 4, 0);
-  if (!check_cid(id) || ch <= 0 || tag <= 0) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-  int rc =
-      amqp_basic_ack(g_conns[id].conn, ch, (uint64_t)tag, multiple ? 1 : 0);
-  if (rc != AMQP_STATUS_OK) return push_amqp_err(S, rc, "ack");
-  vl_push_bool(S, 1);
-  return 1;
-}
-static int vlamqp_nack(VL_State *S) {
-  int id = (int)aq_check_int(S, 1), ch = (int)aq_check_int(S, 2);
-  int64_t tag = aq_check_int(S, 3);
-  int requeue = aq_opt_bool(S, 4, 1);
-  int multiple = aq_opt_bool(S, 5, 0);
-  if (!check_cid(id) || ch <= 0 || tag <= 0) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-  int rc = amqp_basic_nack(g_conns[id].conn, ch, (uint64_t)tag,
-                           multiple ? 1 : 0, requeue ? 1 : 0);
-  if (rc != AMQP_STATUS_OK) return push_amqp_err(S, rc, "nack");
-  vl_push_bool(S, 1);
-  return 1;
-}
-static int vlamqp_reject(VL_State *S) {
-  int id = (int)aq_check_int(S, 1), ch = (int)aq_check_int(S, 2);
-  int64_t tag = aq_check_int(S, 3);
-  int requeue = aq_opt_bool(S, 4, 1);
-  if (!check_cid(id) || ch <= 0 || tag <= 0) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-  int rc =
-      amqp_basic_reject(g_conns[id].conn, ch, (uint64_t)tag, requeue ? 1 : 0);
-  if (rc != AMQP_STATUS_OK) return push_amqp_err(S, rc, "reject");
-  vl_push_bool(S, 1);
-  return 1;
-}
-
-#endif  // VL_HAVE_RABBITMQ_C
-
-// ---------------------------------------------------------------------
-// Registration VM
-// ---------------------------------------------------------------------
-static const VL_Reg amqplib[] = {{"connect", vlamqp_connect},
-                                 {"open_channel", vlamqp_open_channel},
-                                 {"close_channel", vlamqp_close_channel},
-                                 {"close", vlamqp_close},
-                                 {"errstr", vlamqp_errstr},
-                                 {"lib_version", vlamqp_lib_version},
-
-                                 {"qos", vlamqp_qos},
-
-                                 {"exchange_declare", vlamqp_exchange_declare},
-                                 {"exchange_delete", vlamqp_exchange_delete},
-                                 {"queue_declare", vlamqp_queue_declare},
-                                 {"queue_bind", vlamqp_queue_bind},
-                                 {"queue_delete", vlamqp_queue_delete},
-
-                                 {"publish", vlamqp_publish},
-
-                                 {"consume", vlamqp_consume},
-                                 {"consume_next", vlamqp_consume_next},
-                                 {"get", vlamqp_get},
-                                 {"ack", vlamqp_ack},
-                                 {"nack", vlamqp_nack},
-                                 {"reject", vlamqp_reject},
-
-                                 {NULL, NULL}};
-
-void vl_open_amqplib(VL_State *S) { vl_register_lib(S, "amqp", amqplib); }
+#endif

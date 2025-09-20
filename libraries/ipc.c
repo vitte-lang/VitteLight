@@ -1,397 +1,267 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// ipc.c — IPC complet pour Vitte Light VM (C17, POSIX + stubs Windows)
+// ipc.c — Local IPC (Unix domain sockets, framing u32) for Vitte Light VM (C17)
 // Namespace: "ipc"
 //
-// Build:
+// Build examples:
 //   cc -std=c17 -O2 -Wall -Wextra -pedantic -c ipc.c
 //
-// Modèle:
-//   - Primitives bas niveau: pipe, socketpair, UNIX socket, read/write/send/recv.
-//   - Serveur UNIX: bind/listen/accept ; Client UNIX: connect.
-//   - Réglages fd: non-blocking, close-on-exec, TCP-like shutdown (générique).
-//   - Intégrable avec ioloop via fd non-bloquants (aucun couplage direct requis).
-//   - Chaînes binaires via vl_push_lstring. Aucune allocation cachée côté VM.
+// Model:
+//   - Serveur: socket AF_UNIX, listen/backlog, accept.
+//   - Client: connect AF_UNIX.
+//   - I/O: send/recv bruts + messages (u32 length prefix, network order).
+//   - Non-bloquant: fcntl(O_NONBLOCK).
 //
-// API (VM):
-//   r,w          = ipc.pipe([nonblock=0])                         | (nil,errmsg)
-//   a,b          = ipc.socketpair([nonblock=0])                    | (nil,errmsg)
-//   s            = ipc.unix_listen(path[, backlog=16, unlink=0])   | (nil,errmsg)
-//   s            = ipc.unix_connect(path[, nonblock=0])            | (nil,errmsg)
-//   c            = ipc.accept(s[, nonblock=1])                     | (nil,errmsg)
-//   ok           = ipc.shutdown(fd, how)   -- how: 0=rd,1=wr,2=rw   | (nil,errmsg)
-//   n            = ipc.write(fd, data)                              | (nil,errmsg)
-//   data         = ipc.read(fd, maxlen)                             | (nil,errmsg)
-//   n            = ipc.send(fd, data[, flags=0])                    | (nil,errmsg)
-//   data         = ipc.recv(fd, maxlen[, flags=0])                  | (nil,errmsg)
-//   ok           = ipc.set_nonblock(fd, on)                         | (nil,errmsg)
-//   ok           = ipc.set_cloexec(fd, on)                          | (nil,errmsg)
-//   ok           = ipc.close(fd)                                    | (nil,errmsg)
+// API (C symbol layer):
+//   int  ipc_listen_unix(const char* path, int backlog);     // >=0 fd | <0 err
+//   int  ipc_accept(int listen_fd);                           // >=0 fd | <0 err
+//   int  ipc_connect_unix(const char* path, int timeout_ms);  // >=0 fd | <0 err
+//   int  ipc_close(int fd);                                   // 0
+//   int  ipc_set_nonblock(int fd, int yes);                   // 0 | <0
 //
-// Erreurs retournées: "EINVAL", "ENOSYS", "ENOMEM", "EIO"
+//   // I/O arêtes nues (best-effort; renvoie >=0 octets écrits/lus, ou <0 err)
+//   long ipc_send(int fd, const void* buf, size_t len);       // -EAGAIN possible
+//   long ipc_recv(int fd, void* buf, size_t cap);             // -EAGAIN possible
 //
-// Deps VM: auxlib.h, state.h, object.h, vm.h
+//   // Messages encadrés (u32 big-endian, limite 16 MiB par défaut)
+//   int  ipc_send_msg(int fd, const void* buf, size_t len);   // 0 | <0
+//   long ipc_recv_msg(int fd, void* buf, size_t cap);         // >0 n | 0 EOF | <0 err
+//
+// Notes:
+//   - Couche neutre VM. Binding VM: copier via vl_push_lstring.
+//   - Erreurs: -EINVAL, -ENOSYS, -ENOMEM, -EIO, -ETIMEDOUT, -EAGAIN.
+//   - Supprime le path existant avant bind (sécurité).
+//
+// Deps VM optionnels: auxlib.h, state.h, object.h, vm.h
 
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <errno.h>
 
-#if defined(_WIN32)
-  #define WIN32_LEAN_AND_MEAN
-  #include <winsock2.h>
-  #include <windows.h>
-  #pragma comment(lib, "Ws2_32.lib")
-  /* Windows: on simule partiellement avec pipes nommés/sockets WinSock.
-     Ici, on retourne ENOSYS pour les fonctions UNIX spécifiques. */
-  #define close_fd(fd) closesocket((SOCKET)(intptr_t)(fd))
-  static int wsa_once = 0;
-  static void ensure_wsa(void){ if(!wsa_once){ WSADATA w; WSAStartup(MAKEWORD(2,2), &w); wsa_once=1; } }
-#else
-  #include <unistd.h>
-  #include <fcntl.h>
-  #include <sys/types.h>
-  #include <sys/socket.h>
-  #include <sys/un.h>
-  #include <sys/stat.h>
-  #define close_fd(fd) close(fd)
+#ifndef EINVAL
+#  define EINVAL 22
+#endif
+#ifndef ENOSYS
+#  define ENOSYS 38
+#endif
+#ifndef EIO
+#  define EIO 5
+#endif
+#ifndef ETIMEDOUT
+#  define ETIMEDOUT 110
 #endif
 
-#include "auxlib.h"
-#include "state.h"
-#include "object.h"
-#include "vm.h"
-
-/* ========================= VM ADAPTER (extern fournis) ================== */
-
-static void        vl_push_nil     (VLState *L);
-static void        vl_push_string  (VLState *L, const char *s);
-static void        vl_push_lstring (VLState *L, const char *s, size_t n);
-static void        vl_push_integer (VLState *L, int64_t v);
-static int64_t     vl_check_integer(VLState *L, int idx);
-static int64_t     vl_opt_integer  (VLState *L, int idx, int64_t def);
-static int         vl_opt_boolean  (VLState *L, int idx, int def);
-static const char *vl_check_string (VLState *L, int idx, size_t *len);
-struct vl_Reg { const char *name; int (*fn)(VLState *L); };
-static void        vl_register_module(VLState *L, const char *ns, const struct vl_Reg *funcs);
-
-/* ================================ Utils ================================= */
-
-static const char *E_EINVAL = "EINVAL";
-static const char *E_ENOSYS = "ENOSYS";
-static const char *E_ENOMEM = "ENOMEM";
-static const char *E_EIO    = "EIO";
-
-#ifndef _WIN32
-static int set_nonblock_fd(int fd, int on){
-  int flags = fcntl(fd, F_GETFL, 0);
-  if(flags < 0) return -1;
-  if(on) flags |= O_NONBLOCK; else flags &= ~O_NONBLOCK;
-  return fcntl(fd, F_SETFL, flags);
-}
-static int set_cloexec_fd(int fd, int on){
-  int flags = fcntl(fd, F_GETFD, 0);
-  if(flags < 0) return -1;
-  if(on) flags |= FD_CLOEXEC; else flags &= ~FD_CLOEXEC;
-  return fcntl(fd, F_SETFD, flags);
-}
+#ifndef VL_EXPORT
+#  if defined(_WIN32) && !defined(__clang__)
+#    define VL_EXPORT __declspec(dllexport)
+#  else
+#    define VL_EXPORT
+#  endif
 #endif
 
-/* =============================== pipe =================================== */
-
-static int ipc_pipe(VLState *L){
-  int nonblock = vl_opt_boolean(L, 1, 0);
 #if defined(_WIN32)
-  (void)nonblock;
-  vl_push_nil(L); vl_push_string(L, E_ENOSYS); return 2;
-#else
-  int fds[2];
-  if(pipe(fds) < 0){ vl_push_nil(L); vl_push_string(L, E_EIO); return 2; }
-  if(nonblock){
-    set_nonblock_fd(fds[0],1);
-    set_nonblock_fd(fds[1],1);
-  }
-  vl_push_integer(L, fds[0]);
-  vl_push_integer(L, fds[1]);
-  return 2;
+// Windows non implémenté ici (nommable via Named Pipes)
+VL_EXPORT int  ipc_listen_unix(const char* path, int backlog){ (void)path;(void)backlog; return -ENOSYS; }
+VL_EXPORT int  ipc_accept(int listen_fd){ (void)listen_fd; return -ENOSYS; }
+VL_EXPORT int  ipc_connect_unix(const char* path, int timeout_ms){ (void)path;(void)timeout_ms; return -ENOSYS; }
+VL_EXPORT int  ipc_close(int fd){ (void)fd; return 0; }
+VL_EXPORT int  ipc_set_nonblock(int fd, int yes){ (void)fd;(void)yes; return -ENOSYS; }
+VL_EXPORT long ipc_send(int fd, const void* buf, size_t len){ (void)fd;(void)buf;(void)len; return -ENOSYS; }
+VL_EXPORT long ipc_recv(int fd, void* buf, size_t cap){ (void)fd;(void)buf;(void)cap; return -ENOSYS; }
+VL_EXPORT int  ipc_send_msg(int fd, const void* buf, size_t len){ (void)fd;(void)buf;(void)len; return -ENOSYS; }
+VL_EXPORT long ipc_recv_msg(int fd, void* buf, size_t cap){ (void)fd;(void)buf;(void)cap; return -ENOSYS; }
+
+#else  // POSIX
+
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <sys/time.h>
+#include <sys/stat.h>
+#include <netinet/in.h>   // htonl/ntohl
+#include <unistd.h>
+#include <fcntl.h>
+
+#ifndef IPC_MAX_MSG
+#  define IPC_MAX_MSG (16u*1024u*1024u) // 16 MiB
 #endif
+
+static int set_nonblock(int fd, int yes) {
+  int fl = fcntl(fd, F_GETFL, 0);
+  if (fl < 0) return -EIO;
+  if (yes) fl |= O_NONBLOCK; else fl &= ~O_NONBLOCK;
+  return fcntl(fd, F_SETFL, fl) == -1 ? -EIO : 0;
 }
 
-/* ============================ socketpair ================================ */
+VL_EXPORT int ipc_set_nonblock(int fd, int yes){ return set_nonblock(fd, yes); }
 
-static int ipc_socketpair(VLState *L){
-  int nonblock = vl_opt_boolean(L, 1, 0);
-#if defined(_WIN32)
-  (void)nonblock;
-  vl_push_nil(L); vl_push_string(L, E_ENOSYS); return 2;
-#else
-  int sv[2];
-  if(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0){
-    vl_push_nil(L); vl_push_string(L, E_EIO); return 2;
-  }
-  if(nonblock){
-    set_nonblock_fd(sv[0],1);
-    set_nonblock_fd(sv[1],1);
-  }
-  vl_push_integer(L, sv[0]);
-  vl_push_integer(L, sv[1]);
-  return 2;
+VL_EXPORT int ipc_close(int fd){ if (fd>=0) (void)close(fd); return 0; }
+
+static int mk_sock_unix(void) {
+  int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (fd < 0) return -EIO;
+  // CLOEXEC de préférence
+#ifdef O_CLOEXEC
+  fcntl(fd, F_SETFD, FD_CLOEXEC);
 #endif
+  return fd;
 }
 
-/* ============================ UNIX listen =============================== */
+VL_EXPORT int ipc_listen_unix(const char* path, int backlog) {
+  if (!path || !*path) return -EINVAL;
+  int fd = mk_sock_unix();
+  if (fd < 0) return fd;
 
-static int ipc_unix_listen(VLState *L){
-#if defined(_WIN32)
-  vl_push_nil(L); vl_push_string(L, E_ENOSYS); return 2;
-#else
-  size_t n=0; const char *path = vl_check_string(L, 1, &n);
-  int backlog = (int)vl_opt_integer(L, 2, 16);
-  int do_unlink = vl_opt_boolean(L, 3, 0);
+  struct sockaddr_un sa;
+  memset(&sa, 0, sizeof(sa));
+  sa.sun_family = AF_UNIX;
+  size_t n = strlen(path);
+  if (n >= sizeof(sa.sun_path)) { close(fd); return -EINVAL; }
+  strncpy(sa.sun_path, path, sizeof(sa.sun_path)-1);
 
-  if(!path || n==0){ vl_push_nil(L); vl_push_string(L, E_EINVAL); return 2; }
-  if(do_unlink) unlink(path);
+  // Supprime l’ancien socket path si existe
+  unlink(path);
 
-  int s = socket(AF_UNIX, SOCK_STREAM, 0);
-  if(s < 0){ vl_push_nil(L); vl_push_string(L, E_EIO); return 2; }
+  if (bind(fd, (struct sockaddr*)&sa, sizeof(sa)) != 0) { close(fd); return -EIO; }
+  if (chmod(path, 0660) != 0) { /* non fatal */ }
 
-  struct sockaddr_un addr; memset(&addr,0,sizeof(addr));
-  addr.sun_family = AF_UNIX;
-  if(n >= sizeof(addr.sun_path)){ close_fd(s); vl_push_nil(L); vl_push_string(L, E_EINVAL); return 2; }
-  memcpy(addr.sun_path, path, n);
-  addr.sun_path[n] = 0;
-
-  /* s'assurer que le répertoire existe côté appelant si besoin */
-
-  if(bind(s, (struct sockaddr*)&addr, sizeof(addr)) < 0){
-    close_fd(s); vl_push_nil(L); vl_push_string(L, E_EIO); return 2;
-  }
-  if(listen(s, backlog) < 0){
-    close_fd(s); vl_push_nil(L); vl_push_string(L, E_EIO); return 2;
-  }
-  /* permissions rw pour owner par défaut ; l’appelant peut chmod(path) */
-
-  vl_push_integer(L, s);
-  return 1;
-#endif
+  if (listen(fd, backlog > 0 ? backlog : 16) != 0) { close(fd); unlink(path); return -EIO; }
+  return fd;
 }
 
-/* ============================ UNIX connect ============================== */
+VL_EXPORT int ipc_accept(int listen_fd) {
+  if (listen_fd < 0) return -EINVAL;
+  int fd = accept(listen_fd, NULL, NULL);
+  if (fd < 0) return -EIO;
+#ifdef O_CLOEXEC
+  fcntl(fd, F_SETFD, FD_CLOEXEC);
+#endif
+  return fd;
+}
 
-static int ipc_unix_connect(VLState *L){
-#if defined(_WIN32)
-  vl_push_nil(L); vl_push_string(L, E_ENOSYS); return 2;
-#else
-  size_t n=0; const char *path = vl_check_string(L, 1, &n);
-  int nonblock = vl_opt_boolean(L, 2, 0);
-  if(!path || n==0){ vl_push_nil(L); vl_push_string(L, E_EINVAL); return 2; }
+static int connect_with_timeout(int fd, const struct sockaddr* sa, socklen_t slen, int timeout_ms) {
+  // Passage non-bloquant si timeout
+  int restore_block = 0;
+  if (timeout_ms > 0) {
+    if (set_nonblock(fd, 1) == 0) restore_block = 1;
+  }
+  int rc = connect(fd, sa, slen);
+  if (rc == 0) {
+    if (restore_block) set_nonblock(fd, 0);
+    return 0;
+  }
+  if (timeout_ms <= 0) return -EIO;
 
-  int s = socket(AF_UNIX, SOCK_STREAM, 0);
-  if(s < 0){ vl_push_nil(L); vl_push_string(L, E_EIO); return 2; }
-  if(nonblock) set_nonblock_fd(s,1);
+  if (errno != EINPROGRESS) return -EIO;
 
-  struct sockaddr_un addr; memset(&addr,0,sizeof(addr));
-  addr.sun_family = AF_UNIX;
-  if(n >= sizeof(addr.sun_path)){ close_fd(s); vl_push_nil(L); vl_push_string(L, E_EINVAL); return 2; }
-  memcpy(addr.sun_path, path, n); addr.sun_path[n]=0;
+  fd_set wf; FD_ZERO(&wf); FD_SET(fd, &wf);
+  struct timeval tv;
+  tv.tv_sec  = timeout_ms/1000;
+  tv.tv_usec = (timeout_ms%1000)*1000;
+  rc = select(fd+1, NULL, &wf, NULL, &tv);
+  if (rc <= 0) return rc == 0 ? -ETIMEDOUT : -EIO;
 
-  if(connect(s, (struct sockaddr*)&addr, sizeof(addr)) < 0){
-    /* en non-bloquant, EINPROGRESS est acceptable → on renvoie le fd */
-    if(nonblock && (errno==EINPROGRESS)){
-      vl_push_integer(L, s); return 1;
+  int err = 0; socklen_t len = sizeof(err);
+  if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len) < 0 || err != 0) return -EIO;
+
+  if (restore_block) set_nonblock(fd, 0);
+  return 0;
+}
+
+VL_EXPORT int ipc_connect_unix(const char* path, int timeout_ms) {
+  if (!path || !*path) return -EINVAL;
+  int fd = mk_sock_unix();
+  if (fd < 0) return fd;
+
+  struct sockaddr_un sa;
+  memset(&sa, 0, sizeof(sa));
+  sa.sun_family = AF_UNIX;
+  size_t n = strlen(path);
+  if (n >= sizeof(sa.sun_path)) { close(fd); return -EINVAL; }
+  strncpy(sa.sun_path, path, sizeof(sa.sun_path)-1);
+
+  int rc = connect_with_timeout(fd, (struct sockaddr*)&sa, (socklen_t)sizeof(sa), timeout_ms);
+  if (rc != 0) { close(fd); return rc; }
+  return fd;
+}
+
+// ---- Raw I/O ----
+VL_EXPORT long ipc_send(int fd, const void* buf, size_t len) {
+  if (fd < 0 || (!buf && len)) return -EINVAL;
+  ssize_t n = send(fd, buf, len, 0);
+  if (n < 0) return (errno==EAGAIN||errno==EWOULDBLOCK) ? -EAGAIN : -EIO;
+  return (long)n;
+}
+
+VL_EXPORT long ipc_recv(int fd, void* buf, size_t cap) {
+  if (fd < 0 || (!buf && cap)) return -EINVAL;
+  ssize_t n = recv(fd, buf, cap, 0);
+  if (n < 0) return (errno==EAGAIN||errno==EWOULDBLOCK) ? -EAGAIN : -EIO;
+  return (long)n; // 0 == EOF
+}
+
+// ---- Message framing (u32 big-endian) ----
+static int send_all(int fd, const void* b, size_t n){
+  const unsigned char* p = (const unsigned char*)b;
+  while (n){
+    ssize_t k = send(fd, p, n, 0);
+    if (k < 0){
+      if (errno==EINTR) continue;
+      return (errno==EAGAIN||errno==EWOULDBLOCK)? -EAGAIN : -EIO;
     }
-    close_fd(s); vl_push_nil(L); vl_push_string(L, E_EIO); return 2;
+    p += (size_t)k; n -= (size_t)k;
   }
-  vl_push_integer(L, s);
-  return 1;
-#endif
+  return 0;
 }
 
-/* ================================ accept ================================ */
-
-static int ipc_accept(VLState *L){
-#if defined(_WIN32)
-  vl_push_nil(L); vl_push_string(L, E_ENOSYS); return 2;
-#else
-  int64_t s = vl_check_integer(L, 1);
-  int nonblock = vl_opt_boolean(L, 2, 1);
-  int c = accept((int)s, NULL, NULL);
-  if(c < 0){ vl_push_nil(L); vl_push_string(L, E_EIO); return 2; }
-  if(nonblock) set_nonblock_fd(c,1);
-  vl_push_integer(L, c);
-  return 1;
-#endif
+static int recv_all(int fd, void* b, size_t n){
+  unsigned char* p = (unsigned char*)b;
+  while (n){
+    ssize_t k = recv(fd, p, n, 0);
+    if (k == 0) return -EIO; // EOF prématuré
+    if (k < 0){
+      if (errno==EINTR) continue;
+      return (errno==EAGAIN||errno==EWOULDBLOCK)? -EAGAIN : -EIO;
+    }
+    p += (size_t)k; n -= (size_t)k;
+  }
+  return 0;
 }
 
-/* =============================== shutdown =============================== */
-
-static int ipc_shutdown(VLState *L){
-  int64_t fd  = vl_check_integer(L,1);
-  int64_t how = vl_check_integer(L,2); /* 0=rd,1=wr,2=rw */
-#if defined(_WIN32)
-  ensure_wsa();
-  int w = SD_BOTH;
-  if(how==0) w = SD_RECEIVE; else if(how==1) w = SD_SEND; else w = SD_BOTH;
-  if(shutdown((SOCKET)(intptr_t)fd, w) != 0){ vl_push_nil(L); vl_push_string(L, E_EIO); return 2; }
-  vl_push_integer(L,1);
-  return 1;
-#else
-  int w = SHUT_RDWR;
-  if(how==0) w = SHUT_RD; else if(how==1) w = SHUT_WR; else w = SHUT_RDWR;
-  if(shutdown((int)fd, w) != 0){ vl_push_nil(L); vl_push_string(L, E_EIO); return 2; }
-  vl_push_integer(L,1);
-  return 1;
-#endif
+// hton/ntoh pour u32 portable sans dépendre d'endian.h
+static uint32_t to_be32(uint32_t x){
+  unsigned char b[4] = { (unsigned char)(x>>24), (unsigned char)(x>>16),
+                         (unsigned char)(x>>8),  (unsigned char)(x) };
+  uint32_t y; memcpy(&y, b, 4); return y;
+}
+static uint32_t from_be32(uint32_t y){
+  unsigned char b[4]; memcpy(b, &y, 4);
+  return ((uint32_t)b[0]<<24)|((uint32_t)b[1]<<16)|((uint32_t)b[2]<<8)|((uint32_t)b[3]);
 }
 
-/* ============================== read/write ============================== */
-
-static int ipc_read(VLState *L){
-  int64_t fd = vl_check_integer(L,1);
-  int64_t maxlen = vl_check_integer(L,2);
-  if(maxlen <= 0){ vl_push_nil(L); vl_push_string(L, E_EINVAL); return 2; }
-  char *buf = (char*)malloc((size_t)maxlen);
-  if(!buf){ vl_push_nil(L); vl_push_string(L, E_ENOMEM); return 2; }
-#if defined(_WIN32)
-  ensure_wsa();
-  int n = recv((SOCKET)(intptr_t)fd, buf, (int)maxlen, 0);
-  if(n < 0){ free(buf); vl_push_nil(L); vl_push_string(L, E_EIO); return 2; }
-  vl_push_lstring(L, buf, (size_t)n);
-  free(buf);
-  return 1;
-#else
-  ssize_t n = read((int)fd, buf, (size_t)maxlen);
-  if(n < 0){ free(buf); vl_push_nil(L); vl_push_string(L, E_EIO); return 2; }
-  vl_push_lstring(L, buf, (size_t)n);
-  free(buf);
-  return 1;
-#endif
+VL_EXPORT int ipc_send_msg(int fd, const void* buf, size_t len){
+  if (fd < 0) return -EINVAL;
+  if (len > IPC_MAX_MSG) return -EINVAL;
+  uint32_t be = to_be32((uint32_t)len);
+  int rc = send_all(fd, &be, sizeof(be));
+  if (rc != 0) return rc;
+  if (len == 0) return 0;
+  return send_all(fd, buf, len);
 }
 
-static int ipc_write(VLState *L){
-  int64_t fd = vl_check_integer(L,1);
-  size_t len=0; const char *data = vl_check_string(L,2,&len);
-#if defined(_WIN32)
-  ensure_wsa();
-  int n = send((SOCKET)(intptr_t)fd, data, (int)len, 0);
-  if(n < 0){ vl_push_nil(L); vl_push_string(L, E_EIO); return 2; }
-  vl_push_integer(L, (int64_t)n);
-  return 1;
-#else
-  ssize_t n = write((int)fd, data, len);
-  if(n < 0){ vl_push_nil(L); vl_push_string(L, E_EIO); return 2; }
-  vl_push_integer(L, (int64_t)n);
-  return 1;
-#endif
+VL_EXPORT long ipc_recv_msg(int fd, void* buf, size_t cap){
+  if (fd < 0) return -EINVAL;
+  uint32_t be = 0;
+  int rc = recv_all(fd, &be, sizeof(be));
+  if (rc != 0) return rc;
+  uint32_t n = from_be32(be);
+  if (n > IPC_MAX_MSG) return -EINVAL;
+  if (n == 0) return 0;
+  if (cap < n) return -ENOMEM;
+  rc = recv_all(fd, buf, n);
+  if (rc != 0) return rc;
+  return (long)n;
 }
 
-/* ============================== send/recv ================================ */
-
-static int ipc_send(VLState *L){
-  int64_t fd = vl_check_integer(L,1);
-  size_t len=0; const char *data = vl_check_string(L,2,&len);
-  int64_t flags = vl_opt_integer(L,3,0);
-#if defined(_WIN32)
-  ensure_wsa();
-  int n = send((SOCKET)(intptr_t)fd, data, (int)len, (int)flags);
-  if(n < 0){ vl_push_nil(L); vl_push_string(L, E_EIO); return 2; }
-  vl_push_integer(L, (int64_t)n);
-  return 1;
-#else
-  ssize_t n = send((int)fd, data, len, (int)flags);
-  if(n < 0){ vl_push_nil(L); vl_push_string(L, E_EIO); return 2; }
-  vl_push_integer(L, (int64_t)n);
-  return 1;
-#endif
-}
-
-static int ipc_recv(VLState *L){
-  int64_t fd = vl_check_integer(L,1);
-  int64_t maxlen = vl_check_integer(L,2);
-  int64_t flags = vl_opt_integer(L,3,0);
-  if(maxlen <= 0){ vl_push_nil(L); vl_push_string(L, E_EINVAL); return 2; }
-  char *buf = (char*)malloc((size_t)maxlen);
-  if(!buf){ vl_push_nil(L); vl_push_string(L, E_ENOMEM); return 2; }
-#if defined(_WIN32)
-  ensure_wsa();
-  int n = recv((SOCKET)(intptr_t)fd, buf, (int)maxlen, (int)flags);
-  if(n < 0){ free(buf); vl_push_nil(L); vl_push_string(L, E_EIO); return 2; }
-  vl_push_lstring(L, buf, (size_t)n);
-  free(buf);
-  return 1;
-#else
-  ssize_t n = recv((int)fd, buf, (size_t)maxlen, (int)flags);
-  if(n < 0){ free(buf); vl_push_nil(L); vl_push_string(L, E_EIO); return 2; }
-  vl_push_lstring(L, buf, (size_t)n);
-  free(buf);
-  return 1;
-#endif
-}
-
-/* ============================== fd options =============================== */
-
-static int ipc_set_nonblock(VLState *L){
-  int64_t fd = vl_check_integer(L,1);
-  int on = vl_opt_boolean(L,2,1);
-#if defined(_WIN32)
-  ensure_wsa();
-  u_long m = on ? 1UL : 0UL;
-  if(ioctlsocket((SOCKET)(intptr_t)fd, FIONBIO, &m) != 0){ vl_push_nil(L); vl_push_string(L, E_EIO); return 2; }
-  vl_push_integer(L,1);
-  return 1;
-#else
-  if(set_nonblock_fd((int)fd,on) != 0){ vl_push_nil(L); vl_push_string(L, E_EIO); return 2; }
-  vl_push_integer(L,1);
-  return 1;
-#endif
-}
-
-static int ipc_set_cloexec(VLState *L){
-  int64_t fd = vl_check_integer(L,1);
-  int on = vl_opt_boolean(L,2,1);
-#if defined(_WIN32)
-  (void)fd; (void)on;
-  /* Pas d’équivalent direct pour un socket existant; on ignore. */
-  vl_push_integer(L,1);
-  return 1;
-#else
-  if(set_cloexec_fd((int)fd,on) != 0){ vl_push_nil(L); vl_push_string(L, E_EIO); return 2; }
-  vl_push_integer(L,1);
-  return 1;
-#endif
-}
-
-/* ================================= close ================================= */
-
-static int ipc_close(VLState *L){
-  int64_t fd = vl_check_integer(L,1);
-  if(fd < 0){ vl_push_nil(L); vl_push_string(L, E_EINVAL); return 2; }
-  close_fd((int)fd);
-  vl_push_integer(L,1);
-  return 1;
-}
-
-/* ================================ Dispatch =============================== */
-
-static const struct vl_Reg funcs[] = {
-  {"pipe",          ipc_pipe},
-  {"socketpair",    ipc_socketpair},
-  {"unix_listen",   ipc_unix_listen},
-  {"unix_connect",  ipc_unix_connect},
-  {"accept",        ipc_accept},
-  {"shutdown",      ipc_shutdown},
-  {"write",         ipc_write},
-  {"read",          ipc_read},
-  {"send",          ipc_send},
-  {"recv",          ipc_recv},
-  {"set_nonblock",  ipc_set_nonblock},
-  {"set_cloexec",   ipc_set_cloexec},
-  {"close",         ipc_close},
-  {NULL, NULL}
-};
-
-int vl_openlib_ipc(VLState *L){
-  vl_register_module(L, "ipc", funcs);
-  return 1;
-}
+#endif // POSIX

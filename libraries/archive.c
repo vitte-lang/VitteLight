@@ -1,657 +1,461 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// archive.c — TAR/ZIP bindings for Vitte Light VM (C17, complet)
-// Namespace: "archive"
+// archive.c — Outils TAR (POSIX ustar) portables pour Vitte Light (C17, sans dépendances)
+// Namespace: "arch"
 //
 // Build:
-//   cc -std=c17 -O2 -Wall -Wextra -pedantic -DVL_HAVE_LIBARCHIVE -c archive.c
-//   cc ... archive.o -larchive
+//   cc -std=c17 -O2 -Wall -Wextra -pedantic -c archive.c
 //
-// Portabilité:
-//   - Implémentation réelle si VL_HAVE_LIBARCHIVE et <archive.h> présents.
-//   - Sinon: stubs -> (nil, "ENOSYS").
+// Fournit :
+//   - Écriture TAR :
+//       arch_tar_open_write(path)
+//       arch_tar_add_file(tw, src_path, arc_path, mode)     // fichier régulier
+//       arch_tar_add_dir (tw, arc_path, mode)               // entrée répertoire
+//       arch_tar_close_write(tw)
+//   - Lecture / Listing / Extraction :
+//       arch_tar_list(path, cb, user)
+//       arch_tar_extract_all(path, dest_root)
+//   - Limitations intentionnelles : fichiers et dossiers (pas de liens spéciaux/char/dev).
+//   - Compatible ustar. Champs numériques en octal, padding 512.
 //
-// Modèle:
-//   - Reader: open -> next() itératif -> (extract_all|close)
-//   - Writer: create(format) -> add_file()/add_dir() -> finish()
+// Notes :
+//   - Pas de compression intégrée. Pour .tar.gz, compressez/décompressez en amont/aval.
+//   - Gère Windows + POSIX. Normalise les chemins d’archive en '/'.
+//   - Les permissions sont appliquées au mieux (Windows ignore POSIX mode).
 //
-// Types d’entrée (type:int):
-//   1=file, 2=dir, 3=symlink, 4=hardlink, 5=char, 6=block, 7=fifo, 8=socket
+// Exemple rapide :
+//   arch_tar_writer* w = arch_tar_open_write("out.tar");
+//   arch_tar_add_dir(w, "folder/", 0755);
+//   arch_tar_add_file(w, "local.bin", "folder/data.bin", 0644);
+//   arch_tar_close_write(w);
 //
-// API:
+//   arch_tar_extract_all("out.tar", "dest");
 //
-//   Lecture / Listing
-//     archive.open(path) -> id | (nil, errmsg)
-//     archive.next(id)
-//         -> name:string, size:int64, mtime:int64, type:int | (nil,"eof") |
-//         (nil,errmsg)
-//     archive.extract_all(id, destdir[, strip_components=0]) -> count:int |
-//     (nil,errmsg) archive.close(id) -> true
-//
-//   Écriture
-//     archive.create(path[, format="tgz"[, level=-1]]) -> id | (nil,errmsg)
-//       // formats: "tgz" (tar+gzip), "tar", "zip"
-//     archive.add_file(id, src_path[, arcname[, mode:int[, mtime:int64]]]) ->
-//     true | (nil,errmsg) archive.add_dir(id, arcname[, mode:int[,
-//     mtime:int64]])               -> true | (nil,errmsg) archive.finish(id) ->
-//     true | (nil,errmsg)
-//
-// Notes:
-//   - extract_all applique strip_components et neutralise ".." / chemins
-//   absolus.
-//   - add_file lit le fichier par blocs et stream vers l’archive.
-//   - mtime en secondes UNIX. mode optionnel (ex: 0644, 0755).
-//
-// Dépendances: auxlib.h, state.h, object.h, vm.h
 
-#include <errno.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
-#include <sys/stat.h>
+#include <errno.h>
+#include <time.h>
 
-#include "auxlib.h"
-#include "object.h"
-#include "state.h"
-#include "vm.h"
-
-#ifdef _WIN32
-#include <io.h>
-#define PATH_SEP '\\'
+#if defined(_WIN32)
+  #include <windows.h>
+  #include <io.h>
+  #include <direct.h>
+  #include <sys/stat.h>
+  #define PATH_SEP '\\'
+  #ifndef S_ISDIR
+    #define S_ISDIR(m) (((m) & _S_IFMT) == _S_IFDIR)
+  #endif
+  #ifndef S_ISREG
+    #define S_ISREG(m) (((m) & _S_IFMT) == _S_IFREG)
+  #endif
 #else
-#include <unistd.h>
-#define PATH_SEP '/'
+  #include <sys/types.h>
+  #include <sys/stat.h>
+  #include <unistd.h>
+  #include <utime.h>
+  #define PATH_SEP '/'
 #endif
 
-#ifdef VL_HAVE_LIBARCHIVE
-#include <archive.h>
-#include <archive_entry.h>
+#ifndef ARCH_API
+#define ARCH_API
 #endif
 
-// ---------------------------------------------------------------------
-// VM arg helpers
-// ---------------------------------------------------------------------
-static const char *ar_check_str(VL_State *S, int idx) {
-  if (vl_get(S, idx) && vl_isstring(S, idx))
-    return vl_tocstring(S, vl_get(S, idx));
-  vl_errorf(S, "argument #%d: string expected", idx);
-  vl_error(S);
-  return NULL;
-}
-static int64_t ar_check_int(VL_State *S, int idx) {
-  if (vl_get(S, idx) && (vl_isint(S, idx) || vl_isfloat(S, idx)))
-    return vl_isint(S, idx) ? vl_toint(S, vl_get(S, idx))
-                            : (int64_t)vl_tonumber(S, vl_get(S, idx));
-  vl_errorf(S, "argument #%d: int expected", idx);
-  vl_error(S);
-  return 0;
-}
-static int ar_opt_bool(VL_State *S, int idx, int defv) {
-  if (!vl_get(S, idx)) return defv;
-  return vl_tobool(vl_get(S, idx)) ? 1 : 0;
-}
-static int ar_opt_int(VL_State *S, int idx, int defv) {
-  if (!vl_get(S, idx)) return defv;
-  if (vl_isint(S, idx) || vl_isfloat(S, idx)) return (int)ar_check_int(S, idx);
-  return defv;
-}
+/* ========================= Helpers ========================= */
 
-// ---------------------------------------------------------------------
-// Stubs si libarchive absente
-// ---------------------------------------------------------------------
-#ifndef VL_HAVE_LIBARCHIVE
-
-#define NOSYS_PAIR(S)            \
-  do {                           \
-    vl_push_nil(S);              \
-    vl_push_string(S, "ENOSYS"); \
-    return 2;                    \
-  } while (0)
-static int vlarch_open(VL_State *S) {
-  (void)ar_check_str(S, 1);
-  NOSYS_PAIR(S);
+static void *xmalloc(size_t n){ void* p = malloc(n); if(!p){ perror("malloc"); exit(1);} return p; }
+static size_t strlcpy0(char* dst, const char* src, size_t cap){
+    if (!cap) return 0; size_t n=0; while (n+1<cap && src && src[n]) { dst[n]=src[n]; n++; }
+    dst[n]=0; return n;
 }
-static int vlarch_next(VL_State *S) { NOSYS_PAIR(S); }
-static int vlarch_extract_all(VL_State *S) { NOSYS_PAIR(S); }
-static int vlarch_close(VL_State *S) {
-  vl_push_bool(S, 1);
-  return 1;
-}
-static int vlarch_create(VL_State *S) { NOSYS_PAIR(S); }
-static int vlarch_add_file(VL_State *S) { NOSYS_PAIR(S); }
-static int vlarch_add_dir(VL_State *S) { NOSYS_PAIR(S); }
-static int vlarch_finish(VL_State *S) { NOSYS_PAIR(S); }
-
+static void path_to_tar(char* s){ for (; *s; ++s) if (*s=='\\') *s='/'; }
+static int mk_dirs_p(const char* path){
+    char tmp[4096]; strlcpy0(tmp, path, sizeof tmp);
+    size_t n = strlen(tmp);
+    if (n==0) return 0;
+    /* skip leading slashes */
+    size_t i = 0; while (tmp[i]=='/' || tmp[i]=='\\') i++;
+    for (; i<n; i++){
+        if (tmp[i]=='/' || tmp[i]=='\\'){
+            tmp[i] = 0;
+#if defined(_WIN32)
+            if (tmp[0] && _mkdir(tmp)!=0 && errno!=EEXIST) return -1;
 #else
-// ---------------------------------------------------------------------
-// Implémentation réelle (libarchive)
-// ---------------------------------------------------------------------
-
-typedef enum { H_UNUSED = 0, H_READER = 1, H_WRITER = 2 } HandleKind;
-
-typedef struct ArcHandle {
-  int used;
-  HandleKind kind;
-  struct archive *a;        // reader or writer
-  struct archive *aw_disk;  // for extract (writer-disk), otherwise NULL
-  int finished;             // writer finished
-} ArcHandle;
-
-static ArcHandle *g_h = NULL;
-static int g_h_cap = 0;
-
-static int ensure_h_cap(int need) {
-  if (need <= g_h_cap) return 1;
-  int ncap = g_h_cap ? g_h_cap : 8;
-  while (ncap < need) ncap <<= 1;
-  ArcHandle *nh = (ArcHandle *)realloc(g_h, (size_t)ncap * sizeof *nh);
-  if (!nh) return 0;
-  for (int i = g_h_cap; i < ncap; i++) {
-    nh[i].used = 0;
-    nh[i].kind = H_UNUSED;
-    nh[i].a = NULL;
-    nh[i].aw_disk = NULL;
-    nh[i].finished = 0;
-  }
-  g_h = nh;
-  g_h_cap = ncap;
-  return 1;
-}
-static int alloc_h_slot(void) {
-  for (int i = 1; i < g_h_cap; i++)
-    if (!g_h[i].used) return i;
-  if (!ensure_h_cap(g_h_cap ? g_h_cap * 2 : 8)) return 0;
-  for (int i = 1; i < g_h_cap; i++)
-    if (!g_h[i].used) return i;
-  return 0;
-}
-static int check_id(int id) {
-  return id > 0 && id < g_h_cap && g_h[id].used && g_h[id].a;
-}
-
-static int push_aerr(VL_State *S, struct archive *a, const char *fallback) {
-  const char *m = a ? archive_error_string(a) : NULL;
-  vl_push_nil(S);
-  vl_push_string(S, (m && *m) ? m : (fallback ? fallback : "EIO"));
-  return 2;
-}
-
-// Sanitize path inside archive: remove drive letter, leading '/', and ".."
-static void sanitize_arcname(const char *in, AuxBuffer *out,
-                             int strip_components) {
-  aux_buffer_reset(out);
-  if (!in) return;
-  const char *p = in;
-
-  // Remove Windows drive prefix "C:\"
-  if (((p[0] >= 'A' && p[0] <= 'Z') || (p[0] >= 'a' && p[0] <= 'z')) &&
-      p[1] == ':' && (p[2] == '/' || p[2] == '\\'))
-    p += 3;
-  // Remove leading slashes
-  while (*p == '/' || *p == '\\') p++;
-
-  // Build normalized path
-  const char *seg = p;
-  int skipped = 0;
-  while (*seg) {
-    // find next sep
-    const char *q = seg;
-    while (*q && *q != '/' && *q != '\\') q++;
-    size_t L = (size_t)(q - seg);
-    if (L == 0) {
-      if (*q) {
-        seg = q + 1;
-        continue;
-      } else
-        break;
-    }
-
-    if (L == 1 && seg[0] == '.') {
-      // skip
-    } else if ((L == 2 && seg[0] == '.' && seg[1] == '.')) {
-      // skip traversal
-    } else {
-      if (skipped >= strip_components) {
-        if (out->len && out->data[out->len - 1] != (uint8_t)'/')
-          aux_buffer_append(out, (const uint8_t *)"/", 1);
-        aux_buffer_append(out, (const uint8_t *)seg, L);
-      } else {
-        skipped++;
-      }
-    }
-    seg = *q ? q + 1 : q;
-  }
-  // Remove any leading slash accidentally added
-  if (out->len && out->data[0] == (uint8_t)'/') {
-    memmove(out->data, out->data + 1, out->len - 1);
-    out->len--;
-  }
-}
-
-// Map AE_IF* to small ints
-static int map_filetype(mode_t m) {
-  switch (m & AE_IFMT) {
-    case AE_IFREG:
-      return 1;
-    case AE_IFDIR:
-      return 2;
-    case AE_IFLNK:
-      return 3;
-    case AE_IFSOCK:
-      return 8;
-    case AE_IFCHR:
-      return 5;
-    case AE_IFBLK:
-      return 6;
-    case AE_IFIFO:
-      return 7;
-    default:
-      return 1;
-  }
-}
-
-// ---------- Reader ----------
-
-static int vlarch_open(VL_State *S) {
-  const char *path = ar_check_str(S, 1);
-  int id = alloc_h_slot();
-  if (!id) {
-    vl_push_nil(S);
-    vl_push_string(S, "ENOMEM");
-    return 2;
-  }
-
-  struct archive *a = archive_read_new();
-  archive_read_support_filter_all(a);
-  archive_read_support_format_all(a);
-  int rc = archive_read_open_filename(a, path, 10240);
-  if (rc != ARCHIVE_OK) {
-    int ret = push_aerr(S, a, "open");
-    archive_read_free(a);
-    return ret;
-  }
-
-  g_h[id].used = 1;
-  g_h[id].kind = H_READER;
-  g_h[id].a = a;
-  g_h[id].aw_disk = NULL;
-  g_h[id].finished = 0;
-  vl_push_int(S, (int64_t)id);
-  return 1;
-}
-
-static int vlarch_next(VL_State *S) {
-  int id = (int)ar_check_int(S, 1);
-  if (!check_id(id) || g_h[id].kind != H_READER) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-
-  struct archive_entry *ent = NULL;
-  int rc = archive_read_next_header(g_h[id].a, &ent);
-  if (rc == ARCHIVE_EOF) {
-    vl_push_nil(S);
-    vl_push_string(S, "eof");
-    return 2;
-  }
-  if (rc != ARCHIVE_OK) return push_aerr(S, g_h[id].a, "next");
-
-  const char *name = archive_entry_pathname(ent);
-  int64_t size = (int64_t)archive_entry_size(ent);
-  int64_t mtime = (int64_t)archive_entry_mtime(ent);
-  int type = map_filetype(archive_entry_filetype(ent));
-
-  vl_push_string(S, name ? name : "");
-  vl_push_int(S, size);
-  vl_push_int(S, mtime);
-  vl_push_int(S, (int64_t)type);
-  return 4;
-}
-
-static int vlarch_extract_all(VL_State *S) {
-  int id = (int)ar_check_int(S, 1);
-  const char *dest = ar_check_str(S, 2);
-  int strip = ar_opt_int(S, 3, 0);
-  if (!check_id(id) || g_h[id].kind != H_READER) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-
-  // Writer-disk
-  struct archive *ad = archive_write_disk_new();
-  archive_write_disk_set_options(
-      ad, ARCHIVE_EXTRACT_TIME | ARCHIVE_EXTRACT_PERM | ARCHIVE_EXTRACT_ACL |
-              ARCHIVE_EXTRACT_FFLAGS | ARCHIVE_EXTRACT_SECURE_NODOTDOT |
-              ARCHIVE_EXTRACT_SECURE_SYMLINKS |
-              ARCHIVE_EXTRACT_SECURE_NOABSOLUTEPATHS);
-  archive_write_disk_set_standard_lookup(ad);
-
-  struct archive *a = g_h[id].a;
-  struct archive_entry *ent;
-  int64_t count = 0;
-  AuxBuffer norm = {0};
-
-  // Iterate entries from current position to EOF
-  int rc;
-  while ((rc = archive_read_next_header(a, &ent)) == ARCHIVE_OK) {
-    const char *name = archive_entry_pathname(ent);
-    sanitize_arcname(name ? name : "", &norm, strip);
-    if (norm.len == 0) {  // fully stripped -> skip
-      archive_read_data_skip(a);
-      continue;
-    }
-
-    // Prefix with dest/
-    AuxBuffer full = {0};
-    aux_buffer_append(&full, (const uint8_t *)dest, strlen(dest));
-    if (full.len && full.data[full.len - 1] != (uint8_t)PATH_SEP) {
-      const char s = PATH_SEP;
-      aux_buffer_append(&full, (const uint8_t *)&s, 1);
-    }
-    aux_buffer_append(&full, norm.data, norm.len);
-
-    // Create a shadow entry with adjusted path
-    struct archive_entry *out = archive_entry_clone(ent);
-    archive_entry_set_pathname(out, (const char *)full.data);
-
-    // Write header
-    int w = archive_write_header(ad, out);
-    if (w != ARCHIVE_OK) {
-      archive_entry_free(out);
-      aux_buffer_free(&full);
-      aux_buffer_free(&norm);
-      int ret = push_aerr(S, ad, "write_header");
-      archive_write_free(ad);
-      return ret;
-    }
-
-    // Copy data if regular file
-    if (archive_entry_size(out) > 0) {
-      const size_t BUF = 64 * 1024;
-      void *buf = malloc(BUF);
-      if (!buf) {
-        archive_entry_free(out);
-        aux_buffer_free(&full);
-        aux_buffer_free(&norm);
-        archive_write_free(ad);
-        vl_push_nil(S);
-        vl_push_string(S, "ENOMEM");
-        return 2;
-      }
-      ssize_t r;
-      while ((r = archive_read_data(a, buf, BUF)) > 0) {
-        if (archive_write_data(ad, buf, (size_t)r) < 0) {
-          free(buf);
-          archive_entry_free(out);
-          aux_buffer_free(&full);
-          aux_buffer_free(&norm);
-          int ret = push_aerr(S, ad, "write_data");
-          archive_write_free(ad);
-          return ret;
+            if (tmp[0] && mkdir(tmp, 0755)!=0 && errno!=EEXIST) return -1;
+#endif
+            tmp[i] = PATH_SEP;
         }
-      }
-      free(buf);
-      if (r < 0) {
-        archive_entry_free(out);
-        aux_buffer_free(&full);
-        aux_buffer_free(&norm);
-        int ret = push_aerr(S, a, "read_data");
-        archive_write_free(ad);
-        return ret;
-      }
     }
-    archive_entry_free(out);
-    count++;
-    // Finish entry
-    archive_write_finish_entry(ad);
-  }
-  aux_buffer_free(&norm);
-  archive_write_free(ad);
-
-  if (rc != ARCHIVE_EOF) return push_aerr(S, a, "read");
-  vl_push_int(S, count);
-  return 1;
-}
-
-static int vlarch_close(VL_State *S) {
-  int id = (int)ar_check_int(S, 1);
-  if (!check_id(id)) {
-    vl_push_bool(S, 1);
-    return 1;
-  }
-  if (g_h[id].kind == H_READER) {
-    archive_read_close(g_h[id].a);
-    archive_read_free(g_h[id].a);
-  } else if (g_h[id].kind == H_WRITER) {
-    if (!g_h[id].finished) archive_write_close(g_h[id].a);
-    archive_write_free(g_h[id].a);
-  }
-  if (g_h[id].aw_disk) {
-    archive_write_free(g_h[id].aw_disk);
-    g_h[id].aw_disk = NULL;
-  }
-  g_h[id].a = NULL;
-  g_h[id].used = 0;
-  g_h[id].kind = H_UNUSED;
-  g_h[id].finished = 0;
-  vl_push_bool(S, 1);
-  return 1;
-}
-
-// ---------- Writer ----------
-
-static int set_writer_format(struct archive *a, const char *fmt, int level) {
-  if (!fmt || strcmp(fmt, "tgz") == 0 || strcmp(fmt, "tar.gz") == 0) {
-    if (archive_write_add_filter_gzip(a) != ARCHIVE_OK) return -1;
-    if (level >= 0 && level <= 9)
-      archive_write_set_filter_option(a, "gzip", "compression-level",
-                                      (char[]){(char)('0' + level), 0});
-    if (archive_write_set_format_pax_restricted(a) != ARCHIVE_OK) return -1;
-    return 0;
-  } else if (strcmp(fmt, "tar") == 0) {
-    if (archive_write_set_format_pax_restricted(a) != ARCHIVE_OK) return -1;
-    return 0;
-  } else if (strcmp(fmt, "zip") == 0) {
-    if (archive_write_set_format_zip(a) != ARCHIVE_OK) return -1;
-    // gzip filter not used for zip; libarchive handles deflate internally
-    if (level >= 0 && level <= 9)
-      archive_write_set_format_option(a, "zip", "compression-level",
-                                      (char[]){(char)('0' + level), 0});
-    return 0;
-  }
-  return -1;
-}
-
-static int vlarch_create(VL_State *S) {
-  const char *path = ar_check_str(S, 1);
-  const char *fmt =
-      (vl_get(S, 2) && vl_isstring(S, 2)) ? ar_check_str(S, 2) : "tgz";
-  int level = ar_opt_int(S, 3, -1);
-
-  int id = alloc_h_slot();
-  if (!id) {
-    vl_push_nil(S);
-    vl_push_string(S, "ENOMEM");
-    return 2;
-  }
-
-  struct archive *a = archive_write_new();
-  if (set_writer_format(a, fmt, level) != 0) {
-    archive_write_free(a);
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-
-  if (archive_write_open_filename(a, path) != ARCHIVE_OK) {
-    int ret = push_aerr(S, a, "open");
-    archive_write_free(a);
-    return ret;
-  }
-
-  g_h[id].used = 1;
-  g_h[id].kind = H_WRITER;
-  g_h[id].a = a;
-  g_h[id].aw_disk = NULL;
-  g_h[id].finished = 0;
-  vl_push_int(S, (int64_t)id);
-  return 1;
-}
-
-static int write_entry_data_from_file(struct archive *a, FILE *fp) {
-  char buf[64 * 1024];
-  size_t r;
-  while ((r = fread(buf, 1, sizeof buf, fp)) > 0) {
-    if (archive_write_data(a, buf, r) < 0) return -1;
-  }
-  if (ferror(fp)) return -1;
-  return 0;
-}
-
-// archive.add_file(id, src_path[, arcname[, mode[, mtime]]])
-static int vlarch_add_file(VL_State *S) {
-  int id = (int)ar_check_int(S, 1);
-  const char *src = ar_check_str(S, 2);
-  const char *arcname_in =
-      (vl_get(S, 3) && vl_isstring(S, 3)) ? ar_check_str(S, 3) : src;
-  int mode_in = (vl_get(S, 4) ? (int)ar_check_int(S, 4) : -1);
-  int64_t mtime_in = (vl_get(S, 5) ? ar_check_int(S, 5) : -1);
-
-  if (!check_id(id) || g_h[id].kind != H_WRITER || g_h[id].finished) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-
-  FILE *fp = fopen(src, "rb");
-  if (!fp) {
-    vl_push_nil(S);
-    vl_push_string(S, "ENOENT");
-    return 2;
-  }
-
-  struct stat st;
-  memset(&st, 0, sizeof st);
-  if (stat(src, &st) != 0) {
-    fclose(fp);
-    vl_push_nil(S);
-    vl_push_string(S, "stat");
-    return 2;
-  }
-
-  // sanitize arcname (no strip here)
-  AuxBuffer norm = {0};
-  sanitize_arcname(arcname_in, &norm, 0);
-
-  struct archive_entry *e = archive_entry_new();
-  archive_entry_set_pathname(e, (const char *)norm.data);
-  archive_entry_set_size(e, (la_int64_t)st.st_size);
-  archive_entry_set_filetype(e, AE_IFREG);
-  archive_entry_set_perm(e, mode_in >= 0 ? mode_in : (st.st_mode & 0777));
-  if (mtime_in >= 0) archive_entry_set_mtime(e, (time_t)mtime_in, 0);
-#ifdef st_mtim
-  else
-    archive_entry_set_mtime(e, st.st_mtime, 0);
+#if defined(_WIN32)
+    if (_mkdir(tmp)!=0 && errno!=EEXIST) return -1;
 #else
-  else
-    archive_entry_set_mtime(e, st.st_mtime, 0);
+    if (mkdir(tmp,0755)!=0 && errno!=EEXIST) return -1;
 #endif
-
-  if (archive_write_header(g_h[id].a, e) != ARCHIVE_OK) {
-    archive_entry_free(e);
-    aux_buffer_free(&norm);
-    fclose(fp);
-    return push_aerr(S, g_h[id].a, "write_header");
-  }
-  if (write_entry_data_from_file(g_h[id].a, fp) != 0) {
-    archive_entry_free(e);
-    aux_buffer_free(&norm);
-    fclose(fp);
-    return push_aerr(S, g_h[id].a, "write_data");
-  }
-  fclose(fp);
-  archive_entry_free(e);
-  aux_buffer_free(&norm);
-  vl_push_bool(S, 1);
-  return 1;
+    return 0;
+}
+static void join_path(char* out, size_t cap, const char* a, const char* b){
+    size_t na = a?strlen(a):0, nb = b?strlen(b):0;
+    if (!cap) return;
+    size_t i=0;
+    for (; i<na && i<cap-1; i++) out[i]=a[i];
+    if (i && out[i-1]!=PATH_SEP && i<cap-1) out[i++]=PATH_SEP;
+    for (size_t j=0;j<nb && i<cap-1;j++) out[i++]=b[j];
+    out[i]=0;
 }
 
-// archive.add_dir(id, arcname[, mode[, mtime]])
-static int vlarch_add_dir(VL_State *S) {
-  int id = (int)ar_check_int(S, 1);
-  const char *arcname_in = ar_check_str(S, 2);
-  int mode_in = (vl_get(S, 3) ? (int)ar_check_int(S, 3) : 0755);
-  int64_t mtime_in = (vl_get(S, 4) ? ar_check_int(S, 4) : -1);
-  if (!check_id(id) || g_h[id].kind != H_WRITER || g_h[id].finished) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
+/* ========================= TAR structures ========================= */
 
-  AuxBuffer norm = {0};
-  sanitize_arcname(arcname_in, &norm, 0);
-  // ensure trailing '/'
-  if (!norm.len || norm.data[norm.len - 1] != (uint8_t)'/') {
-    const char slash = '/';
-    aux_buffer_append(&norm, (const uint8_t *)&slash, 1);
-  }
+#pragma pack(push,1)
+typedef struct {
+    char name[100];
+    char mode[8];
+    char uid[8];
+    char gid[8];
+    char size[12];
+    char mtime[12];
+    char chksum[8];
+    char typeflag;         /* '0' file, '5' dir */
+    char linkname[100];
+    char magic[6];         /* "ustar\0" */
+    char version[2];       /* "00" */
+    char uname[32];
+    char gname[32];
+    char devmajor[8];
+    char devminor[8];
+    char prefix[155];
+    char pad[12];
+} tar_hdr;
+#pragma pack(pop)
 
-  struct archive_entry *e = archive_entry_new();
-  archive_entry_set_pathname(e, (const char *)norm.data);
-  archive_entry_set_filetype(e, AE_IFDIR);
-  archive_entry_set_perm(e, mode_in & 0777);
-  if (mtime_in >= 0) archive_entry_set_mtime(e, (time_t)mtime_in, 0);
-
-  if (archive_write_header(g_h[id].a, e) != ARCHIVE_OK) {
-    archive_entry_free(e);
-    aux_buffer_free(&norm);
-    return push_aerr(S, g_h[id].a, "write_header");
-  }
-  archive_entry_free(e);
-  aux_buffer_free(&norm);
-  vl_push_bool(S, 1);
-  return 1;
+static void octal_write(char* dst, size_t n, uint64_t v){
+    /* Écrit v en octal ASCII, right-justified, N-1 chars + '\0' final.
+       Les champs TAR traditionnels demandent un espace/NULL final. */
+    char buf[32]; size_t i=0;
+    do { buf[i++] = (char)('0' + (v & 7)); v >>= 3; } while (v && i<sizeof buf);
+    /* Remplir de '0' */
+    size_t pos = n-2; /* laisser place pour '\0' */
+    for (size_t k=0;k<n;k++) dst[k]='0';
+    for (size_t k=0;k<i && pos<(n-1);k++) dst[pos--] = buf[k];
+    dst[n-1] = '\0';
 }
 
-static int vlarch_finish(VL_State *S) {
-  int id = (int)ar_check_int(S, 1);
-  if (!check_id(id) || g_h[id].kind != H_WRITER) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-  if (g_h[id].finished) {
-    vl_push_bool(S, 1);
-    return 1;
-  }
-  if (archive_write_close(g_h[id].a) != ARCHIVE_OK)
-    return push_aerr(S, g_h[id].a, "close");
-  g_h[id].finished = 1;
-  vl_push_bool(S, 1);
-  return 1;
+static unsigned hdr_checksum(const tar_hdr* h){
+    unsigned sum=0;
+    const unsigned char* p=(const unsigned char*)h;
+    for (size_t i=0;i<sizeof *h;i++){
+        if (i>=148 && i<156) sum += 0x20; else sum += p[i];
+    }
+    return sum;
 }
 
-#endif  // VL_HAVE_LIBARCHIVE
+static void hdr_set_name(tar_hdr* h, const char* arc_path){
+    /* Split prefix/name if >100 */
+    char tmp[512]; strlcpy0(tmp, arc_path?arc_path:"", sizeof tmp);
+    path_to_tar(tmp);
+    size_t n = strlen(tmp);
+    if (n <= 100){
+        strlcpy0(h->name, tmp, sizeof h->name);
+        h->prefix[0]=0;
+        return;
+    }
+    /* Try to split at last '/' so that name<=100 and prefix<=155 */
+    const char* slash = tmp + n;
+    while (slash>tmp && *slash!='/') slash--;
+    if (slash==tmp){ /* no slash to split, truncate */
+        strlcpy0(h->name, tmp + (n>100?(n-100):0), sizeof h->name);
+        h->prefix[0]=0;
+        return;
+    }
+    size_t name_len = (size_t)(tmp + n - (slash+1));
+    size_t pre_len  = (size_t)(slash - tmp);
+    if (name_len>100) name_len=100; /* still too big: hard truncate */
+    if (pre_len>155) { /* try to drop leading components */
+        const char* p = tmp + (pre_len - 155);
+        strlcpy0(h->prefix, p, sizeof h->prefix);
+    } else {
+        memcpy(h->prefix, tmp, pre_len);
+        h->prefix[pre_len]=0;
+    }
+    memcpy(h->name, slash+1, name_len);
+    h->name[name_len]=0;
+}
 
-// ---------------------------------------------------------------------
-// Registration VM
-// ---------------------------------------------------------------------
-static const VL_Reg archlib[] = {
-    // Reader
-    {"open", vlarch_open},
-    {"next", vlarch_next},
-    {"extract_all", vlarch_extract_all},
-    {"close", vlarch_close},
+static void hdr_fill_common(tar_hdr* h, const char* arc_path, uint64_t size, uint32_t mode, uint64_t mtime, char typeflag){
+    memset(h, 0, sizeof *h);
+    hdr_set_name(h, arc_path);
+    octal_write(h->mode,   sizeof h->mode,   mode ? mode & 07777u : (typeflag=='5'? 0755u : 0644u));
+    octal_write(h->uid,    sizeof h->uid,    0);
+    octal_write(h->gid,    sizeof h->gid,    0);
+    octal_write(h->size,   sizeof h->size,   (typeflag=='5')? 0 : size);
+    octal_write(h->mtime,  sizeof h->mtime,  mtime);
+    memset(h->chksum, ' ', sizeof h->chksum);
+    h->typeflag = typeflag;
+    h->magic[0]='u'; h->magic[1]='s'; h->magic[2]='t'; h->magic[3]='a'; h->magic[4]='r'; h->magic[5]=0;
+    h->version[0]='0'; h->version[1]='0';
+    /* uname/gname facultatifs */
+    strlcpy0(h->uname, "user", sizeof h->uname);
+    strlcpy0(h->gname, "group", sizeof h->gname);
+    unsigned sum = hdr_checksum(h);
+    octal_write(h->chksum, sizeof h->chksum, sum);
+}
 
-    // Writer
-    {"create", vlarch_create},
-    {"add_file", vlarch_add_file},
-    {"add_dir", vlarch_add_dir},
-    {"finish", vlarch_finish},
+/* ========================= Writer ========================= */
 
-    {NULL, NULL}};
+typedef struct { FILE* f; } arch_tar_writer;
 
-void vl_open_archivelib(VL_State *S) { vl_register_lib(S, "archive", archlib); }
+ARCH_API arch_tar_writer* arch_tar_open_write(const char* tar_path){
+    FILE* f = fopen(tar_path, "wb");
+    if (!f) return NULL;
+    arch_tar_writer* w = (arch_tar_writer*)xmalloc(sizeof *w);
+    w->f = f;
+    return w;
+}
+
+static int write_zeros(FILE* f, size_t n){
+    static const unsigned char z[512]={0};
+    while (n){
+        size_t k = n>512?512:n;
+        if (fwrite(z,1,k,f)!=k) return -1;
+        n -= k;
+    }
+    return 0;
+}
+
+ARCH_API int arch_tar_add_dir(arch_tar_writer* w, const char* arc_path, uint32_t mode){
+    if (!w || !w->f || !arc_path) return -1;
+    /* Ensure trailing slash in archive entry */
+    char ap[512]; strlcpy0(ap, arc_path, sizeof ap);
+    path_to_tar(ap);
+    size_t len = strlen(ap);
+    if (!len || ap[len-1]!='/'){ if (len+2>=sizeof ap) return -1; ap[len]='/'; ap[len+1]=0; }
+    tar_hdr h; hdr_fill_common(&h, ap, 0, mode, (uint64_t)time(NULL), '5');
+    if (fwrite(&h,1,sizeof h,w->f)!=sizeof h) return -1;
+    return 0;
+}
+
+ARCH_API int arch_tar_add_file(arch_tar_writer* w, const char* src_path, const char* arc_path, uint32_t mode){
+    if (!w || !w->f || !src_path || !arc_path) return -1;
+    /* stat size + mtime */
+#if defined(_WIN32)
+    struct _stat64 st; if (_stat64(src_path, &st)!=0 || !S_ISREG(st.st_mode)) return -1;
+    uint64_t fsz = (uint64_t)st.st_size; uint64_t mt = (uint64_t)st.st_mtime;
+#else
+    struct stat st; if (stat(src_path, &st)!=0 || !S_ISREG(st.st_mode)) return -1;
+    uint64_t fsz = (uint64_t)st.st_size; uint64_t mt = (uint64_t)st.st_mtime;
+#endif
+    FILE* in = fopen(src_path, "rb"); if (!in) return -1;
+
+    tar_hdr h; hdr_fill_common(&h, arc_path, fsz, mode, mt, '0');
+    if (fwrite(&h,1,sizeof h,w->f)!=sizeof h){ fclose(in); return -1; }
+
+    /* copy with 512-block padding */
+    unsigned char buf[1<<15];
+    uint64_t left = fsz;
+    while (left){
+        size_t r = (size_t)((left > sizeof buf) ? sizeof buf : left);
+        r = fread(buf,1,r,in);
+        if (r==0 && ferror(in)){ fclose(in); return -1; }
+        if (r){
+            if (fwrite(buf,1,r,w->f)!=r){ fclose(in); return -1; }
+            left -= r;
+        } else break;
+    }
+    fclose(in);
+    /* pad to 512 */
+    size_t pad = (size_t)((512 - (fsz % 512)) % 512);
+    if (pad && write_zeros(w->f, pad)!=0) return -1;
+    return 0;
+}
+
+ARCH_API int arch_tar_close_write(arch_tar_writer* w){
+    if (!w) return -1;
+    int rc = 0;
+    if (w->f){
+        if (write_zeros(w->f, 1024)!=0) rc=-1; /* deux blocs vides */
+        if (fclose(w->f)!=0) rc=-1;
+    }
+    free(w);
+    return rc;
+}
+
+/* ========================= Reader / Extract ========================= */
+
+typedef struct {
+    char name[256];
+    uint64_t size;
+    char type;      /* '0' file, '5' dir, autres ignorés */
+    uint32_t mode;
+    uint64_t mtime;
+} arch_tar_entry;
+
+typedef int (*arch_list_cb)(const arch_tar_entry* e, void* user);
+
+static uint64_t octal_read(const char* s, size_t n){
+    uint64_t v=0;
+    for (size_t i=0;i<n && s[i]; i++){
+        if (s[i]==' ' || s[i]=='\0') break;
+        if (s[i]<'0' || s[i]>'7') break;
+        v = (v<<3) + (uint64_t)(s[i]-'0');
+    }
+    return v;
+}
+
+static int parse_hdr(const tar_hdr* h, arch_tar_entry* e){
+    /* validate magic optionally */
+    if (!(h->magic[0]=='u' && h->magic[1]=='s' && h->magic[2]=='t' && h->magic[3]=='a' && h->magic[4]=='r'))
+        ; /* we still try to read, many tars omit magic */
+    unsigned stored = (unsigned)octal_read(h->chksum, sizeof h->chksum);
+    unsigned calc = hdr_checksum(h);
+    if (stored!=0 && stored!=calc){
+        /* could be non-ustar without checksum strict; accept zero blocks detection outside */
+        ;
+    }
+    /* join prefix/name */
+    char path[256]; path[0]=0;
+    if (h->prefix[0]){
+        strlcpy0(path, h->prefix, sizeof path);
+        size_t n=strlen(path);
+        if (n+1<sizeof path){ path[n]='/'; path[n+1]=0; }
+        strlcpy0(path+strlen(path), h->name, sizeof path - strlen(path));
+    } else {
+        strlcpy0(path, h->name, sizeof path);
+    }
+    /* normalize */
+    for (char* p=path; *p; ++p) if (*p=='\\') *p='/';
+
+    e->type  = h->typeflag ? h->typeflag : '0';
+    e->size  = octal_read(h->size, sizeof h->size);
+    e->mode  = (uint32_t)octal_read(h->mode, sizeof h->mode);
+    e->mtime = octal_read(h->mtime, sizeof h->mtime);
+    strlcpy0(e->name, path, sizeof e->name);
+    return 0;
+}
+
+static int is_zero_block(const unsigned char* b){
+    for (int i=0;i<512;i++) if (b[i]!=0) return 0; return 1;
+}
+
+ARCH_API int arch_tar_list(const char* tar_path, arch_list_cb cb, void* user){
+    FILE* f = fopen(tar_path, "rb"); if (!f) return -1;
+    unsigned char block[512];
+    while (fread(block,1,512,f)==512){
+        if (is_zero_block(block)){
+            /* check second zero block */
+            if (fread(block,1,512,f)==512 && is_zero_block(block)) break;
+            else { fseek(f,-512,SEEK_CUR); continue; }
+        }
+        tar_hdr h; memcpy(&h, block, 512);
+        arch_tar_entry e; parse_hdr(&h, &e);
+        if (cb){
+            int rc = cb(&e, user);
+            if (rc) { fclose(f); return rc; }
+        }
+        /* skip payload */
+        uint64_t skip = e.size;
+        if (e.type=='5') skip = 0;
+        if (skip){
+            uint64_t pad = (512 - (skip % 512)) % 512;
+            if (fseek(f, (long)(skip + pad), SEEK_CUR)!=0){ fclose(f); return -1; }
+        }
+    }
+    fclose(f);
+    return 0;
+}
+
+ARCH_API int arch_tar_extract_all(const char* tar_path, const char* dest_root){
+    FILE* f = fopen(tar_path, "rb"); if (!f) return -1;
+    unsigned char block[512];
+    char outpath[4096];
+    while (fread(block,1,512,f)==512){
+        if (is_zero_block(block)){
+            if (fread(block,1,512,f)==512 && is_zero_block(block)) break;
+            else { fseek(f,-512,SEEK_CUR); continue; }
+        }
+        tar_hdr h; memcpy(&h, block, 512);
+        arch_tar_entry e; parse_hdr(&h, &e);
+
+        /* construire chemin */
+        if (dest_root && *dest_root) join_path(outpath, sizeof outpath, dest_root, e.name);
+        else strlcpy0(outpath, e.name, sizeof outpath);
+
+        /* sécurité basique: empêcher sortie du dest_root via .. */
+        if (strstr(e.name, "..")) { /* on peut raffiner si besoin */
+            /* skip entry */
+            uint64_t skip = e.size;
+            uint64_t pad = (512 - (skip % 512)) % 512;
+            if (fseek(f, (long)(skip + pad), SEEK_CUR)!=0){ fclose(f); return -1; }
+            continue;
+        }
+
+        if (e.type=='5'){ /* dir */
+            if (mk_dirs_p(outpath)!=0){ fclose(f); return -1; }
+#if !defined(_WIN32)
+            chmod(outpath, e.mode? e.mode : 0755);
+#endif
+            continue;
+        }
+
+        /* ensure parent directory exists */
+        {
+            char dirbuf[4096]; strlcpy0(dirbuf, outpath, sizeof dirbuf);
+            char* last = NULL; for (char* p=dirbuf; *p; ++p) if (*p=='/'||*p=='\\') last=p;
+            if (last){ *last=0; if (dirbuf[0]) mk_dirs_p(dirbuf); }
+        }
+
+        /* write file */
+        FILE* out = fopen(outpath, "wb");
+        if (!out){ fclose(f); return -1; }
+
+        uint64_t left = e.size;
+        while (left){
+            size_t chunk = (size_t)(left > sizeof block ? sizeof block : left);
+            size_t r = fread(block,1,chunk,f);
+            if (r!=chunk){ fclose(out); fclose(f); return -1; }
+            if (fwrite(block,1,r,out)!=r){ fclose(out); fclose(f); return -1; }
+            left -= r;
+        }
+        fclose(out);
+
+        /* pad */
+        if (e.size % 512){
+            uint64_t pad = 512 - (e.size % 512);
+            if (fseek(f, (long)pad, SEEK_CUR)!=0){ fclose(f); return -1; }
+        }
+
+#if !defined(_WIN32)
+        chmod(outpath, e.mode? e.mode : 0644);
+        struct utimbuf tb; tb.actime=(time_t)e.mtime; tb.modtime=(time_t)e.mtime;
+        utime(outpath, &tb);
+#endif
+    }
+    fclose(f);
+    return 0;
+}
+
+/* ========================= Test optionnel ========================= */
+#ifdef ARCH_TEST
+static int list_cb(const arch_tar_entry* e, void* u){
+    (void)u;
+    printf("%c %08o %10llu %s\n",
+           e->type, (unsigned)e->mode,
+           (unsigned long long)e->size, e->name);
+    return 0;
+}
+int main(void){
+    arch_tar_writer* w = arch_tar_open_write("demo.tar");
+    arch_tar_add_dir(w, "folder/", 0755);
+    FILE* t=fopen("hello.txt","wb"); fputs("Hello TAR\n",t); fclose(t);
+    arch_tar_add_file(w, "hello.txt", "folder/hello.txt", 0644);
+    arch_tar_close_write(w);
+
+    puts("== LIST ==");
+    arch_tar_list("demo.tar", list_cb, NULL);
+
+    puts("== EXTRACT ==");
+    arch_tar_extract_all("demo.tar", "out");
+
+    return 0;
+}
+#endif

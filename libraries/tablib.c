@@ -1,730 +1,418 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// tablib.c — Tabular data library for Vitte Light VM (C17, complet)
+// tablib.c — Tableaux texte simples: CSV/TSV, sélection, tri, impression (C17, portable)
 // Namespace: "tab"
 //
-// Modèle: table en mémoire, lignes dynamiques, colonnes nommées, cellules
-// typées. Types cellule: 0=nil, 1=int64, 2=float64, 3=text(UTF-8 opaque).
+// Build:
+//   cc -std=c17 -O2 -Wall -Wextra -pedantic -c tablib.c
 //
-// Gestion par identifiants entiers (slots), pas d’userdata VM.
-//
-// API:
-//   -- Lifecycle
-//     tab.new()                              -> id | (nil, errmsg)
-//     tab.free(id)                           -> true
-//     tab.clear(id)                          -> true
-//     tab.reserve(id, rows:int, cols:int)    -> true | (nil, errmsg)
-//     tab.clone(id)                          -> newid | (nil, errmsg)
-//
-//   -- Dimensions / colonnes
-//     tab.nrows(id)                          -> int
-//     tab.ncols(id)                          -> int
-//     tab.columns_csv(id[, sep=","])         -> string
-//     tab.add_col(id, name)                  -> colIndex | (nil, errmsg)     //
-//     append at end tab.insert_col(id, at:int, name)       -> true | (nil,
-//     errmsg) tab.drop_col(id, col)                  -> true | (nil, errmsg)
-//     tab.rename_col(id, col, newname)       -> true | (nil, errmsg)
-//     tab.col_index(id, name)                -> int (0 if not found)
-//
-//   -- Lignes
-//     tab.append_row(id)                     -> rowIndex | (nil, errmsg)
-//     tab.insert_row(id, at:int)             -> true | (nil, errmsg)
-//     tab.drop_row(id, row)                  -> true | (nil, errmsg)
-//
-//   -- Accès cellules (1-based row/col)
-//     tab.get(id, row, col)                  -> nil|int|float|string
-//     tab.set_null(id, row, col)             -> true | (nil, errmsg)
-//     tab.set_int(id, row, col, v:int64)     -> true | (nil, errmsg)
-//     tab.set_float(id, row, col, v:number)  -> true | (nil, errmsg)
-//     tab.set_text(id, row, col, s:string)   -> true | (nil, errmsg)
-//
-//   -- Recherche / tri
-//     tab.find_str(id, col, needle[, nocase=false]) -> row:int (0 if not found)
-//     tab.find_int(id, col, v:int64)                -> row:int
-//     tab.find_float(id, col, v:number[, eps=0])    -> row:int
-//     tab.sort_by(id, col[, numeric=false[, desc=false[, na_last=true]]]) ->
-//     true | (nil, errmsg)
-//
-//   -- Import/Export CSV (RFC 4180-like, CRLF/ LF, quote="")
-//     tab.to_csv(id[, sep=",", header=true])         -> csv:string
-//     tab.from_csv(id, csv[, sep=",", header=true])  -> true | (nil, errmsg)
-//     tab.set_header_from_first_row(id)              -> true | (nil, errmsg)
-//
-//   -- Export JSON Lines (une ligne par objet; valeurs nil -> null;
-//   int/float/text)
-//     tab.to_jsonl(id)                               -> string
-//
-// Dépendances: auxlib.h, state.h, object.h, vm.h
+// Test (TAB_TEST):
+//   cc -std=c17 -O2 -Wall -Wextra -pedantic -DTAB_TEST tablib.c && ./a.out
 
-#include <ctype.h>
-#include <math.h>
-#include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 
-#include "auxlib.h"
-#include "object.h"
-#include "state.h"
-#include "vm.h"
-
-// ------------------------------------------------------------
-// VM helpers
-// ------------------------------------------------------------
-static const char *tb_check_str(VL_State *S, int idx) {
-  if (vl_get(S, idx) && vl_isstring(S, idx))
-    return vl_tocstring(S, vl_get(S, idx));
-  vl_errorf(S, "argument #%d: string expected", idx);
-  vl_error(S);
-  return NULL;
-}
-static int64_t tb_check_int(VL_State *S, int idx) {
-  if (vl_get(S, idx) && (vl_isint(S, idx) || vl_isfloat(S, idx)))
-    return vl_isint(S, idx) ? vl_toint(S, vl_get(S, idx))
-                            : (int64_t)vl_tonumber(S, vl_get(S, idx));
-  vl_errorf(S, "argument #%d: int expected", idx);
-  vl_error(S);
-  return 0;
-}
-static double tb_check_num(VL_State *S, int idx) {
-  VL_Value *v = vl_get(S, idx);
-  if (!v) {
-    vl_errorf(S, "argument #%d: number expected", idx);
-    return vl_error(S);
-  }
-  return vl_tonumber(S, v);
-}
-static int tb_opt_bool(VL_State *S, int idx, int defv) {
-  if (!vl_get(S, idx)) return defv;
-  return vl_tobool(vl_get(S, idx)) ? 1 : 0;
-}
-static int tb_opt_int(VL_State *S, int idx, int defv) {
-  if (!vl_get(S, idx)) return defv;
-  if (vl_isint(S, idx) || vl_isfloat(S, idx)) return (int)tb_check_int(S, idx);
-  return defv;
-}
-static char tb_opt_sep(VL_State *S, int idx, char defc) {
-  if (!vl_get(S, idx)) return defc;
-  if (vl_isstring(S, idx)) {
-    const char *p = tb_check_str(S, idx);
-    return p && *p ? p[0] : defc;
-  }
-  return defc;
-}
-
-// ------------------------------------------------------------
-// Core model
-// ------------------------------------------------------------
-typedef enum { TB_NIL = 0, TB_INT = 1, TB_FLOAT = 2, TB_TEXT = 3 } TbType;
-typedef struct {
-  TbType t;
-  union {
-    int64_t i;
-    double f;
-    char *s;
-  } v;
-} Cell;
+#ifndef TAB_API
+#define TAB_API
+#endif
 
 typedef struct {
-  int used;
-  size_t nrows, ncols;
-  size_t cap_rows, cap_cols;
-  char **colnames;  // ncols
-  Cell *cells;      // cap_rows * cap_cols
-} Table;
+    char** names;      /* ncol */
+    size_t ncol, capcol;
 
-static Table *g_tab = NULL;
-static int g_cap = 0;
+    char*** rows;      /* nrow x ncol (cells) */
+    size_t nrow, caprow;
+} tab_table;
 
-static int ensure_tab_cap(int need) {
-  if (need <= g_cap) return 1;
-  int ncap = g_cap ? g_cap : 16;
-  while (ncap < need) ncap <<= 1;
-  Table *nt = (Table *)realloc(g_tab, (size_t)ncap * sizeof *nt);
-  if (!nt) return 0;
-  for (int i = g_cap; i < ncap; i++) {
-    nt[i].used = 0;
-    nt[i].nrows = nt[i].ncols = 0;
-    nt[i].cap_rows = nt[i].cap_cols = 0;
-    nt[i].colnames = NULL;
-    nt[i].cells = NULL;
-  }
-  g_tab = nt;
-  g_cap = ncap;
-  return 1;
-}
-static int alloc_slot(void) {
-  for (int i = 1; i < g_cap; i++)
-    if (!g_tab[i].used) return i;
-  if (!ensure_tab_cap(g_cap ? g_cap * 2 : 16)) return 0;
-  for (int i = 1; i < g_cap; i++)
-    if (!g_tab[i].used) return i;
-  return 0;
-}
+/* ====================== helpers ====================== */
 
-static void cell_free(Cell *c) {
-  if (!c) return;
-  if (c->t == TB_TEXT && c->v.s) {
-    free(c->v.s);
-    c->v.s = NULL;
-  }
-  c->t = TB_NIL;
+static char* _strdup0(const char* s){
+    if (!s) { char* z=(char*)malloc(1); if(z) z[0]=0; return z; }
+    size_t n=strlen(s); char* d=(char*)malloc(n+1); if(!d) return NULL; memcpy(d,s,n+1); return d;
 }
-static void cell_set_text(Cell *c, const char *s) {
-  cell_free(c);
-  if (!s) {
-    c->t = TB_NIL;
-    return;
-  }
-  size_t n = strlen(s);
-  char *d = (char *)malloc(n + 1);
-  if (!d) {
-    c->t = TB_NIL;
-    return;
-  }
-  memcpy(d, s, n + 1);
-  c->t = TB_TEXT;
-  c->v.s = d;
+static void _free_row(char** row, size_t ncol){
+    if (!row) return; for (size_t i=0;i<ncol;i++) free(row[i]); free(row);
 }
-static void cell_copy(Cell *dst, const Cell *src) {
-  cell_free(dst);
-  dst->t = src->t;
-  if (src->t == TB_TEXT) {
-    if (src->v.s) {
-      size_t n = strlen(src->v.s);
-      dst->v.s = (char *)malloc(n + 1);
-      if (dst->v.s)
-        memcpy(dst->v.s, src->v.s, n + 1);
-      else
-        dst->t = TB_NIL;
-    } else
-      dst->v.s = NULL;
-  } else if (src->t == TB_INT)
-    dst->v.i = src->v.i;
-  else if (src->t == TB_FLOAT)
-    dst->v.f = src->v.f;
-}
-static int ensure_colcap(Table *T, size_t cap_cols) {
-  if (cap_cols <= T->cap_cols) return 1;
-  size_t ncap = T->cap_cols ? T->cap_cols : 4;
-  while (ncap < cap_cols) ncap <<= 1;
-  // realloc colnames
-  char **nc = (char **)realloc(T->colnames, ncap * sizeof *nc);
-  if (!nc) return 0;
-  for (size_t i = T->cap_cols; i < ncap; i++) nc[i] = NULL;
-  T->colnames = nc;
-  // realloc cells with new row stride
-  size_t old_cap_cols = T->cap_cols ? T->cap_cols : cap_cols;  // handle 0
-  if (T->cells == NULL) {
-    T->cells =
-        (Cell *)calloc((T->cap_rows ? T->cap_rows : 1) * ncap, sizeof(Cell));
-    if (!T->cells) return 0;
-    T->cap_cols = ncap;
-    return 1;
-  }
-  Cell *ncells =
-      (Cell *)calloc((T->cap_rows ? T->cap_rows : 1) * ncap, sizeof(Cell));
-  if (!ncells) return 0;
-  // move old data row by row
-  for (size_t r = 0; r < T->cap_rows; r++) {
-    for (size_t c = 0; c < T->ncols && c < old_cap_cols; c++) {
-      Cell *src = &T->cells[r * old_cap_cols + c];
-      Cell *dst = &ncells[r * ncap + c];
-      if (r < T->nrows) cell_copy(dst, src);
+static int _ensure_cols(tab_table* t, size_t need){
+    if (need<=t->capcol) return 0;
+    size_t nc = t->capcol? t->capcol:4; while (nc<need) nc*=2;
+    char** nn = (char**)realloc(t->names, nc*sizeof *nn); if(!nn) return -1;
+    t->names = nn;
+    /* extend existing rows with empty cells */
+    for (size_t r=0;r<t->nrow;r++){
+        char** nr = (char**)realloc(t->rows[r], nc*sizeof *nr); if(!nr) return -1;
+        for (size_t c=t->capcol; c<nc; c++) nr[c] = _strdup0("");
+        t->rows[r] = nr;
     }
-  }
-  // free old cells
-  for (size_t r = 0; r < T->nrows; r++) {
-    for (size_t c = T->ncols; c < old_cap_cols; c++) {
-      Cell *src = &T->cells[r * old_cap_cols + c];
-      cell_free(src);
+    t->capcol = nc;
+    return 0;
+}
+static int _ensure_rows(tab_table* t, size_t need){
+    if (need<=t->caprow) return 0;
+    size_t nr = t->caprow? t->caprow:8; while (nr<need) nr*=2;
+    char*** nrows = (char***)realloc(t->rows, nr*sizeof *nrows); if(!nrows) return -1;
+    t->rows = nrows; t->caprow = nr; return 0;
+}
+
+/* ====================== API ====================== */
+
+TAB_API void tab_init(tab_table* t, size_t cols){
+    if (!t) return; memset(t,0,sizeof *t);
+    if (cols){
+        t->names = (char**)calloc(cols, sizeof *t->names);
+        t->rows  = NULL;
+        t->ncol = 0; t->capcol = cols;
     }
-  }
-  free(T->cells);
-  T->cells = ncells;
-  T->cap_cols = ncap;
-  return 1;
 }
-static int ensure_rowcap(Table *T, size_t cap_rows) {
-  if (cap_rows <= T->cap_rows) return 1;
-  size_t ncap = T->cap_rows ? T->cap_rows : 4;
-  while (ncap < cap_rows) ncap <<= 1;
-  Cell *ncells = (Cell *)calloc(
-      ncap * (T->cap_cols ? T->cap_cols : (T->ncols ? T->ncols : 1)),
-      sizeof(Cell));
-  if (!ncells) return 0;
-  size_t stride_old = (T->cap_cols ? T->cap_cols : (T->ncols ? T->ncols : 1));
-  size_t stride_new = (T->cap_cols ? T->cap_cols : (T->ncols ? T->ncols : 1));
-  if (T->cells) {
-    for (size_t r = 0; r < T->nrows; r++) {
-      for (size_t c = 0; c < T->ncols; c++) {
-        Cell *src = &T->cells[r * stride_old + c];
-        Cell *dst = &ncells[r * stride_new + c];
-        cell_copy(dst, src);
-      }
+TAB_API void tab_free(tab_table* t){
+    if (!t) return;
+    for (size_t i=0;i<t->ncol;i++) free(t->names[i]);
+    free(t->names);
+    for (size_t r=0;r<t->nrow;r++) _free_row(t->rows[r], t->ncol);
+    free(t->rows);
+    memset(t,0,sizeof *t);
+}
+TAB_API void tab_clear_rows(tab_table* t){
+    if (!t) return;
+    for (size_t r=0;r<t->nrow;r++) _free_row(t->rows[r], t->ncol);
+    free(t->rows); t->rows=NULL; t->nrow=0; t->caprow=0;
+}
+
+TAB_API int tab_add_col(tab_table* t, const char* name){
+    if (!t) return -1;
+    if (_ensure_cols(t, t->ncol+1)!=0) return -1;
+    t->names[t->ncol] = _strdup0(name?name:"");
+    if (!t->names[t->ncol]) return -1;
+    return (int)(t->ncol++);
+}
+TAB_API int tab_col_index(const tab_table* t, const char* name){
+    if (!t||!name) return -1;
+    for (size_t i=0;i<t->ncol;i++) if (strcmp(t->names[i]?t->names[i]:"", name)==0) return (int)i;
+    return -1;
+}
+
+TAB_API int tab_add_row(tab_table* t){
+    if (!t) return -1;
+    if (_ensure_rows(t, t->nrow+1)!=0) return -1;
+    char** row = (char**)malloc((t->capcol?t->capcol:(t->ncol?t->ncol:1)) * sizeof *row);
+    if (!row) return -1;
+    if (t->capcol==0 && t->ncol>0){
+        if (_ensure_cols(t, t->ncol)!=0){ free(row); return -1; }
     }
-    // free old
-    for (size_t r = 0; r < T->nrows; r++) {
-      for (size_t c = 0; c < stride_old; c++) {
-        Cell *src = &T->cells[r * stride_old + c];
-        cell_free(src);
-      }
+    for (size_t c=0;c<t->ncol;c++) row[c]=_strdup0("");
+    for (size_t c=t->ncol;c<t->capcol;c++) row[c]=_strdup0("");
+    t->rows[t->nrow] = row;
+    return (int)(t->nrow++);
+}
+
+TAB_API int tab_set(tab_table* t, size_t r, size_t c, const char* val){
+    if (!t || r>=t->nrow) return -1;
+    if (c>=t->ncol){
+        if (_ensure_cols(t, c+1)!=0) return -1;
+        t->ncol = c+1;
     }
-    free(T->cells);
-  }
-  T->cells = ncells;
-  T->cap_rows = ncap;
-  return 1;
+    char** row = t->rows[r];
+    char* nv = _strdup0(val?val:"");
+    if (!nv) return -1;
+    free(row[c]); row[c]=nv;
+    return 0;
 }
-static inline Cell *at(Table *T, size_t r, size_t c) {
-  size_t stride = (T->cap_cols ? T->cap_cols : T->ncols);
-  return &T->cells[r * stride + c];
+TAB_API const char* tab_get(const tab_table* t, size_t r, size_t c){
+    if (!t || r>=t->nrow || c>=t->ncol) return NULL;
+    return t->rows[r][c];
 }
-static int check_id(int id) { return id > 0 && id < g_cap && g_tab[id].used; }
 
-static void table_free(Table *T) {
-  if (!T) return;
-  // free cell heap
-  size_t stride = (T->cap_cols ? T->cap_cols : (T->ncols ? T->ncols : 1));
-  for (size_t r = 0; r < T->nrows; r++) {
-    for (size_t c = 0; c < stride; c++) {
-      cell_free(&T->cells[r * stride + c]);
+/* ====================== CSV/TSV read/write ====================== */
+
+static int _csv_flush_cell(tab_table* t, size_t* prow_idx, size_t* pcur_c,
+                           const char* buf, size_t n){
+    if (*prow_idx==SIZE_MAX){
+        int r = tab_add_row(t);
+        if (r<0) return -1;
+        *prow_idx = (size_t)r;
+        *pcur_c = 0;
     }
-  }
-  free(T->cells);
-  T->cells = NULL;
-  // free colnames
-  for (size_t c = 0; c < T->ncols; c++) {
-    free(T->colnames[c]);
-    T->colnames[c] = NULL;
-  }
-  free(T->colnames);
-  T->colnames = NULL;
-  T->nrows = T->ncols = T->cap_rows = T->cap_cols = 0;
-  T->used = 0;
-}
-
-static int colname_set(Table *T, size_t idx, const char *name) {
-  if (idx >= T->cap_cols && !ensure_colcap(T, idx + 1)) return 0;
-  size_t n = strlen(name ? name : "");
-  char *d = (char *)malloc(n + 1);
-  if (!d) return 0;
-  memcpy(d, name ? name : "", n + 1);
-  if (idx < T->ncols && T->colnames[idx]) free(T->colnames[idx]);
-  T->colnames[idx] = d;
-  return 1;
-}
-static int colname_cmp_ci(const char *a, const char *b) {
-  for (;; a++, b++) {
-    int ca = tolower((unsigned char)*a);
-    int cb = tolower((unsigned char)*b);
-    if (ca != cb) return ca < cb ? -1 : 1;
-    if (!*a || !*b) return 0;
-  }
-}
-
-// ------------------------------------------------------------
-// VM — Lifecycle
-// ------------------------------------------------------------
-static int vltab_new(VL_State *S) {
-  int id = alloc_slot();
-  if (!id) {
-    vl_push_nil(S);
-    vl_push_string(S, "ENOMEM");
-    return 2;
-  }
-  g_tab[id].used = 1;
-  g_tab[id].nrows = 0;
-  g_tab[id].ncols = 0;
-  g_tab[id].cap_rows = 0;
-  g_tab[id].cap_cols = 0;
-  g_tab[id].colnames = NULL;
-  g_tab[id].cells = NULL;
-  vl_push_int(S, (int64_t)id);
-  return 1;
-}
-
-static int vltab_free(VL_State *S) {
-  int id = (int)tb_check_int(S, 1);
-  if (check_id(id)) table_free(&g_tab[id]);
-  vl_push_bool(S, 1);
-  return 1;
-}
-
-static int vltab_clear(VL_State *S) {
-  int id = (int)tb_check_int(S, 1);
-  if (!check_id(id)) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-  Table *T = &g_tab[id];
-  // clear cells
-  size_t stride = (T->cap_cols ? T->cap_cols : (T->ncols ? T->ncols : 1));
-  for (size_t r = 0; r < T->nrows; r++)
-    for (size_t c = 0; c < stride; c++) cell_free(&T->cells[r * stride + c]);
-  T->nrows = 0;
-  vl_push_bool(S, 1);
-  return 1;
-}
-
-static int vltab_reserve(VL_State *S) {
-  int id = (int)tb_check_int(S, 1);
-  int rows = (int)tb_check_int(S, 2);
-  int cols = (int)tb_check_int(S, 3);
-  if (!check_id(id) || rows < 0 || cols < 0) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-  Table *T = &g_tab[id];
-  if (cols > 0 && !ensure_colcap(T, (size_t)cols)) {
-    vl_push_nil(S);
-    vl_push_string(S, "ENOMEM");
-    return 2;
-  }
-  if (rows > 0 && !ensure_rowcap(T, (size_t)rows)) {
-    vl_push_nil(S);
-    vl_push_string(S, "ENOMEM");
-    return 2;
-  }
-  vl_push_bool(S, 1);
-  return 1;
-}
-
-static int vltab_clone(VL_State *S) {
-  int id = (int)tb_check_int(S, 1);
-  if (!check_id(id)) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-  int nid = alloc_slot();
-  if (!nid) {
-    vl_push_nil(S);
-    vl_push_string(S, "ENOMEM");
-    return 2;
-  }
-  Table *A = &g_tab[id], *B = &g_tab[nid];
-  B->used = 1;
-  B->nrows = A->nrows;
-  B->ncols = A->ncols;
-  B->cap_rows = A->nrows;
-  B->cap_cols = A->ncols ? A->ncols : 1;
-  B->colnames = (char **)calloc(B->cap_cols, sizeof(char *));
-  B->cells = (Cell *)calloc(
-      (B->cap_rows ? B->cap_rows : 1) * (B->cap_cols ? B->cap_cols : 1),
-      sizeof(Cell));
-  if (!B->colnames || !B->cells) {
-    table_free(B);
-    vl_push_nil(S);
-    vl_push_string(S, "ENOMEM");
-    return 2;
-  }
-  for (size_t c = 0; c < B->ncols; c++)
-    colname_set(B, c, A->colnames[c] ? A->colnames[c] : "");
-  for (size_t r = 0; r < B->nrows; r++)
-    for (size_t c = 0; c < B->ncols; c++) cell_copy(at(B, r, c), at(A, r, c));
-  vl_push_int(S, (int64_t)nid);
-  return 1;
-}
-
-// ------------------------------------------------------------
-// VM — Dimensions / colonnes
-// ------------------------------------------------------------
-static int vltab_nrows(VL_State *S) {
-  int id = (int)tb_check_int(S, 1);
-  if (!check_id(id)) {
-    vl_push_int(S, 0);
-    return 1;
-  }
-  vl_push_int(S, (int64_t)g_tab[id].nrows);
-  return 1;
-}
-static int vltab_ncols(VL_State *S) {
-  int id = (int)tb_check_int(S, 1);
-  if (!check_id(id)) {
-    vl_push_int(S, 0);
-    return 1;
-  }
-  vl_push_int(S, (int64_t)g_tab[id].ncols);
-  return 1;
-}
-
-static int vltab_columns_csv(VL_State *S) {
-  int id = (int)tb_check_int(S, 1);
-  char sep = tb_opt_sep(S, 2, ',');
-  if (!check_id(id)) {
-    vl_push_string(S, "");
-    return 1;
-  }
-  Table *T = &g_tab[id];
-  AuxBuffer b = {0};
-  for (size_t c = 0; c < T->ncols; c++) {
-    const char *nm = T->colnames[c] ? T->colnames[c] : "";
-    // CSV escaping minimal if sep present or quotes
-    int needq = 0;
-    for (const char *p = nm; *p; ++p)
-      if (*p == sep || *p == '"' || *p == '\n' || *p == '\r') {
-        needq = 1;
-        break;
-      }
-    if (c) aux_buffer_append_byte(&b, (uint8_t)sep);
-    if (!needq)
-      aux_buffer_append(&b, (const uint8_t *)nm, strlen(nm));
-    else {
-      aux_buffer_append_byte(&b, '"');
-      for (const char *p = nm; *p; ++p) {
-        if (*p == '"') {
-          aux_buffer_append_byte(&b, '"');
-          aux_buffer_append_byte(&b, '"');
-        } else
-          aux_buffer_append_byte(&b, (uint8_t)*p);
-      }
-      aux_buffer_append_byte(&b, '"');
+    if (t->ncol==0){
+        if (tab_add_col(t,"")<0) return -1;
     }
-  }
-  vl_push_lstring(S, (const char *)b.data, (int)b.len);
-  aux_buffer_free(&b);
-  return 1;
-}
-
-static int vltab_add_col(VL_State *S) {
-  int id = (int)tb_check_int(S, 1);
-  const char *name = tb_check_str(S, 2);
-  if (!check_id(id)) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-  Table *T = &g_tab[id];
-  if (!ensure_colcap(T, T->ncols + 1)) {
-    vl_push_nil(S);
-    vl_push_string(S, "ENOMEM");
-    return 2;
-  }
-  if (!colname_set(T, T->ncols, name)) {
-    vl_push_nil(S);
-    vl_push_string(S, "ENOMEM");
-    return 2;
-  }
-  // Make sure rows have capacity
-  if (!ensure_rowcap(T, T->nrows ? T->nrows : 1)) {
-    vl_push_nil(S);
-    vl_push_string(S, "ENOMEM");
-    return 2;
-  }
-  T->ncols++;
-  vl_push_int(S, (int64_t)T->ncols);
-  return 1;
-}
-
-static int vltab_insert_col(VL_State *S) {
-  int id = (int)tb_check_int(S, 1);
-  int at = (int)tb_check_int(S, 2);
-  const char *name = tb_check_str(S, 3);
-  if (!check_id(id) || at < 1) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-  Table *T = &g_tab[id];
-  if ((size_t)at > T->ncols + 1) at = (int)T->ncols + 1;
-  if (!ensure_colcap(T, T->ncols + 1)) {
-    vl_push_nil(S);
-    vl_push_string(S, "ENOMEM");
-    return 2;
-  }
-  size_t stride = T->cap_cols;
-  // shift names
-  for (size_t c = T->ncols; c >= (size_t)at && c > 0; c--) {
-    T->colnames[c] = T->colnames[c - 1];
-  }
-  T->colnames[at - 1] = NULL;
-  if (!colname_set(T, at - 1, name)) {
-    vl_push_nil(S);
-    vl_push_string(S, "ENOMEM");
-    return 2;
-  }
-  // shift cells right
-  for (size_t r = 0; r < T->nrows; r++) {
-    for (size_t c = T->ncols; c >= (size_t)at && c > 0; c--) {
-      Cell *dst = &T->cells[r * stride + c];
-      Cell *src = &T->cells[r * stride + (c - 1)];
-      cell_copy(dst, src);
+    if (*pcur_c>=t->ncol){
+        if (tab_add_col(t,"")<0) return -1;
     }
-    // clear new cell
-    Cell *nc = &T->cells[r * stride + (at - 1)];
-    cell_free(nc);
-    nc->t = TB_NIL;
-  }
-  T->ncols++;
-  vl_push_bool(S, 1);
-  return 1;
+    char* s=(char*)malloc(n+1); if(!s) return -1;
+    memcpy(s,buf,n); s[n]=0;
+    free(t->rows[*prow_idx][*pcur_c]);
+    t->rows[*prow_idx][*pcur_c]=s;
+    (*pcur_c)++;
+    return 0;
 }
+static void _csv_end_row(size_t* prow_idx){ *prow_idx = SIZE_MAX; }
 
-static int vltab_drop_col(VL_State *S) {
-  int id = (int)tb_check_int(S, 1);
-  int col = (int)tb_check_int(S, 2);
-  if (!check_id(id) || col < 1) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-  Table *T = &g_tab[id];
-  if ((size_t)col > T->ncols || T->ncols == 0) {
-    vl_push_nil(S);
-    vl_push_string(S, "ERANGE");
-    return 2;
-  }
-  size_t stride = T->cap_cols;
-  // free cells of that column
-  for (size_t r = 0; r < T->nrows; r++)
-    cell_free(&T->cells[r * stride + (col - 1)]);
-  // shift cells left
-  for (size_t r = 0; r < T->nrows; r++) {
-    for (size_t c = (size_t)col; c < T->ncols; c++) {
-      Cell *dst = &T->cells[r * stride + (c - 1)];
-      Cell *src = &T->cells[r * stride + c];
-      cell_free(dst);
-      cell_copy(dst, src);
+static int _read_csv_core(tab_table* t, FILE* f, int sep, int allow_crlf){
+    if (!t||!f) return -1;
+    enum { INIT=0, FIELD, QUOTED, QUOTED_ESC } st = INIT;
+    size_t cap=1024, n=0; char* buf=(char*)malloc(cap); if(!buf) return -1;
+    size_t row_idx = SIZE_MAX;
+    size_t cur_c = 0;
+
+    int ch;
+    while ((ch=fgetc(f))!=EOF){
+        if (st==INIT){
+            n=0;
+            if (ch=='\"'){ st=QUOTED; continue; }
+            if (ch==sep){
+                if (_csv_flush_cell(t,&row_idx,&cur_c,buf,n)!=0){ free(buf); return -1; }
+                st=INIT; continue;
+            }
+            if (ch=='\n' || (allow_crlf && ch=='\r')){
+                if (_csv_flush_cell(t,&row_idx,&cur_c,buf,n)!=0){ free(buf); return -1; }
+                if (allow_crlf && ch=='\r'){
+                    int c2 = fgetc(f);
+                    if (c2!='\n' && c2!=EOF) ungetc(c2,f);
+                }
+                _csv_end_row(&row_idx);
+                st=INIT; continue;
+            }
+            if (n+1>=cap){ cap*=2; char* nb=(char*)realloc(buf,cap); if(!nb){ free(buf); return -1; } buf=nb; }
+            buf[n++]=(char)ch; st=FIELD; continue;
+        }
+        if (st==FIELD){
+            if (ch==sep){
+                if (_csv_flush_cell(t,&row_idx,&cur_c,buf,n)!=0){ free(buf); return -1; }
+                n=0; st=INIT; continue;
+            }
+            if (ch=='\n' || (allow_crlf && ch=='\r')){
+                if (_csv_flush_cell(t,&row_idx,&cur_c,buf,n)!=0){ free(buf); return -1; }
+                if (allow_crlf && ch=='\r'){
+                    int c2 = fgetc(f);
+                    if (c2!='\n' && c2!=EOF) ungetc(c2,f);
+                }
+                _csv_end_row(&row_idx);
+                n=0; st=INIT; continue;
+            }
+            if (n+1>=cap){ cap*=2; char* nb=(char*)realloc(buf,cap); if(!nb){ free(buf); return -1; } buf=nb; }
+            buf[n++]=(char)ch; continue;
+        }
+        if (st==QUOTED){
+            if (ch=='\"'){ st=QUOTED_ESC; continue; }
+            if (n+1>=cap){ cap*=2; char* nb=(char*)realloc(buf,cap); if(!nb){ free(buf); return -1; } buf=nb; }
+            buf[n++]=(char)ch; continue;
+        }
+        if (st==QUOTED_ESC){
+            if (ch=='\"'){
+                if (n+1>=cap){ cap*=2; char* nb=(char*)realloc(buf,cap); if(!nb){ free(buf); return -1; } buf=nb; }
+                buf[n++]='\"'; st=QUOTED; continue;
+            }
+            if (ch==sep){
+                if (_csv_flush_cell(t,&row_idx,&cur_c,buf,n)!=0){ free(buf); return -1; }
+                n=0; st=INIT; continue;
+            }
+            if (ch=='\n' || (allow_crlf && ch=='\r')){
+                if (_csv_flush_cell(t,&row_idx,&cur_c,buf,n)!=0){ free(buf); return -1; }
+                if (allow_crlf && ch=='\r'){
+                    int c2 = fgetc(f);
+                    if (c2!='\n' && c2!=EOF) ungetc(c2,f);
+                }
+                _csv_end_row(&row_idx);
+                n=0; st=INIT; continue;
+            }
+            if (n+1>=cap){ cap*=2; char* nb=(char*)realloc(buf,cap); if(!nb){ free(buf); return -1; } buf=nb; }
+            buf[n++]=(char)ch; st=FIELD; continue;
+        }
     }
-    // clear tail cell
-    cell_free(&T->cells[r * stride + (T->ncols - 1)]);
-  }
-  // free name
-  if (T->colnames[col - 1]) {
-    free(T->colnames[col - 1]);
-    T->colnames[col - 1] = NULL;
-  }
-  for (size_t c = (size_t)col; c < T->ncols; c++)
-    T->colnames[c - 1] = T->colnames[c];
-  T->colnames[T->ncols - 1] = NULL;
-  T->ncols--;
-  vl_push_bool(S, 1);
-  return 1;
-}
-
-static int vltab_rename_col(VL_State *S) {
-  int id = (int)tb_check_int(S, 1);
-  int col = (int)tb_check_int(S, 2);
-  const char *name = tb_check_str(S, 3);
-  if (!check_id(id) || col < 1) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-  Table *T = &g_tab[id];
-  if ((size_t)col > T->ncols) {
-    vl_push_nil(S);
-    vl_push_string(S, "ERANGE");
-    return 2;
-  }
-  if (!colname_set(T, (size_t)col - 1, name)) {
-    vl_push_nil(S);
-    vl_push_string(S, "ENOMEM");
-    return 2;
-  }
-  vl_push_bool(S, 1);
-  return 1;
-}
-
-static int vltab_col_index(VL_State *S) {
-  int id = (int)tb_check_int(S, 1);
-  const char *name = tb_check_str(S, 2);
-  if (!check_id(id)) {
-    vl_push_int(S, 0);
-    return 1;
-  }
-  Table *T = &g_tab[id];
-  for (size_t c = 0; c < T->ncols; c++) {
-    if (!T->colnames[c]) continue;
-    if (strcmp(T->colnames[c], name) == 0) {
-      vl_push_int(S, (int64_t)(c + 1));
-      return 1;
+    /* EOF: flush pending final cell/row */
+    if (st==FIELD || st==QUOTED_ESC || st==INIT || st==QUOTED){
+        if (_csv_flush_cell(t,&row_idx,&cur_c,buf,n)!=0){ free(buf); return -1; }
+        _csv_end_row(&row_idx);
     }
-  }
-  vl_push_int(S, 0);
-  return 1;
+    free(buf);
+    return 0;
 }
 
-// ------------------------------------------------------------
-// VM — Lignes
-// ------------------------------------------------------------
-static int vltab_append_row(VL_State *S) {
-  int id = (int)tb_check_int(S, 1);
-  if (!check_id(id)) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-  Table *T = &g_tab[id];
-  if (!ensure_rowcap(T, T->nrows + 1)) {
-    vl_push_nil(S);
-    vl_push_string(S, "ENOMEM");
-    return 2;
-  }
-  // init row nil
-  size_t stride = (T->cap_cols ? T->cap_cols : (T->ncols ? T->ncols : 1));
-  for (size_t c = 0; c < T->ncols; c++) {
-    Cell *x = &T->cells[T->nrows * stride + c];
-    cell_free(x);
-    x->t = TB_NIL;
-  }
-  T->nrows++;
-  vl_push_int(S, (int64_t)T->nrows);
-  return 1;
+TAB_API int tab_read_csv(tab_table* t, FILE* f, int sep, int allow_crlf){
+    if (sep==0) sep=',';
+    return _read_csv_core(t,f,sep,allow_crlf?1:0);
 }
-static int vltab_insert_row(VL_State *S) {
-  int id = (int)tb_check_int(S, 1);
-  int at = (int)tb_check_int(S, 2);
-  if (!check_id(id) || at < 1) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-  Table *T = &g_tab[id];
-  if ((size_t)at > T->nrows + 1) at = (int)T->nrows + 1;
-  if (!ensure_rowcap(T, T->nrows + 1)) {
-    vl_push_nil(S);
-    vl_push_string(S, "ENOMEM");
-    return 2;
-  }
-  size_t stride = T->cap_cols ? T->cap_cols : T->ncols;
-  // shift down
-  for (size_t r = T->nrows; r >= (size_t)at && r > 0; r--) {
-    for (size_t c = 0; c < T->ncols; c++) {
-      Cell *dst = &T->cells[r * stride + c];
-      Cell *src = &T->cells[(r - 1) * stride + c];
-      cell_copy(dst, src);
+TAB_API int tab_read_tsv(tab_table* t, FILE* f){
+    return _read_csv_core(t,f,'\t',1);
+}
+
+static void _csv_write_cell(FILE* out, const char* s, int sep){
+    int needq=0;
+    for (const unsigned char* p=(const unsigned char*)s; *p; p++){
+        if (*p==',' || *p=='\"' || *p=='\n' || *p=='\r' || (sep!='\0' && *p==(unsigned char)sep)){ needq=1; break; }
     }
-  }
-  // clear new row
-  for (size_t c = 0; c < T->ncols; c++) {
-    Cell *x = &T->cells[((size_t)at - 1) * stride + c];
-    cell_free(x);
-    x->t = TB_NIL;
-  }
-  T->nrows++;
-  vl_push_bool(S, 1);
-  return 1;
+    if (!needq){ fputs(s,out); return; }
+    fputc('\"',out);
+    for (const unsigned char* p=(const unsigned char*)s; *p; p++){
+        if (*p=='\"') fputc('\"',out);
+        fputc(*p,out);
+    }
+    fputc('\"',out);
 }
-static int vltab_drop_row(VL_State *S) {
-  int id = (int)tb_check_int(S, 1);
-  int row = (int)tb_check_int(S, 2);
-  if (!check_id(id) || row < 1) {
-    vl_push_nil(S);
-    vl_push_string(S, "EINVAL");
-    return 2;
-  }
-  Table *T = &g_tab[id];
-  if ((size_t)row > T->nrows || T->nrows == 0) {
-    vl_push_nil(S);
-    vl_push_string(S, "ERANGE");
-    return 2;
-  }
-  size_t stride = T->cap_cols ? T->cap_cols : T->ncols;
-  // free row cells
-  for (size_t c = 0; c < T->ncols; c++)
-    cell_free(&T->cells[((size_t)row - 1) * stride + c]);
-  // shift up
-    for (size_t r=(size_t
+TAB_API int tab_write_csv(const tab_table* t, FILE* out, int sep){
+    if (!t||!out) return -1; if (sep==0) sep=',';
+    for (size_t c=0;c<t->ncol;c++){
+        if (c) fputc(sep,out);
+        _csv_write_cell(out, t->names[c]?t->names[c]:"", sep);
+    }
+    fputc('\n',out);
+    for (size_t r=0;r<t->nrow;r++){
+        for (size_t c=0;c<t->ncol;c++){
+            if (c) fputc(sep,out);
+            _csv_write_cell(out, t->rows[r][c]?t->rows[r][c]:"", sep);
+        }
+        fputc('\n',out);
+    }
+    return 0;
+}
+
+/* ====================== Tri / Filtre / Print ====================== */
+
+static int _cmp_cs(const void* a, const void* b, void* th){
+    size_t col = *(size_t*)th;
+    char* const* ra = *(char* const* const*)a;
+    char* const* rb = *(char* const* const*)b;
+    const char* sa = ra[col]?ra[col]:"";
+    const char* sb = rb[col]?rb[col]:"";
+    return strcmp(sa,sb);
+}
+static int _cmp_ci(const void* a, const void* b, void* th){
+    size_t col = *(size_t*)th;
+    char* const* ra = *(char* const* const*)a;
+    char* const* rb = *(char* const* const*)b;
+    const unsigned char* sa = (const unsigned char*)(ra[col]?ra[col]:"");
+    const unsigned char* sb = (const unsigned char*)(rb[col]?rb[col]:"");
+    while (*sa && *sb){
+        int da = tolower(*sa), db = tolower(*sb);
+        if (da!=db) return da-db;
+        sa++; sb++;
+    }
+    return (int)(*sa) - (int)(*sb);
+}
+
+#if defined(__GNUC__) || defined(__clang__)
+static void _qsort_r(void* base, size_t nmemb, size_t size,
+                     int (*compar)(const void*, const void*, void*), void* th){
+#if defined(__APPLE__)
+    qsort_r(base, nmemb, size, th, compar);
+#else
+    qsort_r(base, nmemb, size, compar, th);
+#endif
+}
+#else
+static size_t _g_col; static int _g_ci; static int _g_desc;
+static int _cmp_fallback(const void* a, const void* b){
+    char* const* ra = *(char* const* const*)a;
+    char* const* rb = *(char* const* const*)b;
+    const char* sa = ra[_g_col]?ra[_g_col]:"";
+    const char* sb = rb[_g_col]?rb[_g_col]:"";
+    int r=0;
+    if (_g_ci){
+        const unsigned char* ua=(const unsigned char*)sa; const unsigned char* ub=(const unsigned char*)sb;
+        while (*ua && *ub){ int da=tolower(*ua), db=tolower(*ub); if (da!=db){ r=da-db; goto done; } ua++; ub++; }
+        r=(int)(*ua)-(int)(*ub);
+    } else r=strcmp(sa,sb);
+done:
+    return _g_desc? -r : r;
+}
+#endif
+
+TAB_API int tab_sort(tab_table* t, size_t col, int case_insensitive, int descending){
+    if (!t || col>=t->ncol) return -1;
+#if defined(__GNUC__) || defined(__clang__)
+    size_t th = col;
+    int (*cmp)(const void*,const void*,void*) = case_insensitive? _cmp_ci : _cmp_cs;
+    _qsort_r(t->rows, t->nrow, sizeof *t->rows, cmp, &th);
+    if (descending){
+        for (size_t i=0;i<t->nrow/2;i++){ char** tmp=t->rows[i]; t->rows[i]=t->rows[t->nrow-1-i]; t->rows[t->nrow-1-i]=tmp; }
+    }
+#else
+    _g_col=col; _g_ci=case_insensitive?1:0; _g_desc=descending?1:0;
+    qsort(t->rows, t->nrow, sizeof *t->rows, _cmp_fallback);
+#endif
+    return 0;
+}
+
+/* Supprime en place les lignes pour lesquelles keep_cb==0. */
+typedef int (*tab_keep_cb)(char* const* row, size_t ncol, void* u);
+TAB_API size_t tab_filter_rows(tab_table* t, tab_keep_cb keep, void* u){
+    if (!t||!keep) return 0;
+    size_t w=0;
+    for (size_t r=0;r<t->nrow;r++){
+        if (keep((char* const*)t->rows[r], t->ncol, u)){
+            if (w!=r) t->rows[w]=t->rows[r];
+            w++;
+        } else {
+            _free_row(t->rows[r], t->ncol);
+        }
+    }
+    t->nrow=w;
+    return w;
+}
+
+/* Impression en colonnes. */
+TAB_API void tab_print_cols(const tab_table* t, FILE* out, int padding){
+    if (!t||!out) return; if (padding<1) padding=2;
+    size_t* w = (size_t*)calloc(t->ncol? t->ncol:1, sizeof *w); if(!w) return;
+    for (size_t c=0;c<t->ncol;c++){
+        size_t m = t->names[c]?strlen(t->names[c]):0;
+        for (size_t r=0;r<t->nrow;r++){
+            size_t L = t->rows[r][c]?strlen(t->rows[r][c]):0;
+            if (L>m) m=L;
+        }
+        w[c]=m;
+    }
+    for (size_t c=0;c<t->ncol;c++){
+        const char* s = t->names[c]?t->names[c]:"";
+        fprintf(out, "%-*s", (int)(w[c] + (c+1<t->ncol?padding:0)), s);
+    }
+    fputc('\n', out);
+    for (size_t r=0;r<t->nrow;r++){
+        for (size_t c=0;c<t->ncol;c++){
+            const char* s = t->rows[r][c]?t->rows[r][c]:"";
+            fprintf(out, "%-*s", (int)(w[c] + (c+1<t->ncol?padding:0)), s);
+        }
+        fputc('\n', out);
+    }
+    free(w);
+}
+
+/* ====================== Test ====================== */
+#ifdef TAB_TEST
+static int keep_nonempty_first(char* const* row, size_t ncol, void* u){
+    (void)u; (void)ncol; return row[0] && row[0][0];
+}
+int main(void){
+    tab_table t; tab_init(&t, 0);
+    tab_add_col(&t, "Name");
+    tab_add_col(&t, "Age");
+    for (int i=0;i<3;i++){
+        int r=tab_add_row(&t);
+        char buf[16]; snprintf(buf,sizeof buf,"%d", 20+i);
+        tab_set(&t,(size_t)r,0, i==1?"":(i==0?"Alice":"Bob"));
+        tab_set(&t,(size_t)r,1, buf);
+    }
+
+    puts("Before:");
+    tab_print_cols(&t, stdout, 2);
+
+    tab_sort(&t, 0, 1, 0);
+    puts("\nSorted by Name (CI):");
+    tab_print_cols(&t, stdout, 2);
+
+    tab_filter_rows(&t, keep_nonempty_first, NULL);
+    puts("\nFiltered non-empty Name:");
+    tab_print_cols(&t, stdout, 2);
+
+    FILE* f=fopen("table.csv","wb"); tab_write_csv(&t,f,','); fclose(f);
+    tab_clear_rows(&t);
+    f=fopen("table.csv","rb"); tab_read_csv(&t,f,',',1); fclose(f);
+    puts("\nReloaded CSV:");
+    tab_print_cols(&t, stdout, 2);
+
+    tab_free(&t);
+    return 0;
+}
+#endif
