@@ -1,0 +1,1 @@
+/usr/bin/cc -O3 -DNDEBUG -arch x86_64 -Wl,-search_paths_first -Wl,-headerpad_max_install_names CMakeFiles/vitlc.dir/compiler/vitlc.c.o -o vitlc  libvittelight.a -lm
