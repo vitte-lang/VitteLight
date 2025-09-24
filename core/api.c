@@ -12,10 +12,10 @@
 #endif
 #endif
 
-#include "core/api.h"
 #include <errno.h>
 #include <stdarg.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -63,6 +63,7 @@ typedef uint64_t u64;
 typedef float f32;
 typedef double f64;
 typedef size_t usize;
+typedef ptrdiff_t isize;
 
 /* --------------------------------------------------------------------------
    Utilitaires généraux
@@ -124,13 +125,13 @@ static inline Err errf(int code, const char* fmt, ...) {
    Logger minimal (ANSI)
    -------------------------------------------------------------------------- */
 typedef enum {
-  LOG_TRACE = 0,
-  LOG_DEBUG,
-  LOG_INFO,
-  LOG_WARN,
-  LOG_ERROR
+  VL_LOG_TRACE = 0,
+  VL_LOG_DEBUG,
+  VL_LOG_INFO,
+  VL_LOG_WARN,
+  VL_LOG_ERROR
 } LogLevel;
-static LogLevel g_log_level = LOG_INFO;
+static LogLevel g_log_level = VL_LOG_INFO;
 static bool g_log_color = true;
 
 API_EXPORT void log_set_level(LogLevel lvl) { g_log_level = lvl; }
@@ -138,13 +139,13 @@ API_EXPORT void log_set_color(bool on) { g_log_color = on; }
 
 static const char* lvl_name(LogLevel l) {
   switch (l) {
-    case LOG_TRACE:
+    case VL_LOG_TRACE:
       return "TRACE";
-    case LOG_DEBUG:
+    case VL_LOG_DEBUG:
       return "DEBUG";
-    case LOG_INFO:
+    case VL_LOG_INFO:
       return "INFO";
-    case LOG_WARN:
+    case VL_LOG_WARN:
       return "WARN";
     default:
       return "ERROR";
@@ -153,29 +154,29 @@ static const char* lvl_name(LogLevel l) {
 static const char* lvl_color(LogLevel l) {
   if (!g_log_color) return "";
   switch (l) {
-    case LOG_TRACE:
+    case VL_LOG_TRACE:
       return "\x1b[90m";
-    case LOG_DEBUG:
+    case VL_LOG_DEBUG:
       return "\x1b[36m";
-    case LOG_INFO:
+    case VL_LOG_INFO:
       return "\x1b[32m";
-    case LOG_WARN:
+    case VL_LOG_WARN:
       return "\x1b[33m";
     default:
       return "\x1b[31m";
   }
 }
-static inline void vlogf(LogLevel lvl, const char* fmt, va_list ap) {
+static inline void vl_vlogf(LogLevel lvl, const char* fmt, va_list ap) {
   if (lvl < g_log_level) return;
   char buf[1024];
   vsnprintf(buf, sizeof(buf), fmt, ap);
-  fprintf((lvl >= LOG_WARN) ? stderr : stdout, "%s[%s]\x1b[0m %s\n",
+  fprintf((lvl >= VL_LOG_WARN) ? stderr : stdout, "%s[%s]\x1b[0m %s\n",
           lvl_color(lvl), lvl_name(lvl), buf);
 }
-API_EXPORT void logf(LogLevel lvl, const char* fmt, ...) {
+API_EXPORT void vl_logf(LogLevel lvl, const char* fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
-  vlogf(lvl, fmt, ap);
+  vl_vlogf(lvl, fmt, ap);
   va_end(ap);
 }
 
@@ -736,11 +737,11 @@ API_EXPORT void ansi_paint_to(StrBuf* out, const char* text, const char* pre) {
    -------------------------------------------------------------------------- */
 #ifdef API_DEMO_MAIN
 int main(void) {
-  log_set_level(LOG_DEBUG);
-  logf(LOG_INFO, "api init t=%llums", (unsigned long long)time_ms_wall());
+  log_set_level(VL_LOG_DEBUG);
+  vl_logf(VL_LOG_INFO, "api init t=%llums", (unsigned long long)time_ms_wall());
 
   /* RNG */
-  logf(LOG_DEBUG, "rand=%llu", (unsigned long long)rand_u64());
+  vl_logf(VL_LOG_DEBUG, "rand=%llu", (unsigned long long)rand_u64());
 
   /* StrBuf + JSON */
   JsonW jw;
@@ -753,7 +754,7 @@ int main(void) {
   jw_key(&jw, "ok");
   jw_bool(&jw, true);
   jw_obj_end(&jw);
-  logf(LOG_INFO, "json: %s", jw_cstr(&jw));
+  vl_logf(VL_LOG_INFO, "json: %s", jw_cstr(&jw));
   jw_free(&jw);
 
   /* Map */
@@ -764,20 +765,20 @@ int main(void) {
   map_put(&mp, "a", 3);
   u64 v = 0;
   if (map_get(&mp, "a", &v))
-    logf(LOG_INFO, "map[a]=%llu", (unsigned long long)v);
+    vl_logf(VL_LOG_INFO, "map[a]=%llu", (unsigned long long)v);
   map_free(&mp);
 
   /* Arena */
   Arena a = arena_new(1024);
   char* s = arena_strdup(&a, "arena-string");
-  logf(LOG_INFO, "arena str: %s", s);
+  vl_logf(VL_LOG_INFO, "arena str: %s", s);
   arena_free(&a);
 
   /* File roundtrip */
   const char* path = "api_demo.txt";
   const char* msg = "Hello from api.c\n";
   Err e = file_write_all(path, msg, strlen(msg));
-  if (e.code) logf(LOG_ERROR, "write failed: %s", e.msg);
+  if (e.code) vl_logf(VL_LOG_ERROR, "write failed: %s", e.msg);
   VEC(u8) bin;
   if (!e.code) {
     e = file_read_all(path, &bin);
@@ -786,7 +787,7 @@ int main(void) {
     StrBuf sb;
     sb_init(&sb);
     ansi_paint_to(&sb, (const char*)bin.data, ansi_green());
-    logf(LOG_INFO, "%s", sb.data);
+    vl_logf(VL_LOG_INFO, "%s", sb.data);
     sb_free(&sb);
     vec_free(&bin);
   }
@@ -797,11 +798,11 @@ int main(void) {
   while (u8s[i]) {
     usize adv = 0;
     u32 cp = utf8_decode_1(u8s + i, strlen(u8s) - i, &adv);
-    logf(LOG_DEBUG, "cp U+%04X", (unsigned)cp);
+    vl_logf(VL_LOG_DEBUG, "cp U+%04X", (unsigned)cp);
     i += adv ? adv : 1;
   }
 
-  logf(LOG_INFO, "done");
+  vl_logf(VL_LOG_INFO, "done");
   return 0;
 }
 #endif

@@ -87,16 +87,16 @@ static inline Err api_errf(int code, const char* fmt, ...) {
 /* Logger */
 /* -------------------------------------------------------------------------- */
 typedef enum {
-  LOG_TRACE = 0,
-  LOG_DEBUG,
-  LOG_INFO,
-  LOG_WARN,
-  LOG_ERROR
+  VL_LOG_TRACE = 0,
+  VL_LOG_DEBUG,
+  VL_LOG_INFO,
+  VL_LOG_WARN,
+  VL_LOG_ERROR
 } LogLevel;
 
 API_EXPORT void log_set_level(LogLevel lvl);
 API_EXPORT void log_set_color(bool on);
-API_EXPORT void logf(LogLevel lvl, const char* fmt, ...);
+API_EXPORT void vl_logf(LogLevel lvl, const char* fmt, ...);
 
 /* -------------------------------------------------------------------------- */
 /* Temps / sommeil */

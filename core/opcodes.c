@@ -16,7 +16,9 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
 
 #ifndef VT_OPCODES_API
 #define VT_OPCODES_API /* extern par défaut dans le .h ; local ici */

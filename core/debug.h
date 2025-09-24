@@ -99,35 +99,31 @@ VT_DEBUG_API void vt_debug_install_crash_handlers(void);
 /* Appel interne conditionnel */
 #define VT__LOG_ENABLED(LVL) ((LVL) >= VT_LOG_COMPILETIME_LEVEL)
 
-/* Variadics compatibles MSVC */
-#if defined(_MSC_VER)
-#define VT__VA_OPT(...) , __VA_ARGS__
-#else
-#define VT__VA_OPT(...) , ##__VA_ARGS__
-#endif
-
 /* Macro générique */
-#define VT_LOG(LVL, FMT, ...)                          \
-  do {                                                 \
-    if (VT__LOG_ENABLED(LVL))                          \
-      vt_log_write((LVL), __FILE__, __LINE__, VT_FUNC, \
-                   (FMT)VT__VA_OPT(__VA_ARGS__));      \
+#define VT_LOG(LVL, ...)                                             \
+  do {                                                               \
+    if (VT__LOG_ENABLED(LVL))                                        \
+      vt_log_write((LVL), __FILE__, __LINE__, VT_FUNC, __VA_ARGS__); \
   } while (0)
 
 /* Niveaux dédiés */
-#define VT_TRACE(FMT, ...) VT_LOG(VT_LL_TRACE, FMT, __VA_ARGS__)
-#define VT_DEBUG(FMT, ...) VT_LOG(VT_LL_DEBUG, FMT, __VA_ARGS__)
-#define VT_INFO(FMT, ...) VT_LOG(VT_LL_INFO, FMT, __VA_ARGS__)
-#define VT_WARN(FMT, ...) VT_LOG(VT_LL_WARN, FMT, __VA_ARGS__)
-#define VT_ERROR(FMT, ...) VT_LOG(VT_LL_ERROR, FMT, __VA_ARGS__)
-#define VT_FATAL(FMT, ...) VT_LOG(VT_LL_FATAL, FMT, __VA_ARGS__)
+#define VT_TRACE(...) VT_LOG(VT_LL_TRACE, __VA_ARGS__)
+#define VT_DEBUG(...) VT_LOG(VT_LL_DEBUG, __VA_ARGS__)
+#define VT_INFO(...)  VT_LOG(VT_LL_INFO,  __VA_ARGS__)
+#define VT_WARN(...)  VT_LOG(VT_LL_WARN,  __VA_ARGS__)
+#define VT_ERROR(...) VT_LOG(VT_LL_ERROR, __VA_ARGS__)
+#define VT_FATAL(...) VT_LOG(VT_LL_FATAL, __VA_ARGS__)
 
-/* Assert light: log + abort via vt_log_write(FATAL) */
-#define VT_ASSERT(COND, FMT, ...)                                  \
-  do {                                                             \
-    if (!(COND)) {                                                 \
-      VT_FATAL("assertion failed: %s | " FMT, #COND, __VA_ARGS__); \
-    }                                                              \
+VT_DEBUG_API void vt_assert_fail(const char* cond, const char* file, int line,
+                                 const char* func, const char* fmt, ...)
+    VT_PRINTF(5, 6);
+
+/* Assert light: log fatal with condition and custom message */
+#define VT_ASSERT(COND, ...)                                                \
+  do {                                                                      \
+    if (!(COND)) {                                                          \
+      vt_assert_fail(#COND, __FILE__, __LINE__, VT_FUNC, __VA_ARGS__);      \
+    }                                                                       \
   } while (0)
 
 #ifdef __cplusplus

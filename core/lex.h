@@ -3,7 +3,8 @@
    - Lexe l’EBNF « Vitte/Vitl » (identique pour les deux langages)
    - Identifiants, nombres (10/16/2, float + exp, underscores), bool, char,
    string
-   - Commentaires //, //!, /* */
+   - Commentaires //, //!, (slash-star)
+ */
 
 #ifndef VT_LEX_H
 #define VT_LEX_H
@@ -13,8 +14,7 @@
 #include <stdint.h> /* uint32_t, uint64_t */
 
 #ifdef __cplusplus
-                     extern "C" {
-#endif
+extern "C" {
 
 /* ----------------------------------------------------------------------------
    Export
@@ -217,4 +217,5 @@
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
+
 #endif /* VT_LEX_H */

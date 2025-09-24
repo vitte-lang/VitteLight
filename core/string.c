@@ -423,9 +423,9 @@ void vt_str_to_upper_ascii(vt_str* s) {
 /* ----------------------------------------------------------------------------
    find / KMP
 ---------------------------------------------------------------------------- */
-ssize_t vt_sv_find(vt_sv hay, vt_sv nee) {
+size_t vt_sv_find(vt_sv hay, vt_sv nee) {
   if (nee.len == 0) return 0;
-  if (nee.len > hay.len) return -1;
+  if (nee.len > hay.len) return (size_t)-1;
   int* lps = (int*)xmalloc(sizeof(int) * nee.len);
   kmp_build(nee.data, nee.len, lps);
   size_t i = 0, j = 0;
@@ -435,7 +435,7 @@ ssize_t vt_sv_find(vt_sv hay, vt_sv nee) {
       j++;
       if (j == nee.len) {
         free(lps);
-        return (ssize_t)(i - j);
+        return i - j;
       }
     } else if (j)
       j = (size_t)lps[j - 1];
@@ -443,16 +443,16 @@ ssize_t vt_sv_find(vt_sv hay, vt_sv nee) {
       i++;
   }
   free(lps);
-  return -1;
+  return (size_t)-1;
 }
-ssize_t vt_sv_rfind(vt_sv hay, vt_sv nee) {
-  if (nee.len == 0) return (ssize_t)hay.len;
-  if (nee.len > hay.len) return -1;
+size_t vt_sv_rfind(vt_sv hay, vt_sv nee) {
+  if (nee.len == 0) return hay.len;
+  if (nee.len > hay.len) return (size_t)-1;
   for (size_t pos = hay.len - nee.len + 1; pos-- > 0;) {
-    if (memcmp(hay.data + pos, nee.data, nee.len) == 0) return (ssize_t)pos;
+    if (memcmp(hay.data + pos, nee.data, nee.len) == 0) return pos;
     if (pos == 0) break;
   }
-  return -1;
+  return (size_t)-1;
 }
 bool vt_sv_starts_with(vt_sv s, vt_sv pre) {
   return s.len >= pre.len && memcmp(s.data, pre.data, pre.len) == 0;

@@ -19,12 +19,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Vecteurs typés */
-typedef VEC(u8)     vec_u8;
-typedef VEC(u32)    vec_u32;
-typedef VEC(char)   vec_char;
-typedef VEC(CodeKV) vec_CodeKV; /* <- important si non défini dans code.h */
-
 /* Accès interne à la hash-map pour itération */
 struct HSlot {
   char* key;
@@ -82,18 +76,18 @@ void code_usage(FILE* out) {
 }
 void code_print_info(void) {
   log_set_color(true);
-  logf(LOG_INFO, "app=%s v=%s", CODE_APP_NAME, CODE_APP_VERSION);
-  logf(LOG_INFO, "wall_ms=%llu", (unsigned long long)time_ms_wall());
-  logf(LOG_INFO, "mono_ns=%llu", (unsigned long long)time_ns_monotonic());
+  vl_logf(VL_LOG_INFO, "app=%s v=%s", CODE_APP_NAME, CODE_APP_VERSION);
+  vl_logf(VL_LOG_INFO, "wall_ms=%llu", (unsigned long long)time_ms_wall());
+  vl_logf(VL_LOG_INFO, "mono_ns=%llu", (unsigned long long)time_ns_monotonic());
   const char* u = env_get("USER");
   if (!u) u = env_get("USERNAME");
-  logf(LOG_INFO, "user=%s", u ? u : "<unknown>");
+  vl_logf(VL_LOG_INFO, "user=%s", u ? u : "<unknown>");
 #if defined(_WIN32)
-  logf(LOG_INFO, "os=windows");
+  vl_logf(VL_LOG_INFO, "os=windows");
 #elif defined(__APPLE__)
-  logf(LOG_INFO, "os=macos");
+  vl_logf(VL_LOG_INFO, "os=macos");
 #else
-  logf(LOG_INFO, "os=linux");
+  vl_logf(VL_LOG_INFO, "os=linux");
 #endif
 }
 
@@ -334,23 +328,23 @@ int code_main(int argc, char** argv) {
       int n = (argc >= 3) ? atoi(argv[2]) : 5;
       StrBuf sb; sb_init(&sb);
       Err e = code_cmd_rand_to_strbuf(n, &sb);
-      if (e.code) { logf(LOG_ERROR, "%s", e.msg); sb_free(&sb); return code_status_from_err(&e); }
+      if (e.code) { vl_logf(VL_LOG_ERROR, "%s", e.msg); sb_free(&sb); return code_status_from_err(&e); }
       fputs(sb.data ? sb.data : "", stdout);
       sb_free(&sb); return 0;
     }
 
     case CMD_HASH: {
-      if (argc < 3) { logf(LOG_ERROR, "hash: besoin d’un chemin"); return CODE_EINVAL; }
+      if (argc < 3) { vl_logf(VL_LOG_ERROR, "hash: besoin d’un chemin"); return CODE_EINVAL; }
       u64 h = 0; Err e = code_hash_file(argv[2], &h);
-      if (e.code) { logf(LOG_ERROR, "%s", e.msg); return code_status_from_err(&e); }
+      if (e.code) { vl_logf(VL_LOG_ERROR, "%s", e.msg); return code_status_from_err(&e); }
       printf("%016llx  %s\n", (unsigned long long)h, argv[2]); return 0;
     }
 
     case CMD_CAT: {
-      if (argc < 3) { logf(LOG_ERROR, "cat: besoin d’un chemin"); return CODE_EINVAL; }
+      if (argc < 3) { vl_logf(VL_LOG_ERROR, "cat: besoin d’un chemin"); return CODE_EINVAL; }
       StrBuf sb; sb_init(&sb);
       Err e = code_cat_file_numbered(argv[2], &sb);
-      if (e.code) { logf(LOG_ERROR, "%s", e.msg); sb_free(&sb); return code_status_from_err(&e); }
+      if (e.code) { vl_logf(VL_LOG_ERROR, "%s", e.msg); sb_free(&sb); return code_status_from_err(&e); }
       fputs(sb.data ? sb.data : "", stdout);
       sb_free(&sb); return 0;
     }
@@ -359,24 +353,24 @@ int code_main(int argc, char** argv) {
       const char* out = (argc >= 3) ? argv[2] : NULL;
       StrBuf sb; sb_init(&sb);
       Err e = code_emit_demo_json(argc, argv, out, &sb);
-      if (e.code) { logf(LOG_ERROR, "%s", e.msg); sb_free(&sb); return code_status_from_err(&e); }
+      if (e.code) { vl_logf(VL_LOG_ERROR, "%s", e.msg); sb_free(&sb); return code_status_from_err(&e); }
       if (!out) fputs(sb.data ? sb.data : "", stdout);
       sb_free(&sb); return 0;
     }
 
     case CMD_UTF8: {
-      if (argc < 3) { logf(LOG_ERROR, "utf8: besoin d’un texte"); return CODE_EINVAL; }
+      if (argc < 3) { vl_logf(VL_LOG_ERROR, "utf8: besoin d’un texte"); return CODE_EINVAL; }
       vec_u32 cps; Err e = code_utf8_list_cps(argv[2], &cps);
-      if (e.code) { logf(LOG_ERROR, "%s", e.msg); return code_status_from_err(&e); }
+      if (e.code) { vl_logf(VL_LOG_ERROR, "%s", e.msg); return code_status_from_err(&e); }
       for (usize i = 0; i < cps.len; i++) printf("U+%04X\n", (unsigned)cps.data[i]);
       vec_free(&cps); return 0;
     }
 
     case CMD_FREQ: {
-      if (argc < 3) { logf(LOG_ERROR, "freq: besoin d’un fichier"); return CODE_EINVAL; }
+      if (argc < 3) { vl_logf(VL_LOG_ERROR, "freq: besoin d’un fichier"); return CODE_EINVAL; }
       int topk = (argc >= 4) ? atoi(argv[3]) : 20;
       vec_CodeKV xs; Err e = code_freq_pairs(argv[2], &xs);
-      if (e.code) { logf(LOG_ERROR, "%s", e.msg); return code_status_from_err(&e); }
+      if (e.code) { vl_logf(VL_LOG_ERROR, "%s", e.msg); return code_status_from_err(&e); }
       code_freq_sort_desc(&xs);
       int limit = (topk > 0 && (usize)topk < xs.len) ? topk : (int)xs.len;
       for (int i = 0; i < limit; i++) {
@@ -391,17 +385,17 @@ int code_main(int argc, char** argv) {
       size_t bytes = (argc >= 3) ? (size_t)strtoull(argv[2], NULL, 10) : ((size_t)1 << 20);
       int iters = (argc >= 4) ? atoi(argv[3]) : 200;
       CodeBench r; Err e = code_bench_hash64(bytes, iters, &r);
-      if (e.code) { logf(LOG_ERROR, "%s", e.msg); return code_status_from_err(&e); }
+      if (e.code) { vl_logf(VL_LOG_ERROR, "%s", e.msg); return code_status_from_err(&e); }
       printf("hash64: %.3fs, %.2f GiB, %.2f GiB/s, acc=%016llx\n",
              r.seconds, r.gib, r.gib_per_s, (unsigned long long)r.accumulator);
       return 0;
     }
 
     case CMD_ANSI: {
-      if (argc < 3) { logf(LOG_ERROR, "ansi: besoin d’un texte"); return CODE_EINVAL; }
+      if (argc < 3) { vl_logf(VL_LOG_ERROR, "ansi: besoin d’un texte"); return CODE_EINVAL; }
       StrBuf sb; sb_init(&sb);
       Err e = code_ansi_render(argv[2], &sb);
-      if (e.code) { logf(LOG_ERROR, "%s", e.msg); sb_free(&sb); return code_status_from_err(&e); }
+      if (e.code) { vl_logf(VL_LOG_ERROR, "%s", e.msg); sb_free(&sb); return code_status_from_err(&e); }
       puts(sb.data ? sb.data : "");
       sb_free(&sb); return 0;
     }

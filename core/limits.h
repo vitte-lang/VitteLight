@@ -11,15 +11,21 @@
 #define VT_LIMITS_H
 #pragma once
 
+/* Assure la définition des macros _CTYPE_* avant wchar.h */
+#include <ctype.h>
+
 /* Charger la version système si possible (GCC/Clang). */
 #if defined(__has_include_next)
-#if __has_include_next(<limits.h>)
-#include_next <limits.h>
-#endif
+#  if __has_include_next(<limits.h>)
+#    include_next <limits.h>
+#  endif
 #endif
 
 #include <stddef.h> /* size_t, ptrdiff_t */
 #include <stdint.h> /* SIZE_MAX (C99), largeur entiers fixes */
+#if defined(__APPLE__)
+#  include <_ctype.h>
+#endif
 #include <wchar.h>  /* wchar_t, wint_t */
 
 /* ---------------------------------------------------------------------------

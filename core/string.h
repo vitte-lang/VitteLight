@@ -11,6 +11,18 @@
 #define VT_STRING_H
 #pragma once
 
+#if defined(__has_include_next)
+#  if __has_include_next(<string.h>)
+#    include_next <string.h>
+#  elif __has_include(<string.h>)
+#    include <string.h>
+#  endif
+#elif defined(__clang__) || defined(__GNUC__)
+#  include_next <string.h>
+#else
+#  include <string.h>
+#endif
+
 #include <stdbool.h> /* bool */
 #include <stddef.h>  /* size_t, ptrdiff_t */
 #include <stdint.h>  /* uint64_t, int64_t, uint32_t */

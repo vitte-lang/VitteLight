@@ -6,7 +6,7 @@
    - Nombres: décimal, hexa 0x, binaire 0b, flottants + exp, '_' autorisé
    - Littéraux: int, float, bool (true/false), char, string
      Escapes: \n \r \t \0 \\ \" \xHH \uXXXX
-   - Commentaires: //, //!, /* ... avec imbrication
+   - Commentaires: //, //!, (slash-star ... ) avec imbrication
    - Opérateurs/délimiteurs: une et deux/3-char
      (== != <= >= -> :: ... += -= *= /= %= && || << >>)
    - Positions: ligne, colonne, offset
@@ -232,6 +232,13 @@ VT_INLINE int vt_is_hexd(int c) {
   return vt_is_digit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
 }
 
+VT_INLINE int vt_hex_value(int c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+  if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+  return -1;
+}
+
 VT_INLINE int vt_eof(vt_lexer* lx) { return lx->cur >= lx->len; }
 VT_INLINE char vt_peek(vt_lexer* lx) {
   return vt_eof(lx) ? '\0' : lx->src[lx->cur];
@@ -262,7 +269,7 @@ VT_INLINE vt_src_pos vt_pos_now(vt_lexer* lx) {
   return p;
 }
 
-/* Saut d’espaces + commentaires (/* imbriqué, //, //! doc ignoré) */
+/* Saut d’espaces + commentaires (slash-star imbriqué, //, //! doc ignoré) */
 static void vt_skip_ws(vt_lexer* lx) {
   for (;;) {
     char c = vt_peek(lx);
@@ -423,12 +430,10 @@ static int vt_unescape(const char* in, uint32_t n, char* out, uint32_t outcap,
           if (i + 2 >= n) return -1;
           char h1 = in[++i], h2 = in[++i];
           if (!vt_is_hexd(h1) || !vt_is_hexd(h2)) return -1;
-          unsigned v =
-              (unsigned)(isdigit(h1) ? h1 - '0'
-                                     : 10 + (tolower((unsigned char)h1) - 'a'));
-          v = (v << 4) |
-              (unsigned)(isdigit(h2) ? h2 - '0'
-                                     : 10 + (tolower((unsigned char)h2) - 'a'));
+          int v1 = vt_hex_value(h1);
+          int v2 = vt_hex_value(h2);
+          if (v1 < 0 || v2 < 0) return -1;
+          unsigned v = (unsigned)((v1 << 4) | v2);
           if (o >= outcap) return -1;
           out[o++] = (char)v;
           continue;
@@ -601,7 +606,6 @@ static vt_token vt_lex_number(vt_lexer* lx, vt_src_pos p) {
     if (vt_peek(lx) == '+' || vt_peek(lx) == '-') vt_get(lx);
     if (!vt_is_digit(vt_peek(lx))) {
       lx->cur = save;
-      is_float = is_float;
     } else {
       while (vt_is_digit(vt_peek(lx)) || vt_peek(lx) == '_') vt_get(lx);
     }
@@ -850,7 +854,6 @@ vt_token vt_lex_next(vt_lexer* lx) {
     return lx->la;
   }
   vt_skip_ws(lx);
-  vt_src_pos p = vt_pos_now(lx);
   vt_token t = vt_lex_one(lx);
   /* Remapper true/false déjà traité en TK_BOOL. Les autres restes inchangés. */
   return t;

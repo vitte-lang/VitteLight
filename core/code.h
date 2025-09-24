@@ -64,9 +64,7 @@ typedef struct CodeBench {
   u64    accumulator;
 } CodeBench;
 
-/* Vecteurs typés basés sur le macro VEC(T) de api.h */
-typedef VEC(u32)    vec_u32;
-typedef VEC(u8)     vec_u8;
+/* Vecteur typé basé sur le macro VEC(T) de api.h */
 typedef VEC(CodeKV) vec_CodeKV;
 
 /* ----------------------------------------------------------------------------

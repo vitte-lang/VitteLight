@@ -417,6 +417,36 @@ void vt_log_write(vt_log_level lvl, const char* file, int line,
   vt__unlock();
 }
 
+VT_DEBUG_API void vt_assert_fail(const char* cond, const char* file, int line,
+                                 const char* func, const char* fmt, ...) {
+  char msgbuf[4096];
+  size_t off = 0;
+  if (cond && *cond) {
+    int n = snprintf(msgbuf, sizeof msgbuf, "assertion failed: %s", cond);
+    off = (n > 0) ? (size_t)n : 0;
+  } else {
+    int n = snprintf(msgbuf, sizeof msgbuf, "assertion failed");
+    off = (n > 0) ? (size_t)n : 0;
+  }
+
+  if (off >= sizeof msgbuf) off = sizeof msgbuf - 1;
+
+  if (fmt && *fmt) {
+    if (off + 2 < sizeof msgbuf) {
+      msgbuf[off++] = ':';
+      msgbuf[off++] = ' ';
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(msgbuf + off, sizeof msgbuf - off, fmt, ap);
+    va_end(ap);
+  } else {
+    msgbuf[off] = '\0';
+  }
+
+  vt_log_write(VT_LL_FATAL, file, line, func, "%s", msgbuf);
+}
+
 /* ----------------------------------------------------------------------------
    Hexdump
 ---------------------------------------------------------------------------- */

@@ -33,6 +33,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <math.h>
 
 /* ---------------------------------------------------------------------------
    Logging: utilise debug.h si présent, sinon macros fallback
@@ -674,7 +675,7 @@ static void diff_files(const uint8_t* a, size_t na, const uint8_t* b, size_t nb,
       for (size_t k = m; k < 16; k++) printf("  ");
       printf("  |  ");
       for (size_t k = 0; k < m; k++) {
-        unsigned ca = a[off + k], cb = b[off + k];
+        unsigned ca = a[off + k];
         putchar((ca >= 32 && ca <= 126) ? (char)ca : '.');
       }
       printf(" | ");

@@ -47,6 +47,24 @@
 #include <stdint.h>
 #include <ctype.h>
 
+static int vl_ascii_isalpha(int c) {
+  return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+}
+static int vl_ascii_isdigit(int c) { return c >= '0' && c <= '9'; }
+static int vl_ascii_isalnum(int c) {
+  return vl_ascii_isalpha(c) || vl_ascii_isdigit(c);
+}
+static int vl_ascii_isxdigit(int c) {
+  return vl_ascii_isdigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
+static int vl_ascii_isspace(int c) {
+  return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' ||
+         c == '\f';
+}
+static int vl_ascii_toupper(int c) {
+  return (c >= 'a' && c <= 'z') ? (c - ('a' - 'A')) : c;
+}
+
 /* ───────── Opcodes (fallback si opcodes.h indisponible) ───────── */
 #if defined(__has_include)
 #  if __has_include("opcodes.h")
@@ -165,13 +183,13 @@ static void next_line(Src* S){
   const char* e = find_eol(S->s,S->e);
   S->s = (e<S->e ? e+1 : e); S->line++;
 }
-static int is_ident_start(int c){ return isalpha(c)||c=='_'; }
-static int is_ident_char (int c){ return isalnum(c)||c=='_'; }
+static int is_ident_start(int c){ return vl_ascii_isalpha(c)||c=='_'; }
+static int is_ident_char (int c){ return vl_ascii_isalnum(c)||c=='_'; }
 
 static int ci_eq_kw(const char* p, const char* q, size_t n){
   for(size_t i=0;i<n;i++){
-    int a = toupper((unsigned char)p[i]);
-    int b = toupper((unsigned char)q[i]);
+    int a = vl_ascii_toupper((unsigned char)p[i]);
+    int b = vl_ascii_toupper((unsigned char)q[i]);
     if(a!=b) return 0;
   }
   return 1;
@@ -235,12 +253,13 @@ static int parse_int32(Src* S, const char* eol, int32_t* out){
   if (p<eol && (*p=='+'||*p=='-')){ neg=(*p=='-'); p++; }
   int base=10;
   if (p+2<=eol && p[0]=='0' && (p[1]=='x'||p[1]=='X')){ base=16; p+=2; }
-  if (p>=eol || !isxdigit((unsigned char)*p)) return 0;
+  if (p>=eol || !vl_ascii_isxdigit((unsigned char)*p)) return 0;
   long long v=0;
-  while (p<eol && (base==10? isdigit((unsigned char)*p) : isxdigit((unsigned char)*p))){
+  while (p<eol && (base==10? vl_ascii_isdigit((unsigned char)*p)
+                            : vl_ascii_isxdigit((unsigned char)*p))){
     int d;
-    if (isdigit((unsigned char)*p)) d = *p - '0';
-    else d = 10 + (toupper((unsigned char)*p) - 'A');
+    if (vl_ascii_isdigit((unsigned char)*p)) d = *p - '0';
+    else d = 10 + (vl_ascii_toupper((unsigned char)*p) - 'A');
     v = (base==10)? (v*10 + d) : (v*16 + d);
     p++;
   }
@@ -318,7 +337,7 @@ static int assemble_pass(Src* S, ABuf* code, Labels* L, Refs* R, char* err, size
 
     /* lire mnemo */
     const char* m0 = S->s;
-    while (S->s<eol && !isspace((unsigned char)*S->s)) S->s++;
+    while (S->s<eol && !vl_ascii_isspace((unsigned char)*S->s)) S->s++;
     size_t mlen = (size_t)(S->s - m0);
     skip_ws_line(S,eol);
 
@@ -469,3 +488,4 @@ int vl_asm_file(const char* path,
   free(buf);
   return ok;
 }
+

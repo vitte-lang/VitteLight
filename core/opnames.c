@@ -102,8 +102,12 @@ const char *const vl_opnames[VL_MAX_OPCODE] = {
 /* ───────────── Fallback ───────────── */
 
 const char *vl_op_name(uint8_t op) {
-    if (op < VL_MAX_OPCODE && vl_opnames[op])
-        return vl_opnames[op];
+    size_t idx = (size_t)op;
+    size_t cap = VL_MAX_OPCODE;
+    if (cap > (sizeof vl_opnames / sizeof vl_opnames[0]))
+        cap = sizeof vl_opnames / sizeof vl_opnames[0];
+    if (idx < cap && vl_opnames[idx])
+        return vl_opnames[idx];
     return "UNKNOWN";
 }
 

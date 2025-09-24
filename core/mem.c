@@ -9,122 +9,11 @@
    - Buffer dynamique (vt_buf)
    ============================================================================ */
 
-#if defined(__has_include)
+#include <ctype.h>
 
-/* Prefer project-local includes if available */
-#  if __has_include("core/prefix.h")
-#    include "core/prefix.h"
-#  elif __has_include("prefix.h")
-#    include "prefix.h"
-#  endif
-
-#  if __has_include("core/mem.h")
-#    include "core/mem.h"
-#    define VT_HAVE_MEM_H 1
-#  elif __has_include("mem.h")
-#    include "mem.h"
-#    define VT_HAVE_MEM_H 1
-#  endif
-
-#  if __has_include("core/api.h")
-#    include "core/api.h"
-#  elif __has_include("api.h")
-#    include "api.h"
-#  endif
-
-#endif /* __has_include */
-
-#ifndef VT_HAVE_MEM_H
-/* ----------------------------- Mode autonome ------------------------------ */
-#include <stddef.h>
-#include <stdint.h>
-#include <stdalign.h>
-
-/* Align par défaut */
-#ifndef VT_MEM_ALIGN_DEFAULT
-#  if INTPTR_MAX == INT64_MAX
-#    define VT_MEM_ALIGN_DEFAULT 16
-#  else
-#    define VT_MEM_ALIGN_DEFAULT 8
-#  endif
-#endif
-
-typedef struct vt__arena_chunk {
-  struct vt__arena_chunk* next;
-  size_t cap;
-  size_t len;
-  alignas(VT_MEM_ALIGN_DEFAULT) unsigned char data[];
-} vt__arena_chunk;
-
-typedef struct vt_arena {
-  vt__arena_chunk* head;
-  size_t chunk_size;
-  size_t total;
-} vt_arena;
-
-typedef struct vt_arena_mark {
-  void*  _chunk;
-  size_t _len;
-  size_t _total;
-} vt_arena_mark;
-
-typedef struct vt_pool vt_pool;
-
-typedef struct vt_buf {
-  unsigned char* data;
-  size_t len, cap;
-} vt_buf;
-
-typedef struct vt_mem_stats {
-  size_t cur_bytes, peak_bytes, total_allocs, total_frees;
-} vt_mem_stats;
-
-/* Protos minimum */
-void   vt_mem_get_stats(vt_mem_stats* out);
-void   vt_mem_set_abort_on_oom(int on);
-void   vt_mem_init(void);
-void   vt_mem_shutdown(void);
-
-void*  vt_malloc(size_t n);
-void*  vt_calloc(size_t nmemb, size_t size);
-void*  vt_realloc(void* p, size_t n);
-void   vt_free(void* p);
-
-void*  vt_aligned_alloc(size_t alignment, size_t size);
-void   vt_aligned_free(void* p);
-
-void*  vt_memdup(const void* src, size_t n);
-char*  vt_strndup(const char* s, size_t n);
-void   vt_mem_zero(void* p, size_t n);
-void   vt_mem_fill(void* p, int byte, size_t n);
-void   vt_mem_swap(void* a, void* b, size_t n);
-
-void*  vt_page_alloc(size_t size);
-void   vt_page_free(void* p, size_t size);
-
-void   vt_arena_init(vt_arena* a, size_t first_chunk);
-void   vt_arena_dispose(vt_arena* a);
-void   vt_arena_reset(vt_arena* a);
-vt_arena_mark vt_arena_mark_get(vt_arena* a);
-void   vt_arena_mark_reset(vt_arena* a, vt_arena_mark m);
-void*  vt_arena_alloc(vt_arena* a, size_t n);
-void*  vt_arena_alloc_aligned(vt_arena* a, size_t n, size_t align);
-char*  vt_arena_strdup(vt_arena* a, const char* s);
-
-int    vt_pool_init(vt_pool* p, size_t obj_size, size_t obj_align, size_t objs_per_block);
-void*  vt_pool_alloc(vt_pool* p);
-void   vt_pool_free(vt_pool* p, void* obj);
-void   vt_pool_dispose(vt_pool* p);
-
-void   vt_buf_init(vt_buf* b);
-void   vt_buf_dispose(vt_buf* b);
-int    vt_buf_reserve(vt_buf* b, size_t need_cap);
-int    vt_buf_append(vt_buf* b, const void* data, size_t n);
-int    vt_buf_append_cstr(vt_buf* b, const char* s);
-int    vt_buf_printf(vt_buf* b, const char* fmt, ...);
-unsigned char* vt_buf_detach(vt_buf* b, size_t* out_len);
-
-#endif /* !VT_HAVE_MEM_H */
+#include "prefix.h"
+#include "mem.h"
+#include "api.h"
 
 /* ----------------------------------------------------------------------------
    Includes système
@@ -395,18 +284,11 @@ typedef struct vt__arena_chunk {
 } vt__arena_chunk;
 
 /* état public de l’arena */
-typedef struct vt_arena {
+struct vt_arena {
   vt__arena_chunk* head;
   size_t chunk_size; /* taille par défaut à la croissance */
   size_t total;      /* octets totaux réservés (stats) */
-} vt_arena;
-
-/* marque pour reset partiel */
-typedef struct vt_arena_mark {
-  void*  _chunk; /* vt__arena_chunk* mais opaque ici */
-  size_t _len;
-  size_t _total;
-} vt_arena_mark;
+};
 
 /* --- implé --- */
 
@@ -453,7 +335,7 @@ void vt_arena_dispose(vt_arena* a) {
   a->total = 0;
 }
 
-void* vt_arena_alloc_aligned(vt_arena* a, size_t n, size_t align) {
+static void* vt__arena_alloc(vt_arena* a, size_t n, size_t align) {
   if (!a) { errno = EINVAL; return NULL; }
   if (align == 0) align = VT_MEM_ALIGN_DEFAULT;
   vt__arena_chunk* c = a->head;
@@ -474,14 +356,14 @@ void* vt_arena_alloc_aligned(vt_arena* a, size_t n, size_t align) {
   return p;
 }
 
-void* vt_arena_alloc(vt_arena* a, size_t n) {
-  return vt_arena_alloc_aligned(a, n, VT_MEM_ALIGN_DEFAULT);
+void* vt_arena_alloc(vt_arena* a, size_t n, size_t align) {
+  return vt__arena_alloc(a, n, align);
 }
 
 char* vt_arena_strdup(vt_arena* a, const char* s) {
   if (!s) return NULL;
   const size_t n = strlen(s);
-  char* dst = (char*)vt_arena_alloc_aligned(a, n + 1, alignof(char));
+  char* dst = (char*)vt__arena_alloc(a, n + 1, alignof(char));
   if (!dst) return NULL;
   memcpy(dst, s, n + 1);
   return dst;
