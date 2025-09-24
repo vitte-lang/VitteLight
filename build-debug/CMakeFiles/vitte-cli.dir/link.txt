@@ -1,0 +1,1 @@
+/usr/bin/cc -g -arch arm64 -Wl,-search_paths_first -Wl,-headerpad_max_install_names "CMakeFiles/vitte-cli.dir/core/code.c.o" -o vitte-cli  libvittelight.a -lm

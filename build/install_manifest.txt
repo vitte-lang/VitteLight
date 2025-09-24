@@ -1,0 +1,3 @@
+/usr/local/lib/libvittelight.a
+/usr/local/bin/vitlc
+/usr/local/bin/vitte-cli

@@ -91,12 +91,12 @@ clean: CMakeFiles/vitte-cli.dir/clean
 CMakeFiles/vittelight.dir/all:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91 "Built target vittelight"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28 "Built target vittelight"
 .PHONY : CMakeFiles/vittelight.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/vittelight.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /Users/vincent/Documents/Github/VitteLight/build/CMakeFiles 87
+	$(CMAKE_COMMAND) -E cmake_progress_start /Users/vincent/Documents/Github/VitteLight/build/CMakeFiles 24
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/vittelight.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /Users/vincent/Documents/Github/VitteLight/build/CMakeFiles 0
 .PHONY : CMakeFiles/vittelight.dir/rule
@@ -108,7 +108,7 @@ vittelight: CMakeFiles/vittelight.dir/rule
 # codegen rule for target.
 CMakeFiles/vittelight.dir/codegen:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/codegen
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91 "Finished codegen for target vittelight"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28 "Finished codegen for target vittelight"
 .PHONY : CMakeFiles/vittelight.dir/codegen
 
 # clean rule for target.
@@ -128,7 +128,7 @@ CMakeFiles/vitlc.dir/all: CMakeFiles/vittelight.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/vitlc.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /Users/vincent/Documents/Github/VitteLight/build/CMakeFiles 89
+	$(CMAKE_COMMAND) -E cmake_progress_start /Users/vincent/Documents/Github/VitteLight/build/CMakeFiles 26
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/vitlc.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /Users/vincent/Documents/Github/VitteLight/build/CMakeFiles 0
 .PHONY : CMakeFiles/vitlc.dir/rule
@@ -160,7 +160,7 @@ CMakeFiles/vitte-cli.dir/all: CMakeFiles/vittelight.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/vitte-cli.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /Users/vincent/Documents/Github/VitteLight/build/CMakeFiles 89
+	$(CMAKE_COMMAND) -E cmake_progress_start /Users/vincent/Documents/Github/VitteLight/build/CMakeFiles 26
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/vitte-cli.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /Users/vincent/Documents/Github/VitteLight/build/CMakeFiles 0
 .PHONY : CMakeFiles/vitte-cli.dir/rule
