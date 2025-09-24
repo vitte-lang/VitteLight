@@ -99,6 +99,8 @@ static int alg_is_chacha(const char* alg){
     return alg && (strcmp(alg,"CHACHA20-POLY1305")==0 || strcmp(alg,"CHACHA20_POLY1305")==0);
 }
 
+#if defined(VL_HAVE_OPENSSL)
+
 size_t crypto_aead_keybytes(const char* alg){
     if (alg_is_aes(alg)) return 32;
     if (alg_is_chacha(alg)) return 32;
@@ -115,7 +117,6 @@ size_t crypto_aead_tagbytes(const char* alg){
 
 // ---------- AEAD with OpenSSL ----------
 
-#if defined(VL_HAVE_OPENSSL)
 #include <openssl/evp.h>
 
 static const EVP_CIPHER* cipher_from_alg(const char* alg){

@@ -22,7 +22,7 @@
 #include <string.h>
 #include <time.h>
 
-#include "core/utf8.h"
+#include "utf8.h"
 
 #if defined(_WIN32)
 #include <direct.h>

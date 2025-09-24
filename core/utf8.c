@@ -4,7 +4,7 @@
    ============================================================================
 */
 
-#include "core/utf8.h"
+#include "utf8.h"
 #include <stddef.h>
 #include <stdint.h>
 

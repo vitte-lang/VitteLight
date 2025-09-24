@@ -7,9 +7,9 @@
    ============================================================================
  */
 
-#include "core/code.h"
-#include "core/api.h"   // pour Err, StrBuf, vec_init, vec_push, etc.
-#include "core/utf8.h"  // utf8_decode_1
+#include "code.h"
+#include "api.h"   // pour Err, StrBuf, vec_init, vec_push, etc.
+#include "utf8.h"  // utf8_decode_1
 
 #include <string.h>
 #include <stdlib.h>

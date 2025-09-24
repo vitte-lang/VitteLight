@@ -289,7 +289,6 @@ int  db_commit(db_t* db){ (void)db; set_err("ENOSYS"); errno=ENOSYS; return -1; 
 int  db_rollback(db_t* db){ (void)db; set_err("ENOSYS"); errno=ENOSYS; return -1; }
 
 int  db_query(db_t* db, const char* sql, db_rowset* out){ (void)db; (void)sql; (void)out; set_err("ENOSYS"); errno=ENOSYS; return -1; }
-void db_rowset_free(db_rowset* rs){ if(rs) memset(rs,0,sizeof(*rs)); }
 int  db_query_i64(db_t* db, const char* sql, long long* out){ (void)db;(void)sql;(void)out; set_err("ENOSYS"); errno=ENOSYS; return -1; }
 int  db_query_f64(db_t* db, const char* sql, double* out){ (void)db;(void)sql;(void)out; set_err("ENOSYS"); errno=ENOSYS; return -1; }
 int  db_query_str(db_t* db, const char* sql, char** out){ (void)db;(void)sql;(void)out; set_err("ENOSYS"); errno=ENOSYS; return -1; }

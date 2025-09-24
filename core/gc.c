@@ -64,6 +64,17 @@ void vt_gc_dump(vt_gc* gc, FILE* out); /* debug */
 #define alignof _Alignof
 #endif
 
+#include <stddef.h>
+
+#if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
+#define VT_MAX_ALIGN max_align_t
+#else
+typedef struct {
+  long double __vt_align;
+} vt_max_align;
+#define VT_MAX_ALIGN vt_max_align
+#endif
+
 typedef struct vt_gc_obj vt_gc_obj;
 
 typedef struct {
@@ -80,7 +91,7 @@ struct vt_gc_obj {
   uint32_t mark_epoch; /* dernière époque marquée */
   vt_gc_trace_fn trace;
   vt_gc_finalizer fin;
-  max_align_t _align_guard; /* force l’alignement du payload */
+  VT_MAX_ALIGN _align_guard; /* force l’alignement du payload */
                             /* payload suit immédiatement */
 };
 

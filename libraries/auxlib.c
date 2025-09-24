@@ -391,7 +391,7 @@ AUX_API int aux_prompt_yn(const char* q,int def_yes){
     fflush(stderr);
     char buf[8]; if(!fgets(buf,sizeof buf,stdin)) return def_yes?1:0;
     if(buf[0]=='\n'||!buf[0]) return def_yes?1:0;
-    char c=(char)tolower((unsigned char)buf[0]);
+    char c=(char)aux_to_lower_ascii((unsigned char)buf[0]);
     if(c=='y') return 1; if(c=='n') return 0; return def_yes?1:0;
 }
 
@@ -597,3 +597,8 @@ int main(int argc,char**argv){
     return 0;
 }
 #endif
+static int aux_to_lower_ascii(int c) {
+    if (c >= 'A' && c <= 'Z')
+        return c + ('a' - 'A');
+    return c;
+}

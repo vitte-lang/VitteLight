@@ -43,6 +43,7 @@
   #include <sys/types.h>
   #include <sys/socket.h>
   #include <netdb.h>
+  #include <sys/time.h>
   typedef int sock_t;
   #define INVALID_SOCKET (-1)
   #define CLOSESOCK close
@@ -62,7 +63,10 @@ static int net_connect(const char* host, const char* port, int timeout_ms){
     struct addrinfo hints; memset(&hints,0,sizeof hints);
     hints.ai_family = AF_UNSPEC; hints.ai_socktype = SOCK_STREAM;
     struct addrinfo* res = NULL;
-    if (getaddrinfo(host, port, &hints, &res)!=0) return INVALID_SOCKET;
+    if (getaddrinfo(host, port, &hints, &res)!=0){
+        net_shutdown();
+        return INVALID_SOCKET;
+    }
     sock_t s = INVALID_SOCKET;
     for (struct addrinfo* p=res; p; p=p->ai_next){
         s = (sock_t)socket(p->ai_family, p->ai_socktype, p->ai_protocol);
@@ -84,6 +88,7 @@ static int net_connect(const char* host, const char* port, int timeout_ms){
         CLOSESOCK(s); s = INVALID_SOCKET;
     }
     freeaddrinfo(res);
+    if (s==INVALID_SOCKET) net_shutdown();
     return s;
 }
 static int io_write_all(sock_t s, const void* buf, size_t n){
@@ -155,7 +160,11 @@ typedef struct {
 static void bw_init(bufw* b, unsigned char* mem, size_t cap){ b->p=mem; b->cap=cap; b->len=0; }
 static int  bw_put(bufw* b, const void* src, size_t n){
     if (b->len+n > b->cap) return -1;
-    memcpy(b->p+b->len, src, n); b->len += n; return 0;
+    if (n==0) return 0;
+    if (!src) return -1;
+    memcpy(b->p+b->len, src, n);
+    b->len += n;
+    return 0;
 }
 static int  bw_u8(bufw* b, uint8_t v){ return bw_put(b,&v,1); }
 static int  bw_u16(bufw* b, uint16_t v){ unsigned char x[2]={ (unsigned char)(v>>8), (unsigned char)(v&0xFF)}; return bw_put(b,x,2); }
@@ -168,10 +177,11 @@ static int  bw_u64(bufw* b, uint64_t v){
 static int  bw_shortstr(bufw* b, const char* s){
     size_t n = s?strlen(s):0; if (n>255) n=255;
     if (bw_u8(b,(uint8_t)n)!=0) return -1;
-    return bw_put(b, s, n);
+    return (n==0) ? 0 : bw_put(b, s, n);
 }
 static int  bw_longstr(bufw* b, const void* s, uint32_t n){
     if (bw_u32(b, n)!=0) return -1;
+    if (n==0) return 0;
     return bw_put(b, s, n);
 }
 /* Table vide uniquement (longueur 0) */
@@ -213,6 +223,15 @@ typedef struct {
     uint16_t heartbeat;
 } amqp_conn;
 
+static int amqp_fail(amqp_conn* c, int err){
+    if (c && c->s != INVALID_SOCKET){
+        CLOSESOCK(c->s);
+        c->s = INVALID_SOCKET;
+    }
+    net_shutdown();
+    return err;
+}
+
 AMQP_API int amqp_connect_plain(amqp_conn* c,
                                 const char* host, const char* port,
                                 const char* user, const char* pass,
@@ -224,39 +243,49 @@ AMQP_API int amqp_connect_plain(amqp_conn* c,
 
     /* protocol header */
     const unsigned char ph[8] = {'A','M','Q','P',0,0,9,1};
-    if (io_write_all(c->s, ph, 8)!=0) { CLOSESOCK(c->s); return -1; }
+    if (io_write_all(c->s, ph, 8)!=0) return amqp_fail(c, -1);
 
     unsigned char buf[4096]; uint8_t type; uint16_t ch; uint32_t sz;
 
     /* expect connection.start (class 10, method 10) */
-    if (amqp_read_frame(c->s,&type,&ch,buf,&sz)!=0 || type!=AMQP_FRAME_METHOD) { CLOSESOCK(c->s); return -1; }
+    if (amqp_read_frame(c->s,&type,&ch,buf,&sz)!=0 || type!=AMQP_FRAME_METHOD) return amqp_fail(c, -1);
     uint16_t cls = ((uint16_t)buf[0]<<8)|buf[1];
     uint16_t mth = ((uint16_t)buf[2]<<8)|buf[3];
-    if (cls!=CLASS_CONNECTION || mth!=METHOD_CONNECTION_START){ CLOSESOCK(c->s); return -1; }
+    if (cls!=CLASS_CONNECTION || mth!=METHOD_CONNECTION_START) return amqp_fail(c, -1);
     /* skip server props + mechanisms + locales (nous répondons PLAIN/en_US) */
 
     /* send connection.start-ok */
     unsigned char payload[1024]; bufw w; bw_init(&w,payload,sizeof payload);
-    bw_u16(&w, CLASS_CONNECTION); bw_u16(&w, METHOD_CONNECTION_START_OK);
-    bw_table_empty(&w);                    /* client-properties */
-    bw_shortstr(&w, "PLAIN");              /* mechanism */
+    if (bw_u16(&w, CLASS_CONNECTION)!=0 ||
+        bw_u16(&w, METHOD_CONNECTION_START_OK)!=0 ||
+        bw_table_empty(&w)!=0 ||
+        bw_shortstr(&w, "PLAIN")!=0)
+        return amqp_fail(c, -1);
     /* response: 0 user 0 pass (longstr) */
     {
         size_t ulen = user?strlen(user):0, plen = pass?strlen(pass):0;
         size_t rlen = 1 + ulen + 1 + plen;
         unsigned char* tmp = (unsigned char*)malloc(rlen);
-        tmp[0]=0; memcpy(tmp+1, user, ulen); tmp[1+ulen]=0; memcpy(tmp+2+ulen, pass, plen);
-        bw_longstr(&w, tmp, (uint32_t)rlen);
+        if (!tmp) return amqp_fail(c, -1);
+        tmp[0] = 0;
+        if (ulen && user) memcpy(tmp + 1, user, ulen);
+        tmp[1 + ulen] = 0;
+        if (plen && pass) memcpy(tmp + 2 + ulen, pass, plen);
+        if (bw_longstr(&w, tmp, (uint32_t)rlen)!=0){
+            free(tmp);
+            return amqp_fail(c, -1);
+        }
         free(tmp);
     }
-    bw_shortstr(&w, "en_US");              /* locale */
-    if (amqp_send_frame(c->s, AMQP_FRAME_METHOD, 0, payload, (uint32_t)w.len)!=0){ CLOSESOCK(c->s); return -1; }
+    if (bw_shortstr(&w, "en_US")!=0) return amqp_fail(c, -1); /* locale */
+    if (amqp_send_frame(c->s, AMQP_FRAME_METHOD, 0, payload, (uint32_t)w.len)!=0)
+        return amqp_fail(c, -1);
 
     /* expect connection.tune */
-    if (amqp_read_frame(c->s,&type,&ch,buf,&sz)!=0 || type!=AMQP_FRAME_METHOD) { CLOSESOCK(c->s); return -1; }
+    if (amqp_read_frame(c->s,&type,&ch,buf,&sz)!=0 || type!=AMQP_FRAME_METHOD) return amqp_fail(c, -1);
     cls = ((uint16_t)buf[0]<<8)|buf[1];
     mth = ((uint16_t)buf[2]<<8)|buf[3];
-    if (cls!=CLASS_CONNECTION || mth!=METHOD_CONNECTION_TUNE){ CLOSESOCK(c->s); return -1; }
+    if (cls!=CLASS_CONNECTION || mth!=METHOD_CONNECTION_TUNE) return amqp_fail(c, -1);
     c->channel_max = ((uint16_t)buf[4]<<8)|buf[5];
     c->frame_max   = ((uint32_t)buf[6]<<24)|((uint32_t)buf[7]<<16)|((uint32_t)buf[8]<<8)|buf[9];
     c->heartbeat   = ((uint16_t)buf[10]<<8)|buf[11];
@@ -264,25 +293,33 @@ AMQP_API int amqp_connect_plain(amqp_conn* c,
     if (c->frame_max==0) c->frame_max=131072;
     /* send tune-ok with our choices (on accepte ce que le serveur dit) */
     bw_init(&w,payload,sizeof payload);
-    bw_u16(&w, CLASS_CONNECTION); bw_u16(&w, METHOD_CONNECTION_TUNE_OK);
-    bw_u16(&w, c->channel_max);
-    bw_u32(&w, c->frame_max);
-    bw_u16(&w, c->heartbeat);
-    if (amqp_send_frame(c->s, AMQP_FRAME_METHOD, 0, payload, (uint32_t)w.len)!=0){ CLOSESOCK(c->s); return -1; }
+    if (bw_u16(&w, CLASS_CONNECTION)!=0 ||
+        bw_u16(&w, METHOD_CONNECTION_TUNE_OK)!=0 ||
+        bw_u16(&w, c->channel_max)!=0 ||
+        bw_u32(&w, c->frame_max)!=0 ||
+        bw_u16(&w, c->heartbeat)!=0)
+        return amqp_fail(c, -1);
+    if (amqp_send_frame(c->s, AMQP_FRAME_METHOD, 0, payload, (uint32_t)w.len)!=0)
+        return amqp_fail(c, -1);
 
     /* connection.open vhost */
     bw_init(&w,payload,sizeof payload);
-    bw_u16(&w, CLASS_CONNECTION); bw_u16(&w, METHOD_CONNECTION_OPEN);
-    bw_shortstr(&w, vhost && *vhost ? vhost : "/");
-    bw_shortstr(&w, "");         /* reserved-1: capabilities */
-    bw_u8(&w, 0);                /* insist=false */
-    if (amqp_send_frame(c->s, AMQP_FRAME_METHOD, 0, payload, (uint32_t)w.len)!=0){ CLOSESOCK(c->s); return -1; }
+    if (bw_u16(&w, CLASS_CONNECTION)!=0 ||
+        bw_u16(&w, METHOD_CONNECTION_OPEN)!=0 ||
+        bw_shortstr(&w, vhost && *vhost ? vhost : "/")!=0 ||
+        bw_shortstr(&w, "")!=0 || /* reserved-1: capabilities */
+        bw_u8(&w, 0)!=0)          /* insist=false */
+        return amqp_fail(c, -1);
+    if (amqp_send_frame(c->s, AMQP_FRAME_METHOD, 0, payload, (uint32_t)w.len)!=0)
+        return amqp_fail(c, -1);
 
     /* expect open-ok */
-    if (amqp_read_frame(c->s,&type,&ch,buf,&sz)!=0 || type!=AMQP_FRAME_METHOD){ CLOSESOCK(c->s); return -1; }
+    if (amqp_read_frame(c->s,&type,&ch,buf,&sz)!=0 || type!=AMQP_FRAME_METHOD)
+        return amqp_fail(c, -1);
     cls = ((uint16_t)buf[0]<<8)|buf[1];
     mth = ((uint16_t)buf[2]<<8)|buf[3];
-    if (cls!=CLASS_CONNECTION || mth!=METHOD_CONNECTION_OPEN_OK){ CLOSESOCK(c->s); return -1; }
+    if (cls!=CLASS_CONNECTION || mth!=METHOD_CONNECTION_OPEN_OK)
+        return amqp_fail(c, -1);
 
     return 0;
 }
@@ -303,19 +340,19 @@ AMQP_API int amqp_channel_open(amqp_conn* c, uint16_t channel){
 /* queue.declare (passive=0,durable=1,exclusive=0,auto_delete=0,no_wait=0,args={}) */
 AMQP_API int amqp_queue_declare(amqp_conn* c, uint16_t channel, const char* qname, int durable){
     unsigned char payload[512]; bufw w; bw_init(&w,payload,sizeof payload);
-    bw_u16(&w, CLASS_QUEUE); bw_u16(&w, METHOD_QUEUE_DECLARE);
-    bw_u16(&w, 0);                 /* reserved-1 */
-    bw_shortstr(&w, qname?qname:"");
-    uint8_t bits = 0;
-    /* flags: bit positions are separate booleans in spec, we serialize as individual bits in 5 octets */
-    /* passive, durable, exclusive, auto-delete, no-wait */
-    bw_u8(&w, 0); /* passive=0 */
-    bw_u8(&w, durable?1:0);
-    bw_u8(&w, 0); /* exclusive=0 */
-    bw_u8(&w, 0); /* auto-delete=0 */
-    bw_u8(&w, 0); /* no-wait=0 */
-    (void)bits;
-    bw_table_empty(&w);            /* arguments */
+    if (bw_u16(&w, CLASS_QUEUE)!=0 ||
+        bw_u16(&w, METHOD_QUEUE_DECLARE)!=0 ||
+        bw_u16(&w, 0)!=0 ||                 /* reserved-1 */
+        bw_shortstr(&w, qname?qname:"")!=0)
+        return -1;
+    /* Flags: passive, durable, exclusive, auto-delete, no-wait packed in a single octet */
+    uint8_t flags = 0;
+    /* passive=0 */
+    if (durable) flags |= 1u << 1; /* durable bit */
+    /* exclusive=0, auto-delete=0, no-wait=0 */
+    if (bw_u8(&w, flags)!=0) return -1;
+    if (bw_table_empty(&w)!=0)            /* arguments */
+        return -1;
     if (amqp_send_frame(c->s, AMQP_FRAME_METHOD, channel, payload, (uint32_t)w.len)!=0) return -1;
 
     uint8_t type; uint16_t ch; uint32_t sz; unsigned char buf[1024];

@@ -430,6 +430,7 @@ BASE_API int listdir(const char* dir, listdir_cb cb, void* user){
 }
 
 /* rm -rf (simple) */
+BASE_API int rm_rf(const char* path);
 static int _rmrf_cb(const char* dir, const char* name, int is_dir, void* user){
     char path[4096]; (void)user;
     size_t n = path_join(path,sizeof path,dir,name);

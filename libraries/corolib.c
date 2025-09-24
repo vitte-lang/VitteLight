@@ -40,6 +40,12 @@
 //   - Yield inside the same thread only. Do not call from signal handlers.
 //   - Sleep uses a millisecond monotonic clock where available; otherwise best effort.
 
+#if defined(__unix__) || defined(__APPLE__)
+#  ifndef _XOPEN_SOURCE
+#    define _XOPEN_SOURCE 700
+#  endif
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

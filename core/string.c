@@ -18,9 +18,15 @@
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
+#if defined(_WIN32) && !defined(_SSIZE_T_) && !defined(_SSIZE_T_DEFINED)
+typedef ptrdiff_t ssize_t;
+#define _SSIZE_T_DEFINED
+#endif
 
 /* ----------------------------------------------------------------------------
    Integrations optionnelles
@@ -47,10 +53,12 @@
 #define VT_STRING_API extern
 #endif
 
-#if defined(__GNUC__) || defined(__clang__)
-#define VT_PRINTF(idx, vaidx) __attribute__((format(printf, idx, vaidx)))
-#else
-#define VT_PRINTF(idx, vaidx)
+#if !defined(VT_PRINTF)
+#  if defined(__GNUC__) || defined(__clang__)
+#    define VT_PRINTF(idx, vaidx) __attribute__((format(printf, idx, vaidx)))
+#  else
+#    define VT_PRINTF(idx, vaidx)
+#  endif
 #endif
 
 typedef struct vt_sv {
@@ -423,9 +431,9 @@ void vt_str_to_upper_ascii(vt_str* s) {
 /* ----------------------------------------------------------------------------
    find / KMP
 ---------------------------------------------------------------------------- */
-size_t vt_sv_find(vt_sv hay, vt_sv nee) {
+ssize_t vt_sv_find(vt_sv hay, vt_sv nee) {
   if (nee.len == 0) return 0;
-  if (nee.len > hay.len) return (size_t)-1;
+  if (nee.len > hay.len) return -1;
   int* lps = (int*)xmalloc(sizeof(int) * nee.len);
   kmp_build(nee.data, nee.len, lps);
   size_t i = 0, j = 0;
@@ -435,7 +443,7 @@ size_t vt_sv_find(vt_sv hay, vt_sv nee) {
       j++;
       if (j == nee.len) {
         free(lps);
-        return i - j;
+        return (ssize_t)(i - j);
       }
     } else if (j)
       j = (size_t)lps[j - 1];
@@ -443,16 +451,17 @@ size_t vt_sv_find(vt_sv hay, vt_sv nee) {
       i++;
   }
   free(lps);
-  return (size_t)-1;
+  return -1;
 }
-size_t vt_sv_rfind(vt_sv hay, vt_sv nee) {
-  if (nee.len == 0) return hay.len;
-  if (nee.len > hay.len) return (size_t)-1;
+ssize_t vt_sv_rfind(vt_sv hay, vt_sv nee) {
+  if (nee.len == 0) return (ssize_t)hay.len;
+  if (nee.len > hay.len) return -1;
   for (size_t pos = hay.len - nee.len + 1; pos-- > 0;) {
-    if (memcmp(hay.data + pos, nee.data, nee.len) == 0) return pos;
+    if (memcmp(hay.data + pos, nee.data, nee.len) == 0)
+      return (ssize_t)pos;
     if (pos == 0) break;
   }
-  return (size_t)-1;
+  return -1;
 }
 bool vt_sv_starts_with(vt_sv s, vt_sv pre) {
   return s.len >= pre.len && memcmp(s.data, pre.data, pre.len) == 0;
