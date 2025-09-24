@@ -22,6 +22,8 @@
 #include <string.h>
 #include <time.h>
 
+#include "core/utf8.h"
+
 #if defined(_WIN32)
 #include <direct.h>
 #include <io.h>
@@ -363,36 +365,6 @@ API_EXPORT void sb_append_fmt(StrBuf* sb, const char* fmt, ...) {
     (v)->data[(v)->len++] = (val); \
   } while (0)
 
-/* --------------------------------------------------------------------------
-   UTF-8 (lecture/écriture de base)
-   -------------------------------------------------------------------------- */
-API_EXPORT u32 utf8_decode_1(const char* s, usize n, usize* adv) {
-  if (!n) {
-    *adv = 0;
-    return 0xfffd;
-  }
-  const unsigned char c = (unsigned char)s[0];
-  if (c < 0x80) {
-    *adv = 1;
-    return c;
-  }
-  if ((c >> 5) == 0x6 && n >= 2) {
-    *adv = 2;
-    return ((c & 0x1f) << 6) | ((unsigned char)s[1] & 0x3f);
-  }
-  if ((c >> 4) == 0xe && n >= 3) {
-    *adv = 3;
-    return ((c & 0x0f) << 12) | (((unsigned char)s[1] & 0x3f) << 6) |
-           ((unsigned char)s[2] & 0x3f);
-  }
-  if ((c >> 3) == 0x1e && n >= 4) {
-    *adv = 4;
-    return ((c & 0x07) << 18) | (((unsigned char)s[1] & 0x3f) << 12) |
-           (((unsigned char)s[2] & 0x3f) << 6) | ((unsigned char)s[3] & 0x3f);
-  }
-  *adv = 1;
-  return 0xfffd;
-}
 API_EXPORT usize utf8_encode_1(u32 cp, char out[4]) {
   if (cp <= 0x7f) {
     out[0] = (char)cp;

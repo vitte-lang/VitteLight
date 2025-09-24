@@ -159,12 +159,12 @@ $(BIN_APP): $(LIB_STATIC) $(OBJ_DIR)/core/code.o | $(BIN_DIR)
 	@$(CC) -o $@ $(OBJ_DIR)/core/code.o $(LIB_STATIC) $(LDLIBS)
 
 # Binaire 2 si la source existe
-$(BIN_APP2): $(LIB_STATIC) $(OBJ_DIR)/interpreter/vitlc.o | $(BIN_DIR)
-	@if [ -f interpreter/vitlc.c ]; then \
+$(BIN_APP2): $(LIB_STATIC) $(OBJ_DIR)/compiler/vitlc.o | $(BIN_DIR)
+	@if [ -f compiler/vitlc.c ]; then \
 	  echo "LD  $@"; \
-	  $(CC) -o $@ $(OBJ_DIR)/interpreter/vitlc.o $(LIB_STATIC) $(LDLIBS); \
+	  $(CC) -o $@ $(OBJ_DIR)/compiler/vitlc.o $(LIB_STATIC) $(LDLIBS); \
 	else \
-	  echo "skip $(BIN_APP2) (interpreter/vitlc.c absent)"; \
+	  echo "skip $(BIN_APP2) (compiler/vitlc.c absent)"; \
 	fi
 
 # ---- Compilation objets ----
@@ -247,4 +247,3 @@ clean:
 
 distclean: clean
 	@rm -rf $(DIST_DIR) $(FORMULADIR)
-

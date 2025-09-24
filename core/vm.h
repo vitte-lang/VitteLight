@@ -57,9 +57,18 @@ typedef struct vt_value {
     double f;
     int b;
     vt_string_stub* s;
-    void* p;
-  };
+    void* ptr;
+  } data;
 } vt_value;
+
+#define vt_value_set_ptr(val, value_ptr) ((val).data.ptr = (value_ptr))
+#define vt_value_get_ptr(val)            ((val).data.ptr)
+#define vt_value_set_int(val, value_int) ((val).data.i = (value_int))
+#define vt_value_get_int(val)            ((val).data.i)
+#define vt_value_set_float(val, value_f) ((val).data.f = (value_f))
+#define vt_value_get_float(val)          ((val).data.f)
+#define vt_value_set_bool(val, value_b)  ((val).data.b = (value_b))
+#define vt_value_get_bool(val)           ((val).data.b)
 #endif /* !VT_OBJECT_H */
 
 /* --------------------------------------------------------------------------

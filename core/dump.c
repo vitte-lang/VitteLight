@@ -73,6 +73,8 @@
   } while (0)
 #endif
 
+#if defined(VT_ENABLE_TOOLS)
+
 /* ---------------------------------------------------------------------------
    Utilitaires généraux
 --------------------------------------------------------------------------- */
@@ -1034,3 +1036,5 @@ int main(int argc, char** argv) {
   D_LOG_SHUTDOWN();
   return 2;
 }
+
+#endif /* VT_ENABLE_TOOLS */
