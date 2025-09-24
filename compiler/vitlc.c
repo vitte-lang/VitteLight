@@ -98,14 +98,6 @@ static void path_dirname(const char* path, char* out, size_t cap) {
 }
 
 /* join simple : out = a + PATH_SEP + b (si besoin) */
-static void path_join(const char* a, const char* b, char* out, size_t cap) {
-  if (!a || !*a) { snprintf(out, cap, "%s", b?b:""); return; }
-  if (!b || !*b) { snprintf(out, cap, "%s", a); return; }
-  size_t la = strlen(a);
-  int need_sep = (a[la-1] != '/' && a[la-1] != '\\');
-  snprintf(out, cap, "%s%s%s", a, need_sep ? (PATH_SEP== '/'?"/":"\\") : "", b);
-}
-
 /* mkdir one level */
 static int mkdir_one(const char* path) {
 #if defined(_WIN32)
