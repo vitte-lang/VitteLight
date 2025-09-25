@@ -7,8 +7,8 @@
 ![OS](https://img.shields.io/badge/OS-macOS%20%7C%20Linux%20%7C%20Windows-forestgreen)
 ![Build](https://img.shields.io/badge/build-Makefile-brightgreen)
 ![CI](https://img.shields.io/badge/CI-local%20or%20GH%20Actions-lightgrey)
-![Homebrew](https://img.shields.io/badge/brew-ready-black)
-![PkgConfig](https://img.shields.io/badge/pkg--config-vittelight.pc-yellow)
+![Homebrew](https://img.shields.io/badge/brew-ready-forestgreen)
+![PkgConfig](https://img.shields.io/badge/pkg--config-vittelight.pc-forestgreen)
 
 ---
 
