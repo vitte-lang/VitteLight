@@ -1,6 +1,8 @@
 /Users/vincent/Documents/Github/VitteLight/build/CMakeFiles/vittelight.dir
 /Users/vincent/Documents/Github/VitteLight/build/CMakeFiles/vitlc.dir
 /Users/vincent/Documents/Github/VitteLight/build/CMakeFiles/vitte-cli.dir
+/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles/vl_test.dir
+/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles/test.dir
 /Users/vincent/Documents/Github/VitteLight/build/CMakeFiles/edit_cache.dir
 /Users/vincent/Documents/Github/VitteLight/build/CMakeFiles/rebuild_cache.dir
 /Users/vincent/Documents/Github/VitteLight/build/CMakeFiles/list_install_components.dir

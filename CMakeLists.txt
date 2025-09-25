@@ -51,3 +51,24 @@ install(TARGETS vittelight vitlc vitte-cli
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
+# --- pkg-config (.pc) ---
+# Génère vittelight.pc depuis le template .in
+configure_file(
+  ${CMAKE_SOURCE_DIR}/vittelight.pc.in
+  ${CMAKE_BINARY_DIR}/vittelight.pc
+  @ONLY
+)
+
+# Installe le .pc dans lib/pkgconfig
+install(
+  FILES ${CMAKE_BINARY_DIR}/vittelight.pc
+  DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig
+)
+# --- Tests ---
+enable_testing()
+
+add_executable(vl_test tests/test.c)
+target_link_libraries(vl_test PRIVATE vittelight)
+
+add_test(NAME run_vl_test COMMAND vl_test)
+

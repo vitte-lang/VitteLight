@@ -65,6 +65,16 @@ CMAKE_BINARY_DIR = /Users/vincent/Documents/Github/VitteLight/build
 #=============================================================================
 # Targets provided globally by CMake.
 
+# Special rule for the target test
+test:
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --cyan "Running tests..."
+	/opt/homebrew/bin/ctest $(ARGS)
+.PHONY : test
+
+# Special rule for the target test
+test/fast: test
+.PHONY : test/fast
+
 # Special rule for the target edit_cache
 edit_cache:
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --cyan "Running CMake cache editor..."
@@ -200,6 +210,19 @@ vitte-cli: cmake_check_build_system
 vitte-cli/fast:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/vitte-cli.dir/build.make CMakeFiles/vitte-cli.dir/build
 .PHONY : vitte-cli/fast
+
+#=============================================================================
+# Target rules for targets named vl_test
+
+# Build rule for target.
+vl_test: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 vl_test
+.PHONY : vl_test
+
+# fast build rule for target.
+vl_test/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vl_test.dir/build.make CMakeFiles/vl_test.dir/build
+.PHONY : vl_test/fast
 
 compiler/vitlc.o: compiler/vitlc.c.o
 .PHONY : compiler/vitlc.o
@@ -801,6 +824,30 @@ core/zio.c.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/core/zio.c.s
 .PHONY : core/zio.c.s
 
+tests/test.o: tests/test.c.o
+.PHONY : tests/test.o
+
+# target to build an object file
+tests/test.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vl_test.dir/build.make CMakeFiles/vl_test.dir/tests/test.c.o
+.PHONY : tests/test.c.o
+
+tests/test.i: tests/test.c.i
+.PHONY : tests/test.i
+
+# target to preprocess a source file
+tests/test.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vl_test.dir/build.make CMakeFiles/vl_test.dir/tests/test.c.i
+.PHONY : tests/test.c.i
+
+tests/test.s: tests/test.c.s
+.PHONY : tests/test.s
+
+# target to generate assembly for a file
+tests/test.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vl_test.dir/build.make CMakeFiles/vl_test.dir/tests/test.c.s
+.PHONY : tests/test.c.s
+
 # Help Target
 help:
 	@echo "The following are some of the valid targets for this Makefile:"
@@ -813,9 +860,11 @@ help:
 	@echo "... install/strip"
 	@echo "... list_install_components"
 	@echo "... rebuild_cache"
+	@echo "... test"
 	@echo "... vitlc"
 	@echo "... vitte-cli"
 	@echo "... vittelight"
+	@echo "... vl_test"
 	@echo "... compiler/vitlc.o"
 	@echo "... compiler/vitlc.i"
 	@echo "... compiler/vitlc.s"
@@ -891,6 +940,9 @@ help:
 	@echo "... core/zio.o"
 	@echo "... core/zio.i"
 	@echo "... core/zio.s"
+	@echo "... tests/test.o"
+	@echo "... tests/test.i"
+	@echo "... tests/test.s"
 .PHONY : help
 
 

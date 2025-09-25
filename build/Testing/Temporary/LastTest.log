@@ -1,0 +1,19 @@
+Start testing: Sep 25 03:35 CEST
+----------------------------------------------------------
+1/1 Testing: run_vl_test
+1/1 Test: run_vl_test
+Command: "/Users/vincent/Documents/Github/VitteLight/build/vl_test"
+Directory: /Users/vincent/Documents/Github/VitteLight/build
+"run_vl_test" start time: Sep 25 03:35 CEST
+Output:
+----------------------------------------------------------
+Hello from VitteLight (API ok)!
+<end of output>
+Test time =   0.22 sec
+----------------------------------------------------------
+Test Passed.
+"run_vl_test" end time: Sep 25 03:35 CEST
+"run_vl_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Sep 25 03:35 CEST
