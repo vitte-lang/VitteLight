@@ -17,6 +17,29 @@
 **v0.1.0** — tag `v0.1.0`  
 Archive source : `vitte-light-0.1.0.tar.gz`  
 SHA256 (archive) : `…à remplacer par la valeur générée par make brew-archive…`
+Add the tap:
+
+## Installation
+
+First, add the tap:
+
+```bash
+brew tap vitte-lang/vittelight
+```
+
+## Then install the CLI:
+
+```bash
+brew install vitte-light
+```
+
+## Usage
+
+```bash
+vitl --help
+vitte-cli --version
+```
+
 
 Précompilés (optionnel si vous en publiez) :
 - macOS (x86_64/arm64) : `vitte-cli` (~120–180 KB)
