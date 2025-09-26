@@ -13,6 +13,7 @@ set(VL_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 # Récupération automatique des sources
 file(GLOB CORE_SOURCES CONFIGURE_DEPENDS ${VL_ROOT}/core/*.c)
 file(GLOB LIB_SOURCES  CONFIGURE_DEPENDS ${VL_ROOT}/libraries/*.c)
+file(GLOB CORE_HEADERS CONFIGURE_DEPENDS ${VL_ROOT}/core/*.h)
 
 # Certaines implémentations (ex: init.c) dépendent de headers externes non fournis.
 list(REMOVE_ITEM LIB_SOURCES
@@ -74,6 +75,10 @@ install(TARGETS vittelight vitlc vitte-cli
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+)
+
+install(FILES ${CORE_HEADERS}
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/vittelight
 )
 # --- pkg-config (.pc) ---
 # Génère vittelight.pc depuis le template .in

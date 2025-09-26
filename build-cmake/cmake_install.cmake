@@ -66,6 +66,37 @@ if(CMAKE_INSTALL_COMPONENT STREQUAL "Unspecified" OR NOT CMAKE_INSTALL_COMPONENT
 endif()
 
 if(CMAKE_INSTALL_COMPONENT STREQUAL "Unspecified" OR NOT CMAKE_INSTALL_COMPONENT)
+  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/include/vittelight" TYPE FILE FILES
+    "/Users/vincent/Documents/Github/VitteLight/core/api.h"
+    "/Users/vincent/Documents/Github/VitteLight/core/code.h"
+    "/Users/vincent/Documents/Github/VitteLight/core/ctype.h"
+    "/Users/vincent/Documents/Github/VitteLight/core/debug.h"
+    "/Users/vincent/Documents/Github/VitteLight/core/do.h"
+    "/Users/vincent/Documents/Github/VitteLight/core/func.h"
+    "/Users/vincent/Documents/Github/VitteLight/core/gc.h"
+    "/Users/vincent/Documents/Github/VitteLight/core/jumptab.h"
+    "/Users/vincent/Documents/Github/VitteLight/core/lex.h"
+    "/Users/vincent/Documents/Github/VitteLight/core/limits.h"
+    "/Users/vincent/Documents/Github/VitteLight/core/mem.h"
+    "/Users/vincent/Documents/Github/VitteLight/core/object.h"
+    "/Users/vincent/Documents/Github/VitteLight/core/opcodes.h"
+    "/Users/vincent/Documents/Github/VitteLight/core/opnames.h"
+    "/Users/vincent/Documents/Github/VitteLight/core/parser.h"
+    "/Users/vincent/Documents/Github/VitteLight/core/prefix.h"
+    "/Users/vincent/Documents/Github/VitteLight/core/state.h"
+    "/Users/vincent/Documents/Github/VitteLight/core/string.h"
+    "/Users/vincent/Documents/Github/VitteLight/core/table.h"
+    "/Users/vincent/Documents/Github/VitteLight/core/tm.h"
+    "/Users/vincent/Documents/Github/VitteLight/core/types.h"
+    "/Users/vincent/Documents/Github/VitteLight/core/undump.h"
+    "/Users/vincent/Documents/Github/VitteLight/core/utf8.h"
+    "/Users/vincent/Documents/Github/VitteLight/core/vl_compat.h"
+    "/Users/vincent/Documents/Github/VitteLight/core/vm.h"
+    "/Users/vincent/Documents/Github/VitteLight/core/zio.h"
+    )
+endif()
+
+if(CMAKE_INSTALL_COMPONENT STREQUAL "Unspecified" OR NOT CMAKE_INSTALL_COMPONENT)
   file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/pkgconfig" TYPE FILE FILES "/Users/vincent/Documents/Github/VitteLight/build-cmake/vittelight.pc")
 endif()
 

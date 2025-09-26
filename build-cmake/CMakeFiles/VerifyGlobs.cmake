@@ -34,6 +34,41 @@ if(NOT "${NEW_GLOB}" STREQUAL "${OLD_GLOB}")
   file(TOUCH_NOCREATE "/Users/vincent/Documents/Github/VitteLight/build-cmake/CMakeFiles/cmake.verify_globs")
 endif()
 
+# CORE_HEADERS at CMakeLists.txt:16 (file)
+file(GLOB NEW_GLOB LIST_DIRECTORIES true "/Users/vincent/Documents/Github/VitteLight/core/*.h")
+set(OLD_GLOB
+  "/Users/vincent/Documents/Github/VitteLight/core/api.h"
+  "/Users/vincent/Documents/Github/VitteLight/core/code.h"
+  "/Users/vincent/Documents/Github/VitteLight/core/ctype.h"
+  "/Users/vincent/Documents/Github/VitteLight/core/debug.h"
+  "/Users/vincent/Documents/Github/VitteLight/core/do.h"
+  "/Users/vincent/Documents/Github/VitteLight/core/func.h"
+  "/Users/vincent/Documents/Github/VitteLight/core/gc.h"
+  "/Users/vincent/Documents/Github/VitteLight/core/jumptab.h"
+  "/Users/vincent/Documents/Github/VitteLight/core/lex.h"
+  "/Users/vincent/Documents/Github/VitteLight/core/limits.h"
+  "/Users/vincent/Documents/Github/VitteLight/core/mem.h"
+  "/Users/vincent/Documents/Github/VitteLight/core/object.h"
+  "/Users/vincent/Documents/Github/VitteLight/core/opcodes.h"
+  "/Users/vincent/Documents/Github/VitteLight/core/opnames.h"
+  "/Users/vincent/Documents/Github/VitteLight/core/parser.h"
+  "/Users/vincent/Documents/Github/VitteLight/core/prefix.h"
+  "/Users/vincent/Documents/Github/VitteLight/core/state.h"
+  "/Users/vincent/Documents/Github/VitteLight/core/string.h"
+  "/Users/vincent/Documents/Github/VitteLight/core/table.h"
+  "/Users/vincent/Documents/Github/VitteLight/core/tm.h"
+  "/Users/vincent/Documents/Github/VitteLight/core/types.h"
+  "/Users/vincent/Documents/Github/VitteLight/core/undump.h"
+  "/Users/vincent/Documents/Github/VitteLight/core/utf8.h"
+  "/Users/vincent/Documents/Github/VitteLight/core/vl_compat.h"
+  "/Users/vincent/Documents/Github/VitteLight/core/vm.h"
+  "/Users/vincent/Documents/Github/VitteLight/core/zio.h"
+  )
+if(NOT "${NEW_GLOB}" STREQUAL "${OLD_GLOB}")
+  message("-- GLOB mismatch!")
+  file(TOUCH_NOCREATE "/Users/vincent/Documents/Github/VitteLight/build-cmake/CMakeFiles/cmake.verify_globs")
+endif()
+
 # LIB_SOURCES at CMakeLists.txt:15 (file)
 file(GLOB NEW_GLOB LIST_DIRECTORIES true "/Users/vincent/Documents/Github/VitteLight/libraries/*.c")
 set(OLD_GLOB
