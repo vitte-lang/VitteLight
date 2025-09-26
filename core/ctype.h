@@ -8,6 +8,12 @@
 #define VT_CTYPE_H
 #pragma once
 
+#if defined(__has_include_next)
+#  if __has_include_next(<ctype.h>)
+#    include_next <ctype.h>
+#  endif
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
