@@ -58,21 +58,30 @@ static int is_word_cp(u32 cp) {
 /* Aide et info */
 /* -------------------------------------------------------------------------- */
 void code_usage(FILE* out) {
+  const char* app = CODE_APP_NAME;
   fprintf(out,
           "%s %s\n"
           "Usage:\n"
-          "  app help                         Aide\n"
-          "  app info                         Infos runtime\n"
-          "  app rand [N]                     N aléas\n"
-          "  app hash <fichier>               hash64 d’un fichier\n"
-          "  app cat <fichier>                cat numéroté\n"
-          "  app json [out.json]              JSON de démo\n"
-          "  app utf8 <texte>                 liste des codepoints\n"
-          "  app freq <fichier> [topK]        fréquences des mots\n"
-          "  app bench [bytes] [iters]        bench hash64\n"
-          "  app ansi <texte>                 sortie colorée\n"
-          "  app demo                         démonstration\n",
-          CODE_APP_NAME, CODE_APP_VERSION);
+          "  %s [--help|--version]           Options globales\n"
+          "  %s <commande> [arguments]       Commandes listées ci-dessous\n"
+          "\n"
+          "Options:\n"
+          "  -h, --help                      Affiche cette aide\n"
+          "  -V, --version                   Infos runtime détaillées\n"
+          "\n"
+          "Commandes:\n"
+          "  help                            Aide\n"
+          "  info                            Infos runtime\n"
+          "  rand [N]                        N aléas\n"
+          "  hash <fichier>                  hash64 d’un fichier\n"
+          "  cat <fichier>                   cat numéroté\n"
+          "  json [out.json]                 JSON de démo\n"
+          "  utf8 <texte>                    liste des codepoints\n"
+          "  freq <fichier> [topK]           fréquences des mots\n"
+          "  bench [bytes] [iters]           bench hash64\n"
+          "  ansi <texte>                    sortie colorée\n"
+          "  demo                            démonstration\n",
+          app, CODE_APP_VERSION, app, app);
 }
 void code_print_info(void) {
   log_set_color(true);
@@ -317,8 +326,27 @@ bool code_cmd_parse(const char* s, CodeCmd* out_cmd) {
 
 int code_main(int argc, char** argv) {
   if (argc < 2) { code_usage(stdout); return 0; }
+
+  const char* arg1 = argv[1];
+  if (strcmp(arg1, "-h") == 0 || strcmp(arg1, "--help") == 0) {
+    code_usage(stdout);
+    return 0;
+  }
+  if (strcmp(arg1, "-V") == 0 || strcmp(arg1, "--version") == 0) {
+    code_print_info();
+    return 0;
+  }
+
   CodeCmd cmd;
-  if (!code_cmd_parse(argv[1], &cmd)) { code_usage(stderr); return 1; }
+  if (!code_cmd_parse(arg1, &cmd)) {
+    if (arg1[0] == '-') {
+      vl_logf(VL_LOG_ERROR, "option inconnue: %s", arg1);
+      code_usage(stderr);
+      return CODE_EINVAL;
+    }
+    code_usage(stderr);
+    return CODE_EINVAL;
+  }
 
   switch (cmd) {
     case CMD_HELP:  code_usage(stdout); return 0;

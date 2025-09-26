@@ -261,6 +261,9 @@ CMAKE_TAPI:FILEPATH=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeD
 // Studio IDE projects all commands are done without /nologo.
 CMAKE_VERBOSE_MAKEFILE:BOOL=FALSE
 
+//Build ncurses-based TUI helper
+VL_ENABLE_NCURSES:BOOL=ON
+
 //Value Computed by CMake
 vittelight_BINARY_DIR:STATIC=/Users/vincent/Documents/Github/VitteLight/build-cmake
 

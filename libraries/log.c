@@ -56,7 +56,12 @@
 #  endif
 #endif
 #ifndef VL_HAVE_THREADS_H
-#  include <pthread.h>
+#  if defined(_WIN32)
+#    define WIN32_LEAN_AND_MEAN
+#    include <windows.h>
+#  else
+#    include <pthread.h>
+#  endif
 #endif
 
 #include <stdatomic.h>
@@ -143,6 +148,8 @@ static void now_iso8601(char out[32]) {
 static unsigned long thread_id_u() {
 #if defined(VL_HAVE_THREADS_H)
     uintptr_t v = (uintptr_t) thrd_current();
+#elif defined(_WIN32)
+    uintptr_t v = (uintptr_t) GetCurrentThreadId();
 #else
     uintptr_t v = (uintptr_t) pthread_self();
 #endif

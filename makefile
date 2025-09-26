@@ -25,7 +25,7 @@ FORMULADIR   ?= Formula
 UNAME_S := $(shell uname -s)
 # Windows MSYS/MinGW/Cygwin ?
 ifeq ($(findstring MINGW,$(UNAME_S))$(findstring MSYS,$(UNAME_S))$(findstring CYGWIN,$(UNAME_S)),)
-  # Unix (macOS/Linux)
+  # Unix-like
   ifeq ($(UNAME_S),Darwin)
     OS            := macos
     EXE           :=
@@ -33,6 +33,27 @@ ifeq ($(findstring MINGW,$(UNAME_S))$(findstring MSYS,$(UNAME_S))$(findstring CY
     SHARED_FLAG   := -dynamiclib
     LD_FRAMEWORKS := -framework CoreFoundation
     SHA256        := shasum -a 256
+  else ifeq ($(UNAME_S),FreeBSD)
+    OS            := freebsd
+    EXE           :=
+    SHARED_EXT    := so
+    SHARED_FLAG   := -shared
+    LD_FRAMEWORKS :=
+    SHA256        := sha256
+  else ifeq ($(UNAME_S),OpenBSD)
+    OS            := openbsd
+    EXE           :=
+    SHARED_EXT    := so
+    SHARED_FLAG   := -shared
+    LD_FRAMEWORKS :=
+    SHA256        := sha256
+  else ifeq ($(UNAME_S),NetBSD)
+    OS            := netbsd
+    EXE           :=
+    SHARED_EXT    := so
+    SHARED_FLAG   := -shared
+    LD_FRAMEWORKS :=
+    SHA256        := sha256
   else
     OS            := linux
     EXE           :=
@@ -79,9 +100,22 @@ DEFS    := -DAPI_BUILD -D_FILE_OFFSET_BITS=64
 INCFLAGS := $(addprefix -I,$(INCLUDE_DIRS))
 
 # Liens
-LDLIBS_BASE := -lm -lpthread
+ifeq ($(OS),windows)
+  LDLIBS_BASE :=
+else
+  LDLIBS_BASE := -lm -lpthread
+endif
+
 ifeq ($(OS),macos)
   LDLIBS := $(LDLIBS_BASE) $(LD_FRAMEWORKS)
+else ifeq ($(OS),windows)
+  LDLIBS := $(LDLIBS_BASE) -lws2_32 -lbcrypt -ladvapi32 -lDbghelp
+else ifeq ($(OS),freebsd)
+  LDLIBS := $(LDLIBS_BASE) -ldl -lexecinfo
+else ifeq ($(OS),openbsd)
+  LDLIBS := $(LDLIBS_BASE) -ldl -lexecinfo
+else ifeq ($(OS),netbsd)
+  LDLIBS := $(LDLIBS_BASE) -ldl -lexecinfo
 else
   LDLIBS := $(LDLIBS_BASE) -ldl
 endif
@@ -90,6 +124,14 @@ endif
 CORE_ALL_SRCS  := $(wildcard core/*.c)
 CORE_LIB_SRCS  := $(filter-out core/code.c,$(CORE_ALL_SRCS))
 LIB_SRCS       := $(filter-out libraries/init.c,$(wildcard libraries/*.c))
+
+ENABLE_NCURSES ?= 1
+ifeq ($(OS),windows)
+  ENABLE_NCURSES := 0
+endif
+ifeq ($(ENABLE_NCURSES),0)
+  LIB_SRCS := $(filter-out libraries/ncurses.c,$(LIB_SRCS))
+endif
 INTERP_SRCS    := $(wildcard interpreter/*.c)
 COMPILER_SRCS  := $(wildcard compiler/*.c)
 ALL_SRCS       := $(CORE_LIB_SRCS) $(LIB_SRCS) $(INTERP_SRCS) $(COMPILER_SRCS) core/code.c

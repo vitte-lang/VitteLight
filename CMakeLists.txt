@@ -19,6 +19,15 @@ list(REMOVE_ITEM LIB_SOURCES
   ${VL_ROOT}/libraries/init.c
 )
 
+set(_vl_default_ncurses ON)
+if(WIN32)
+  set(_vl_default_ncurses OFF)
+endif()
+option(VL_ENABLE_NCURSES "Build ncurses-based TUI helper" ${_vl_default_ncurses})
+if(NOT VL_ENABLE_NCURSES)
+  list(REMOVE_ITEM LIB_SOURCES ${VL_ROOT}/libraries/ncurses.c)
+endif()
+
 # Exclure certains fichiers utilisés comme main()
 list(REMOVE_ITEM CORE_SOURCES ${VL_ROOT}/core/code.c)
 
@@ -44,6 +53,13 @@ endif()
 
 if(UNIX AND NOT APPLE)
   target_link_libraries(vittelight PUBLIC dl)
+endif()
+
+if(WIN32)
+  target_compile_definitions(vittelight PUBLIC _CRT_SECURE_NO_WARNINGS)
+  target_link_libraries(vittelight PUBLIC ws2_32 bcrypt advapi32 dbghelp)
+elseif(${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD|OpenBSD|NetBSD")
+  target_link_libraries(vittelight PUBLIC execinfo)
 endif()
 
 # Exécutables

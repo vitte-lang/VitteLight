@@ -394,6 +394,874 @@ CMakeFiles/vittelight.dir/core/zio.c.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/core/zio.c.s"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/core/zio.c -o CMakeFiles/vittelight.dir/core/zio.c.s
 
+CMakeFiles/vittelight.dir/libraries/amqp.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/amqp.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/amqp.c
+CMakeFiles/vittelight.dir/libraries/amqp.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_24) "Building C object CMakeFiles/vittelight.dir/libraries/amqp.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/amqp.c.o -MF CMakeFiles/vittelight.dir/libraries/amqp.c.o.d -o CMakeFiles/vittelight.dir/libraries/amqp.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/amqp.c
+
+CMakeFiles/vittelight.dir/libraries/amqp.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/amqp.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/amqp.c > CMakeFiles/vittelight.dir/libraries/amqp.c.i
+
+CMakeFiles/vittelight.dir/libraries/amqp.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/amqp.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/amqp.c -o CMakeFiles/vittelight.dir/libraries/amqp.c.s
+
+CMakeFiles/vittelight.dir/libraries/archive.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/archive.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/archive.c
+CMakeFiles/vittelight.dir/libraries/archive.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_25) "Building C object CMakeFiles/vittelight.dir/libraries/archive.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/archive.c.o -MF CMakeFiles/vittelight.dir/libraries/archive.c.o.d -o CMakeFiles/vittelight.dir/libraries/archive.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/archive.c
+
+CMakeFiles/vittelight.dir/libraries/archive.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/archive.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/archive.c > CMakeFiles/vittelight.dir/libraries/archive.c.i
+
+CMakeFiles/vittelight.dir/libraries/archive.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/archive.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/archive.c -o CMakeFiles/vittelight.dir/libraries/archive.c.s
+
+CMakeFiles/vittelight.dir/libraries/audio.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/audio.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/audio.c
+CMakeFiles/vittelight.dir/libraries/audio.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_26) "Building C object CMakeFiles/vittelight.dir/libraries/audio.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/audio.c.o -MF CMakeFiles/vittelight.dir/libraries/audio.c.o.d -o CMakeFiles/vittelight.dir/libraries/audio.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/audio.c
+
+CMakeFiles/vittelight.dir/libraries/audio.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/audio.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/audio.c > CMakeFiles/vittelight.dir/libraries/audio.c.i
+
+CMakeFiles/vittelight.dir/libraries/audio.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/audio.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/audio.c -o CMakeFiles/vittelight.dir/libraries/audio.c.s
+
+CMakeFiles/vittelight.dir/libraries/auxlib.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/auxlib.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/auxlib.c
+CMakeFiles/vittelight.dir/libraries/auxlib.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_27) "Building C object CMakeFiles/vittelight.dir/libraries/auxlib.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/auxlib.c.o -MF CMakeFiles/vittelight.dir/libraries/auxlib.c.o.d -o CMakeFiles/vittelight.dir/libraries/auxlib.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/auxlib.c
+
+CMakeFiles/vittelight.dir/libraries/auxlib.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/auxlib.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/auxlib.c > CMakeFiles/vittelight.dir/libraries/auxlib.c.i
+
+CMakeFiles/vittelight.dir/libraries/auxlib.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/auxlib.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/auxlib.c -o CMakeFiles/vittelight.dir/libraries/auxlib.c.s
+
+CMakeFiles/vittelight.dir/libraries/baselib.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/baselib.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/baselib.c
+CMakeFiles/vittelight.dir/libraries/baselib.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_28) "Building C object CMakeFiles/vittelight.dir/libraries/baselib.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/baselib.c.o -MF CMakeFiles/vittelight.dir/libraries/baselib.c.o.d -o CMakeFiles/vittelight.dir/libraries/baselib.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/baselib.c
+
+CMakeFiles/vittelight.dir/libraries/baselib.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/baselib.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/baselib.c > CMakeFiles/vittelight.dir/libraries/baselib.c.i
+
+CMakeFiles/vittelight.dir/libraries/baselib.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/baselib.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/baselib.c -o CMakeFiles/vittelight.dir/libraries/baselib.c.s
+
+CMakeFiles/vittelight.dir/libraries/cbor.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/cbor.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/cbor.c
+CMakeFiles/vittelight.dir/libraries/cbor.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_29) "Building C object CMakeFiles/vittelight.dir/libraries/cbor.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/cbor.c.o -MF CMakeFiles/vittelight.dir/libraries/cbor.c.o.d -o CMakeFiles/vittelight.dir/libraries/cbor.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/cbor.c
+
+CMakeFiles/vittelight.dir/libraries/cbor.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/cbor.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/cbor.c > CMakeFiles/vittelight.dir/libraries/cbor.c.i
+
+CMakeFiles/vittelight.dir/libraries/cbor.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/cbor.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/cbor.c -o CMakeFiles/vittelight.dir/libraries/cbor.c.s
+
+CMakeFiles/vittelight.dir/libraries/codec.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/codec.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/codec.c
+CMakeFiles/vittelight.dir/libraries/codec.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_30) "Building C object CMakeFiles/vittelight.dir/libraries/codec.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/codec.c.o -MF CMakeFiles/vittelight.dir/libraries/codec.c.o.d -o CMakeFiles/vittelight.dir/libraries/codec.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/codec.c
+
+CMakeFiles/vittelight.dir/libraries/codec.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/codec.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/codec.c > CMakeFiles/vittelight.dir/libraries/codec.c.i
+
+CMakeFiles/vittelight.dir/libraries/codec.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/codec.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/codec.c -o CMakeFiles/vittelight.dir/libraries/codec.c.s
+
+CMakeFiles/vittelight.dir/libraries/config.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/config.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/config.c
+CMakeFiles/vittelight.dir/libraries/config.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_31) "Building C object CMakeFiles/vittelight.dir/libraries/config.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/config.c.o -MF CMakeFiles/vittelight.dir/libraries/config.c.o.d -o CMakeFiles/vittelight.dir/libraries/config.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/config.c
+
+CMakeFiles/vittelight.dir/libraries/config.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/config.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/config.c > CMakeFiles/vittelight.dir/libraries/config.c.i
+
+CMakeFiles/vittelight.dir/libraries/config.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/config.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/config.c -o CMakeFiles/vittelight.dir/libraries/config.c.s
+
+CMakeFiles/vittelight.dir/libraries/corolib.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/corolib.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/corolib.c
+CMakeFiles/vittelight.dir/libraries/corolib.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_32) "Building C object CMakeFiles/vittelight.dir/libraries/corolib.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/corolib.c.o -MF CMakeFiles/vittelight.dir/libraries/corolib.c.o.d -o CMakeFiles/vittelight.dir/libraries/corolib.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/corolib.c
+
+CMakeFiles/vittelight.dir/libraries/corolib.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/corolib.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/corolib.c > CMakeFiles/vittelight.dir/libraries/corolib.c.i
+
+CMakeFiles/vittelight.dir/libraries/corolib.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/corolib.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/corolib.c -o CMakeFiles/vittelight.dir/libraries/corolib.c.s
+
+CMakeFiles/vittelight.dir/libraries/crypto.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/crypto.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/crypto.c
+CMakeFiles/vittelight.dir/libraries/crypto.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_33) "Building C object CMakeFiles/vittelight.dir/libraries/crypto.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/crypto.c.o -MF CMakeFiles/vittelight.dir/libraries/crypto.c.o.d -o CMakeFiles/vittelight.dir/libraries/crypto.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/crypto.c
+
+CMakeFiles/vittelight.dir/libraries/crypto.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/crypto.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/crypto.c > CMakeFiles/vittelight.dir/libraries/crypto.c.i
+
+CMakeFiles/vittelight.dir/libraries/crypto.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/crypto.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/crypto.c -o CMakeFiles/vittelight.dir/libraries/crypto.c.s
+
+CMakeFiles/vittelight.dir/libraries/csv.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/csv.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/csv.c
+CMakeFiles/vittelight.dir/libraries/csv.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_34) "Building C object CMakeFiles/vittelight.dir/libraries/csv.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/csv.c.o -MF CMakeFiles/vittelight.dir/libraries/csv.c.o.d -o CMakeFiles/vittelight.dir/libraries/csv.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/csv.c
+
+CMakeFiles/vittelight.dir/libraries/csv.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/csv.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/csv.c > CMakeFiles/vittelight.dir/libraries/csv.c.i
+
+CMakeFiles/vittelight.dir/libraries/csv.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/csv.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/csv.c -o CMakeFiles/vittelight.dir/libraries/csv.c.s
+
+CMakeFiles/vittelight.dir/libraries/curl.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/curl.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/curl.c
+CMakeFiles/vittelight.dir/libraries/curl.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_35) "Building C object CMakeFiles/vittelight.dir/libraries/curl.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/curl.c.o -MF CMakeFiles/vittelight.dir/libraries/curl.c.o.d -o CMakeFiles/vittelight.dir/libraries/curl.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/curl.c
+
+CMakeFiles/vittelight.dir/libraries/curl.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/curl.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/curl.c > CMakeFiles/vittelight.dir/libraries/curl.c.i
+
+CMakeFiles/vittelight.dir/libraries/curl.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/curl.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/curl.c -o CMakeFiles/vittelight.dir/libraries/curl.c.s
+
+CMakeFiles/vittelight.dir/libraries/dblib.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/dblib.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/dblib.c
+CMakeFiles/vittelight.dir/libraries/dblib.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_36) "Building C object CMakeFiles/vittelight.dir/libraries/dblib.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/dblib.c.o -MF CMakeFiles/vittelight.dir/libraries/dblib.c.o.d -o CMakeFiles/vittelight.dir/libraries/dblib.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/dblib.c
+
+CMakeFiles/vittelight.dir/libraries/dblib.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/dblib.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/dblib.c > CMakeFiles/vittelight.dir/libraries/dblib.c.i
+
+CMakeFiles/vittelight.dir/libraries/dblib.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/dblib.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/dblib.c -o CMakeFiles/vittelight.dir/libraries/dblib.c.s
+
+CMakeFiles/vittelight.dir/libraries/dl.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/dl.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/dl.c
+CMakeFiles/vittelight.dir/libraries/dl.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_37) "Building C object CMakeFiles/vittelight.dir/libraries/dl.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/dl.c.o -MF CMakeFiles/vittelight.dir/libraries/dl.c.o.d -o CMakeFiles/vittelight.dir/libraries/dl.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/dl.c
+
+CMakeFiles/vittelight.dir/libraries/dl.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/dl.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/dl.c > CMakeFiles/vittelight.dir/libraries/dl.c.i
+
+CMakeFiles/vittelight.dir/libraries/dl.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/dl.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/dl.c -o CMakeFiles/vittelight.dir/libraries/dl.c.s
+
+CMakeFiles/vittelight.dir/libraries/ffi.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/ffi.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/ffi.c
+CMakeFiles/vittelight.dir/libraries/ffi.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_38) "Building C object CMakeFiles/vittelight.dir/libraries/ffi.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/ffi.c.o -MF CMakeFiles/vittelight.dir/libraries/ffi.c.o.d -o CMakeFiles/vittelight.dir/libraries/ffi.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/ffi.c
+
+CMakeFiles/vittelight.dir/libraries/ffi.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/ffi.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/ffi.c > CMakeFiles/vittelight.dir/libraries/ffi.c.i
+
+CMakeFiles/vittelight.dir/libraries/ffi.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/ffi.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/ffi.c -o CMakeFiles/vittelight.dir/libraries/ffi.c.s
+
+CMakeFiles/vittelight.dir/libraries/ffmpeg.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/ffmpeg.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/ffmpeg.c
+CMakeFiles/vittelight.dir/libraries/ffmpeg.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_39) "Building C object CMakeFiles/vittelight.dir/libraries/ffmpeg.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/ffmpeg.c.o -MF CMakeFiles/vittelight.dir/libraries/ffmpeg.c.o.d -o CMakeFiles/vittelight.dir/libraries/ffmpeg.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/ffmpeg.c
+
+CMakeFiles/vittelight.dir/libraries/ffmpeg.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/ffmpeg.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/ffmpeg.c > CMakeFiles/vittelight.dir/libraries/ffmpeg.c.i
+
+CMakeFiles/vittelight.dir/libraries/ffmpeg.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/ffmpeg.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/ffmpeg.c -o CMakeFiles/vittelight.dir/libraries/ffmpeg.c.s
+
+CMakeFiles/vittelight.dir/libraries/font.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/font.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/font.c
+CMakeFiles/vittelight.dir/libraries/font.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_40) "Building C object CMakeFiles/vittelight.dir/libraries/font.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/font.c.o -MF CMakeFiles/vittelight.dir/libraries/font.c.o.d -o CMakeFiles/vittelight.dir/libraries/font.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/font.c
+
+CMakeFiles/vittelight.dir/libraries/font.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/font.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/font.c > CMakeFiles/vittelight.dir/libraries/font.c.i
+
+CMakeFiles/vittelight.dir/libraries/font.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/font.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/font.c -o CMakeFiles/vittelight.dir/libraries/font.c.s
+
+CMakeFiles/vittelight.dir/libraries/fs.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/fs.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/fs.c
+CMakeFiles/vittelight.dir/libraries/fs.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_41) "Building C object CMakeFiles/vittelight.dir/libraries/fs.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/fs.c.o -MF CMakeFiles/vittelight.dir/libraries/fs.c.o.d -o CMakeFiles/vittelight.dir/libraries/fs.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/fs.c
+
+CMakeFiles/vittelight.dir/libraries/fs.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/fs.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/fs.c > CMakeFiles/vittelight.dir/libraries/fs.c.i
+
+CMakeFiles/vittelight.dir/libraries/fs.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/fs.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/fs.c -o CMakeFiles/vittelight.dir/libraries/fs.c.s
+
+CMakeFiles/vittelight.dir/libraries/fswatch.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/fswatch.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/fswatch.c
+CMakeFiles/vittelight.dir/libraries/fswatch.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_42) "Building C object CMakeFiles/vittelight.dir/libraries/fswatch.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/fswatch.c.o -MF CMakeFiles/vittelight.dir/libraries/fswatch.c.o.d -o CMakeFiles/vittelight.dir/libraries/fswatch.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/fswatch.c
+
+CMakeFiles/vittelight.dir/libraries/fswatch.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/fswatch.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/fswatch.c > CMakeFiles/vittelight.dir/libraries/fswatch.c.i
+
+CMakeFiles/vittelight.dir/libraries/fswatch.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/fswatch.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/fswatch.c -o CMakeFiles/vittelight.dir/libraries/fswatch.c.s
+
+CMakeFiles/vittelight.dir/libraries/hash.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/hash.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/hash.c
+CMakeFiles/vittelight.dir/libraries/hash.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_43) "Building C object CMakeFiles/vittelight.dir/libraries/hash.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/hash.c.o -MF CMakeFiles/vittelight.dir/libraries/hash.c.o.d -o CMakeFiles/vittelight.dir/libraries/hash.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/hash.c
+
+CMakeFiles/vittelight.dir/libraries/hash.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/hash.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/hash.c > CMakeFiles/vittelight.dir/libraries/hash.c.i
+
+CMakeFiles/vittelight.dir/libraries/hash.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/hash.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/hash.c -o CMakeFiles/vittelight.dir/libraries/hash.c.s
+
+CMakeFiles/vittelight.dir/libraries/http.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/http.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/http.c
+CMakeFiles/vittelight.dir/libraries/http.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_44) "Building C object CMakeFiles/vittelight.dir/libraries/http.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/http.c.o -MF CMakeFiles/vittelight.dir/libraries/http.c.o.d -o CMakeFiles/vittelight.dir/libraries/http.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/http.c
+
+CMakeFiles/vittelight.dir/libraries/http.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/http.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/http.c > CMakeFiles/vittelight.dir/libraries/http.c.i
+
+CMakeFiles/vittelight.dir/libraries/http.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/http.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/http.c -o CMakeFiles/vittelight.dir/libraries/http.c.s
+
+CMakeFiles/vittelight.dir/libraries/img.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/img.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/img.c
+CMakeFiles/vittelight.dir/libraries/img.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_45) "Building C object CMakeFiles/vittelight.dir/libraries/img.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/img.c.o -MF CMakeFiles/vittelight.dir/libraries/img.c.o.d -o CMakeFiles/vittelight.dir/libraries/img.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/img.c
+
+CMakeFiles/vittelight.dir/libraries/img.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/img.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/img.c > CMakeFiles/vittelight.dir/libraries/img.c.i
+
+CMakeFiles/vittelight.dir/libraries/img.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/img.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/img.c -o CMakeFiles/vittelight.dir/libraries/img.c.s
+
+CMakeFiles/vittelight.dir/libraries/iolib.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/iolib.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/iolib.c
+CMakeFiles/vittelight.dir/libraries/iolib.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_46) "Building C object CMakeFiles/vittelight.dir/libraries/iolib.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/iolib.c.o -MF CMakeFiles/vittelight.dir/libraries/iolib.c.o.d -o CMakeFiles/vittelight.dir/libraries/iolib.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/iolib.c
+
+CMakeFiles/vittelight.dir/libraries/iolib.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/iolib.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/iolib.c > CMakeFiles/vittelight.dir/libraries/iolib.c.i
+
+CMakeFiles/vittelight.dir/libraries/iolib.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/iolib.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/iolib.c -o CMakeFiles/vittelight.dir/libraries/iolib.c.s
+
+CMakeFiles/vittelight.dir/libraries/ioloop.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/ioloop.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/ioloop.c
+CMakeFiles/vittelight.dir/libraries/ioloop.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_47) "Building C object CMakeFiles/vittelight.dir/libraries/ioloop.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/ioloop.c.o -MF CMakeFiles/vittelight.dir/libraries/ioloop.c.o.d -o CMakeFiles/vittelight.dir/libraries/ioloop.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/ioloop.c
+
+CMakeFiles/vittelight.dir/libraries/ioloop.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/ioloop.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/ioloop.c > CMakeFiles/vittelight.dir/libraries/ioloop.c.i
+
+CMakeFiles/vittelight.dir/libraries/ioloop.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/ioloop.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/ioloop.c -o CMakeFiles/vittelight.dir/libraries/ioloop.c.s
+
+CMakeFiles/vittelight.dir/libraries/ipc.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/ipc.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/ipc.c
+CMakeFiles/vittelight.dir/libraries/ipc.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_48) "Building C object CMakeFiles/vittelight.dir/libraries/ipc.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/ipc.c.o -MF CMakeFiles/vittelight.dir/libraries/ipc.c.o.d -o CMakeFiles/vittelight.dir/libraries/ipc.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/ipc.c
+
+CMakeFiles/vittelight.dir/libraries/ipc.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/ipc.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/ipc.c > CMakeFiles/vittelight.dir/libraries/ipc.c.i
+
+CMakeFiles/vittelight.dir/libraries/ipc.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/ipc.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/ipc.c -o CMakeFiles/vittelight.dir/libraries/ipc.c.s
+
+CMakeFiles/vittelight.dir/libraries/json.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/json.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/json.c
+CMakeFiles/vittelight.dir/libraries/json.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_49) "Building C object CMakeFiles/vittelight.dir/libraries/json.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/json.c.o -MF CMakeFiles/vittelight.dir/libraries/json.c.o.d -o CMakeFiles/vittelight.dir/libraries/json.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/json.c
+
+CMakeFiles/vittelight.dir/libraries/json.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/json.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/json.c > CMakeFiles/vittelight.dir/libraries/json.c.i
+
+CMakeFiles/vittelight.dir/libraries/json.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/json.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/json.c -o CMakeFiles/vittelight.dir/libraries/json.c.s
+
+CMakeFiles/vittelight.dir/libraries/kafka.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/kafka.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/kafka.c
+CMakeFiles/vittelight.dir/libraries/kafka.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_50) "Building C object CMakeFiles/vittelight.dir/libraries/kafka.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/kafka.c.o -MF CMakeFiles/vittelight.dir/libraries/kafka.c.o.d -o CMakeFiles/vittelight.dir/libraries/kafka.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/kafka.c
+
+CMakeFiles/vittelight.dir/libraries/kafka.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/kafka.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/kafka.c > CMakeFiles/vittelight.dir/libraries/kafka.c.i
+
+CMakeFiles/vittelight.dir/libraries/kafka.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/kafka.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/kafka.c -o CMakeFiles/vittelight.dir/libraries/kafka.c.s
+
+CMakeFiles/vittelight.dir/libraries/kv.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/kv.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/kv.c
+CMakeFiles/vittelight.dir/libraries/kv.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_51) "Building C object CMakeFiles/vittelight.dir/libraries/kv.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/kv.c.o -MF CMakeFiles/vittelight.dir/libraries/kv.c.o.d -o CMakeFiles/vittelight.dir/libraries/kv.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/kv.c
+
+CMakeFiles/vittelight.dir/libraries/kv.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/kv.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/kv.c > CMakeFiles/vittelight.dir/libraries/kv.c.i
+
+CMakeFiles/vittelight.dir/libraries/kv.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/kv.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/kv.c -o CMakeFiles/vittelight.dir/libraries/kv.c.s
+
+CMakeFiles/vittelight.dir/libraries/libc.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/libc.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/libc.c
+CMakeFiles/vittelight.dir/libraries/libc.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_52) "Building C object CMakeFiles/vittelight.dir/libraries/libc.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/libc.c.o -MF CMakeFiles/vittelight.dir/libraries/libc.c.o.d -o CMakeFiles/vittelight.dir/libraries/libc.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/libc.c
+
+CMakeFiles/vittelight.dir/libraries/libc.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/libc.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/libc.c > CMakeFiles/vittelight.dir/libraries/libc.c.i
+
+CMakeFiles/vittelight.dir/libraries/libc.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/libc.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/libc.c -o CMakeFiles/vittelight.dir/libraries/libc.c.s
+
+CMakeFiles/vittelight.dir/libraries/libm.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/libm.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/libm.c
+CMakeFiles/vittelight.dir/libraries/libm.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_53) "Building C object CMakeFiles/vittelight.dir/libraries/libm.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/libm.c.o -MF CMakeFiles/vittelight.dir/libraries/libm.c.o.d -o CMakeFiles/vittelight.dir/libraries/libm.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/libm.c
+
+CMakeFiles/vittelight.dir/libraries/libm.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/libm.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/libm.c > CMakeFiles/vittelight.dir/libraries/libm.c.i
+
+CMakeFiles/vittelight.dir/libraries/libm.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/libm.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/libm.c -o CMakeFiles/vittelight.dir/libraries/libm.c.s
+
+CMakeFiles/vittelight.dir/libraries/loadlib.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/loadlib.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/loadlib.c
+CMakeFiles/vittelight.dir/libraries/loadlib.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_54) "Building C object CMakeFiles/vittelight.dir/libraries/loadlib.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/loadlib.c.o -MF CMakeFiles/vittelight.dir/libraries/loadlib.c.o.d -o CMakeFiles/vittelight.dir/libraries/loadlib.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/loadlib.c
+
+CMakeFiles/vittelight.dir/libraries/loadlib.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/loadlib.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/loadlib.c > CMakeFiles/vittelight.dir/libraries/loadlib.c.i
+
+CMakeFiles/vittelight.dir/libraries/loadlib.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/loadlib.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/loadlib.c -o CMakeFiles/vittelight.dir/libraries/loadlib.c.s
+
+CMakeFiles/vittelight.dir/libraries/log.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/log.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/log.c
+CMakeFiles/vittelight.dir/libraries/log.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_55) "Building C object CMakeFiles/vittelight.dir/libraries/log.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/log.c.o -MF CMakeFiles/vittelight.dir/libraries/log.c.o.d -o CMakeFiles/vittelight.dir/libraries/log.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/log.c
+
+CMakeFiles/vittelight.dir/libraries/log.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/log.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/log.c > CMakeFiles/vittelight.dir/libraries/log.c.i
+
+CMakeFiles/vittelight.dir/libraries/log.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/log.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/log.c -o CMakeFiles/vittelight.dir/libraries/log.c.s
+
+CMakeFiles/vittelight.dir/libraries/mathlib.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/mathlib.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/mathlib.c
+CMakeFiles/vittelight.dir/libraries/mathlib.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_56) "Building C object CMakeFiles/vittelight.dir/libraries/mathlib.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/mathlib.c.o -MF CMakeFiles/vittelight.dir/libraries/mathlib.c.o.d -o CMakeFiles/vittelight.dir/libraries/mathlib.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/mathlib.c
+
+CMakeFiles/vittelight.dir/libraries/mathlib.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/mathlib.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/mathlib.c > CMakeFiles/vittelight.dir/libraries/mathlib.c.i
+
+CMakeFiles/vittelight.dir/libraries/mathlib.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/mathlib.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/mathlib.c -o CMakeFiles/vittelight.dir/libraries/mathlib.c.s
+
+CMakeFiles/vittelight.dir/libraries/metrics.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/metrics.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/metrics.c
+CMakeFiles/vittelight.dir/libraries/metrics.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_57) "Building C object CMakeFiles/vittelight.dir/libraries/metrics.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/metrics.c.o -MF CMakeFiles/vittelight.dir/libraries/metrics.c.o.d -o CMakeFiles/vittelight.dir/libraries/metrics.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/metrics.c
+
+CMakeFiles/vittelight.dir/libraries/metrics.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/metrics.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/metrics.c > CMakeFiles/vittelight.dir/libraries/metrics.c.i
+
+CMakeFiles/vittelight.dir/libraries/metrics.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/metrics.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/metrics.c -o CMakeFiles/vittelight.dir/libraries/metrics.c.s
+
+CMakeFiles/vittelight.dir/libraries/mgpack.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/mgpack.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/mgpack.c
+CMakeFiles/vittelight.dir/libraries/mgpack.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_58) "Building C object CMakeFiles/vittelight.dir/libraries/mgpack.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/mgpack.c.o -MF CMakeFiles/vittelight.dir/libraries/mgpack.c.o.d -o CMakeFiles/vittelight.dir/libraries/mgpack.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/mgpack.c
+
+CMakeFiles/vittelight.dir/libraries/mgpack.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/mgpack.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/mgpack.c > CMakeFiles/vittelight.dir/libraries/mgpack.c.i
+
+CMakeFiles/vittelight.dir/libraries/mgpack.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/mgpack.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/mgpack.c -o CMakeFiles/vittelight.dir/libraries/mgpack.c.s
+
+CMakeFiles/vittelight.dir/libraries/mqtt.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/mqtt.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/mqtt.c
+CMakeFiles/vittelight.dir/libraries/mqtt.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_59) "Building C object CMakeFiles/vittelight.dir/libraries/mqtt.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/mqtt.c.o -MF CMakeFiles/vittelight.dir/libraries/mqtt.c.o.d -o CMakeFiles/vittelight.dir/libraries/mqtt.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/mqtt.c
+
+CMakeFiles/vittelight.dir/libraries/mqtt.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/mqtt.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/mqtt.c > CMakeFiles/vittelight.dir/libraries/mqtt.c.i
+
+CMakeFiles/vittelight.dir/libraries/mqtt.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/mqtt.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/mqtt.c -o CMakeFiles/vittelight.dir/libraries/mqtt.c.s
+
+CMakeFiles/vittelight.dir/libraries/mysql.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/mysql.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/mysql.c
+CMakeFiles/vittelight.dir/libraries/mysql.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_60) "Building C object CMakeFiles/vittelight.dir/libraries/mysql.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/mysql.c.o -MF CMakeFiles/vittelight.dir/libraries/mysql.c.o.d -o CMakeFiles/vittelight.dir/libraries/mysql.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/mysql.c
+
+CMakeFiles/vittelight.dir/libraries/mysql.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/mysql.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/mysql.c > CMakeFiles/vittelight.dir/libraries/mysql.c.i
+
+CMakeFiles/vittelight.dir/libraries/mysql.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/mysql.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/mysql.c -o CMakeFiles/vittelight.dir/libraries/mysql.c.s
+
+CMakeFiles/vittelight.dir/libraries/ncurses.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/ncurses.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/ncurses.c
+CMakeFiles/vittelight.dir/libraries/ncurses.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_61) "Building C object CMakeFiles/vittelight.dir/libraries/ncurses.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/ncurses.c.o -MF CMakeFiles/vittelight.dir/libraries/ncurses.c.o.d -o CMakeFiles/vittelight.dir/libraries/ncurses.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/ncurses.c
+
+CMakeFiles/vittelight.dir/libraries/ncurses.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/ncurses.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/ncurses.c > CMakeFiles/vittelight.dir/libraries/ncurses.c.i
+
+CMakeFiles/vittelight.dir/libraries/ncurses.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/ncurses.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/ncurses.c -o CMakeFiles/vittelight.dir/libraries/ncurses.c.s
+
+CMakeFiles/vittelight.dir/libraries/net.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/net.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/net.c
+CMakeFiles/vittelight.dir/libraries/net.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_62) "Building C object CMakeFiles/vittelight.dir/libraries/net.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/net.c.o -MF CMakeFiles/vittelight.dir/libraries/net.c.o.d -o CMakeFiles/vittelight.dir/libraries/net.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/net.c
+
+CMakeFiles/vittelight.dir/libraries/net.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/net.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/net.c > CMakeFiles/vittelight.dir/libraries/net.c.i
+
+CMakeFiles/vittelight.dir/libraries/net.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/net.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/net.c -o CMakeFiles/vittelight.dir/libraries/net.c.s
+
+CMakeFiles/vittelight.dir/libraries/oslib.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/oslib.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/oslib.c
+CMakeFiles/vittelight.dir/libraries/oslib.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_63) "Building C object CMakeFiles/vittelight.dir/libraries/oslib.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/oslib.c.o -MF CMakeFiles/vittelight.dir/libraries/oslib.c.o.d -o CMakeFiles/vittelight.dir/libraries/oslib.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/oslib.c
+
+CMakeFiles/vittelight.dir/libraries/oslib.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/oslib.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/oslib.c > CMakeFiles/vittelight.dir/libraries/oslib.c.i
+
+CMakeFiles/vittelight.dir/libraries/oslib.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/oslib.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/oslib.c -o CMakeFiles/vittelight.dir/libraries/oslib.c.s
+
+CMakeFiles/vittelight.dir/libraries/path.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/path.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/path.c
+CMakeFiles/vittelight.dir/libraries/path.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_64) "Building C object CMakeFiles/vittelight.dir/libraries/path.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/path.c.o -MF CMakeFiles/vittelight.dir/libraries/path.c.o.d -o CMakeFiles/vittelight.dir/libraries/path.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/path.c
+
+CMakeFiles/vittelight.dir/libraries/path.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/path.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/path.c > CMakeFiles/vittelight.dir/libraries/path.c.i
+
+CMakeFiles/vittelight.dir/libraries/path.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/path.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/path.c -o CMakeFiles/vittelight.dir/libraries/path.c.s
+
+CMakeFiles/vittelight.dir/libraries/pg.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/pg.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/pg.c
+CMakeFiles/vittelight.dir/libraries/pg.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_65) "Building C object CMakeFiles/vittelight.dir/libraries/pg.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/pg.c.o -MF CMakeFiles/vittelight.dir/libraries/pg.c.o.d -o CMakeFiles/vittelight.dir/libraries/pg.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/pg.c
+
+CMakeFiles/vittelight.dir/libraries/pg.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/pg.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/pg.c > CMakeFiles/vittelight.dir/libraries/pg.c.i
+
+CMakeFiles/vittelight.dir/libraries/pg.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/pg.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/pg.c -o CMakeFiles/vittelight.dir/libraries/pg.c.s
+
+CMakeFiles/vittelight.dir/libraries/proc.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/proc.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/proc.c
+CMakeFiles/vittelight.dir/libraries/proc.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_66) "Building C object CMakeFiles/vittelight.dir/libraries/proc.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/proc.c.o -MF CMakeFiles/vittelight.dir/libraries/proc.c.o.d -o CMakeFiles/vittelight.dir/libraries/proc.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/proc.c
+
+CMakeFiles/vittelight.dir/libraries/proc.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/proc.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/proc.c > CMakeFiles/vittelight.dir/libraries/proc.c.i
+
+CMakeFiles/vittelight.dir/libraries/proc.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/proc.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/proc.c -o CMakeFiles/vittelight.dir/libraries/proc.c.s
+
+CMakeFiles/vittelight.dir/libraries/protobuf.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/protobuf.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/protobuf.c
+CMakeFiles/vittelight.dir/libraries/protobuf.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_67) "Building C object CMakeFiles/vittelight.dir/libraries/protobuf.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/protobuf.c.o -MF CMakeFiles/vittelight.dir/libraries/protobuf.c.o.d -o CMakeFiles/vittelight.dir/libraries/protobuf.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/protobuf.c
+
+CMakeFiles/vittelight.dir/libraries/protobuf.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/protobuf.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/protobuf.c > CMakeFiles/vittelight.dir/libraries/protobuf.c.i
+
+CMakeFiles/vittelight.dir/libraries/protobuf.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/protobuf.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/protobuf.c -o CMakeFiles/vittelight.dir/libraries/protobuf.c.s
+
+CMakeFiles/vittelight.dir/libraries/pthread.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/pthread.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/pthread.c
+CMakeFiles/vittelight.dir/libraries/pthread.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_68) "Building C object CMakeFiles/vittelight.dir/libraries/pthread.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/pthread.c.o -MF CMakeFiles/vittelight.dir/libraries/pthread.c.o.d -o CMakeFiles/vittelight.dir/libraries/pthread.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/pthread.c
+
+CMakeFiles/vittelight.dir/libraries/pthread.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/pthread.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/pthread.c > CMakeFiles/vittelight.dir/libraries/pthread.c.i
+
+CMakeFiles/vittelight.dir/libraries/pthread.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/pthread.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/pthread.c -o CMakeFiles/vittelight.dir/libraries/pthread.c.s
+
+CMakeFiles/vittelight.dir/libraries/re.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/re.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/re.c
+CMakeFiles/vittelight.dir/libraries/re.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_69) "Building C object CMakeFiles/vittelight.dir/libraries/re.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/re.c.o -MF CMakeFiles/vittelight.dir/libraries/re.c.o.d -o CMakeFiles/vittelight.dir/libraries/re.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/re.c
+
+CMakeFiles/vittelight.dir/libraries/re.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/re.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/re.c > CMakeFiles/vittelight.dir/libraries/re.c.i
+
+CMakeFiles/vittelight.dir/libraries/re.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/re.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/re.c -o CMakeFiles/vittelight.dir/libraries/re.c.s
+
+CMakeFiles/vittelight.dir/libraries/redis.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/redis.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/redis.c
+CMakeFiles/vittelight.dir/libraries/redis.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_70) "Building C object CMakeFiles/vittelight.dir/libraries/redis.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/redis.c.o -MF CMakeFiles/vittelight.dir/libraries/redis.c.o.d -o CMakeFiles/vittelight.dir/libraries/redis.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/redis.c
+
+CMakeFiles/vittelight.dir/libraries/redis.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/redis.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/redis.c > CMakeFiles/vittelight.dir/libraries/redis.c.i
+
+CMakeFiles/vittelight.dir/libraries/redis.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/redis.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/redis.c -o CMakeFiles/vittelight.dir/libraries/redis.c.s
+
+CMakeFiles/vittelight.dir/libraries/rt.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/rt.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/rt.c
+CMakeFiles/vittelight.dir/libraries/rt.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_71) "Building C object CMakeFiles/vittelight.dir/libraries/rt.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/rt.c.o -MF CMakeFiles/vittelight.dir/libraries/rt.c.o.d -o CMakeFiles/vittelight.dir/libraries/rt.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/rt.c
+
+CMakeFiles/vittelight.dir/libraries/rt.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/rt.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/rt.c > CMakeFiles/vittelight.dir/libraries/rt.c.i
+
+CMakeFiles/vittelight.dir/libraries/rt.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/rt.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/rt.c -o CMakeFiles/vittelight.dir/libraries/rt.c.s
+
+CMakeFiles/vittelight.dir/libraries/sandbox.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/sandbox.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/sandbox.c
+CMakeFiles/vittelight.dir/libraries/sandbox.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_72) "Building C object CMakeFiles/vittelight.dir/libraries/sandbox.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/sandbox.c.o -MF CMakeFiles/vittelight.dir/libraries/sandbox.c.o.d -o CMakeFiles/vittelight.dir/libraries/sandbox.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/sandbox.c
+
+CMakeFiles/vittelight.dir/libraries/sandbox.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/sandbox.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/sandbox.c > CMakeFiles/vittelight.dir/libraries/sandbox.c.i
+
+CMakeFiles/vittelight.dir/libraries/sandbox.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/sandbox.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/sandbox.c -o CMakeFiles/vittelight.dir/libraries/sandbox.c.s
+
+CMakeFiles/vittelight.dir/libraries/strlib.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/strlib.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/strlib.c
+CMakeFiles/vittelight.dir/libraries/strlib.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_73) "Building C object CMakeFiles/vittelight.dir/libraries/strlib.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/strlib.c.o -MF CMakeFiles/vittelight.dir/libraries/strlib.c.o.d -o CMakeFiles/vittelight.dir/libraries/strlib.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/strlib.c
+
+CMakeFiles/vittelight.dir/libraries/strlib.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/strlib.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/strlib.c > CMakeFiles/vittelight.dir/libraries/strlib.c.i
+
+CMakeFiles/vittelight.dir/libraries/strlib.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/strlib.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/strlib.c -o CMakeFiles/vittelight.dir/libraries/strlib.c.s
+
+CMakeFiles/vittelight.dir/libraries/tablib.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/tablib.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/tablib.c
+CMakeFiles/vittelight.dir/libraries/tablib.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_74) "Building C object CMakeFiles/vittelight.dir/libraries/tablib.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/tablib.c.o -MF CMakeFiles/vittelight.dir/libraries/tablib.c.o.d -o CMakeFiles/vittelight.dir/libraries/tablib.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/tablib.c
+
+CMakeFiles/vittelight.dir/libraries/tablib.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/tablib.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/tablib.c > CMakeFiles/vittelight.dir/libraries/tablib.c.i
+
+CMakeFiles/vittelight.dir/libraries/tablib.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/tablib.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/tablib.c -o CMakeFiles/vittelight.dir/libraries/tablib.c.s
+
+CMakeFiles/vittelight.dir/libraries/threadpool.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/threadpool.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/threadpool.c
+CMakeFiles/vittelight.dir/libraries/threadpool.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_75) "Building C object CMakeFiles/vittelight.dir/libraries/threadpool.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/threadpool.c.o -MF CMakeFiles/vittelight.dir/libraries/threadpool.c.o.d -o CMakeFiles/vittelight.dir/libraries/threadpool.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/threadpool.c
+
+CMakeFiles/vittelight.dir/libraries/threadpool.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/threadpool.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/threadpool.c > CMakeFiles/vittelight.dir/libraries/threadpool.c.i
+
+CMakeFiles/vittelight.dir/libraries/threadpool.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/threadpool.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/threadpool.c -o CMakeFiles/vittelight.dir/libraries/threadpool.c.s
+
+CMakeFiles/vittelight.dir/libraries/time.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/time.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/time.c
+CMakeFiles/vittelight.dir/libraries/time.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_76) "Building C object CMakeFiles/vittelight.dir/libraries/time.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/time.c.o -MF CMakeFiles/vittelight.dir/libraries/time.c.o.d -o CMakeFiles/vittelight.dir/libraries/time.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/time.c
+
+CMakeFiles/vittelight.dir/libraries/time.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/time.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/time.c > CMakeFiles/vittelight.dir/libraries/time.c.i
+
+CMakeFiles/vittelight.dir/libraries/time.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/time.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/time.c -o CMakeFiles/vittelight.dir/libraries/time.c.s
+
+CMakeFiles/vittelight.dir/libraries/url.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/url.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/url.c
+CMakeFiles/vittelight.dir/libraries/url.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_77) "Building C object CMakeFiles/vittelight.dir/libraries/url.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/url.c.o -MF CMakeFiles/vittelight.dir/libraries/url.c.o.d -o CMakeFiles/vittelight.dir/libraries/url.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/url.c
+
+CMakeFiles/vittelight.dir/libraries/url.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/url.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/url.c > CMakeFiles/vittelight.dir/libraries/url.c.i
+
+CMakeFiles/vittelight.dir/libraries/url.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/url.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/url.c -o CMakeFiles/vittelight.dir/libraries/url.c.s
+
+CMakeFiles/vittelight.dir/libraries/utf8lib.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/utf8lib.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/utf8lib.c
+CMakeFiles/vittelight.dir/libraries/utf8lib.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_78) "Building C object CMakeFiles/vittelight.dir/libraries/utf8lib.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/utf8lib.c.o -MF CMakeFiles/vittelight.dir/libraries/utf8lib.c.o.d -o CMakeFiles/vittelight.dir/libraries/utf8lib.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/utf8lib.c
+
+CMakeFiles/vittelight.dir/libraries/utf8lib.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/utf8lib.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/utf8lib.c > CMakeFiles/vittelight.dir/libraries/utf8lib.c.i
+
+CMakeFiles/vittelight.dir/libraries/utf8lib.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/utf8lib.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/utf8lib.c -o CMakeFiles/vittelight.dir/libraries/utf8lib.c.s
+
+CMakeFiles/vittelight.dir/libraries/uuid.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/uuid.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/uuid.c
+CMakeFiles/vittelight.dir/libraries/uuid.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_79) "Building C object CMakeFiles/vittelight.dir/libraries/uuid.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/uuid.c.o -MF CMakeFiles/vittelight.dir/libraries/uuid.c.o.d -o CMakeFiles/vittelight.dir/libraries/uuid.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/uuid.c
+
+CMakeFiles/vittelight.dir/libraries/uuid.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/uuid.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/uuid.c > CMakeFiles/vittelight.dir/libraries/uuid.c.i
+
+CMakeFiles/vittelight.dir/libraries/uuid.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/uuid.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/uuid.c -o CMakeFiles/vittelight.dir/libraries/uuid.c.s
+
+CMakeFiles/vittelight.dir/libraries/webp.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/webp.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/webp.c
+CMakeFiles/vittelight.dir/libraries/webp.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_80) "Building C object CMakeFiles/vittelight.dir/libraries/webp.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/webp.c.o -MF CMakeFiles/vittelight.dir/libraries/webp.c.o.d -o CMakeFiles/vittelight.dir/libraries/webp.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/webp.c
+
+CMakeFiles/vittelight.dir/libraries/webp.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/webp.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/webp.c > CMakeFiles/vittelight.dir/libraries/webp.c.i
+
+CMakeFiles/vittelight.dir/libraries/webp.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/webp.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/webp.c -o CMakeFiles/vittelight.dir/libraries/webp.c.s
+
+CMakeFiles/vittelight.dir/libraries/ws.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/ws.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/ws.c
+CMakeFiles/vittelight.dir/libraries/ws.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_81) "Building C object CMakeFiles/vittelight.dir/libraries/ws.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/ws.c.o -MF CMakeFiles/vittelight.dir/libraries/ws.c.o.d -o CMakeFiles/vittelight.dir/libraries/ws.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/ws.c
+
+CMakeFiles/vittelight.dir/libraries/ws.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/ws.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/ws.c > CMakeFiles/vittelight.dir/libraries/ws.c.i
+
+CMakeFiles/vittelight.dir/libraries/ws.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/ws.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/ws.c -o CMakeFiles/vittelight.dir/libraries/ws.c.s
+
+CMakeFiles/vittelight.dir/libraries/xml.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/xml.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/xml.c
+CMakeFiles/vittelight.dir/libraries/xml.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_82) "Building C object CMakeFiles/vittelight.dir/libraries/xml.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/xml.c.o -MF CMakeFiles/vittelight.dir/libraries/xml.c.o.d -o CMakeFiles/vittelight.dir/libraries/xml.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/xml.c
+
+CMakeFiles/vittelight.dir/libraries/xml.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/xml.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/xml.c > CMakeFiles/vittelight.dir/libraries/xml.c.i
+
+CMakeFiles/vittelight.dir/libraries/xml.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/xml.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/xml.c -o CMakeFiles/vittelight.dir/libraries/xml.c.s
+
+CMakeFiles/vittelight.dir/libraries/yaml.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/yaml.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/yaml.c
+CMakeFiles/vittelight.dir/libraries/yaml.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_83) "Building C object CMakeFiles/vittelight.dir/libraries/yaml.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/yaml.c.o -MF CMakeFiles/vittelight.dir/libraries/yaml.c.o.d -o CMakeFiles/vittelight.dir/libraries/yaml.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/yaml.c
+
+CMakeFiles/vittelight.dir/libraries/yaml.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/yaml.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/yaml.c > CMakeFiles/vittelight.dir/libraries/yaml.c.i
+
+CMakeFiles/vittelight.dir/libraries/yaml.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/yaml.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/yaml.c -o CMakeFiles/vittelight.dir/libraries/yaml.c.s
+
+CMakeFiles/vittelight.dir/libraries/z.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/z.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/z.c
+CMakeFiles/vittelight.dir/libraries/z.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_84) "Building C object CMakeFiles/vittelight.dir/libraries/z.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/z.c.o -MF CMakeFiles/vittelight.dir/libraries/z.c.o.d -o CMakeFiles/vittelight.dir/libraries/z.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/z.c
+
+CMakeFiles/vittelight.dir/libraries/z.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/z.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/z.c > CMakeFiles/vittelight.dir/libraries/z.c.i
+
+CMakeFiles/vittelight.dir/libraries/z.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/z.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/z.c -o CMakeFiles/vittelight.dir/libraries/z.c.s
+
+CMakeFiles/vittelight.dir/libraries/zmq.c.o: CMakeFiles/vittelight.dir/flags.make
+CMakeFiles/vittelight.dir/libraries/zmq.c.o: /Users/vincent/Documents/Github/VitteLight/libraries/zmq.c
+CMakeFiles/vittelight.dir/libraries/zmq.c.o: CMakeFiles/vittelight.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_85) "Building C object CMakeFiles/vittelight.dir/libraries/zmq.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/vittelight.dir/libraries/zmq.c.o -MF CMakeFiles/vittelight.dir/libraries/zmq.c.o.d -o CMakeFiles/vittelight.dir/libraries/zmq.c.o -c /Users/vincent/Documents/Github/VitteLight/libraries/zmq.c
+
+CMakeFiles/vittelight.dir/libraries/zmq.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/vittelight.dir/libraries/zmq.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /Users/vincent/Documents/Github/VitteLight/libraries/zmq.c > CMakeFiles/vittelight.dir/libraries/zmq.c.i
+
+CMakeFiles/vittelight.dir/libraries/zmq.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/vittelight.dir/libraries/zmq.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /Users/vincent/Documents/Github/VitteLight/libraries/zmq.c -o CMakeFiles/vittelight.dir/libraries/zmq.c.s
+
 # Object files for target vittelight
 vittelight_OBJECTS = \
 "CMakeFiles/vittelight.dir/core/api.c.o" \
@@ -418,7 +1286,69 @@ vittelight_OBJECTS = \
 "CMakeFiles/vittelight.dir/core/utf8.c.o" \
 "CMakeFiles/vittelight.dir/core/vl_compat.c.o" \
 "CMakeFiles/vittelight.dir/core/vm.c.o" \
-"CMakeFiles/vittelight.dir/core/zio.c.o"
+"CMakeFiles/vittelight.dir/core/zio.c.o" \
+"CMakeFiles/vittelight.dir/libraries/amqp.c.o" \
+"CMakeFiles/vittelight.dir/libraries/archive.c.o" \
+"CMakeFiles/vittelight.dir/libraries/audio.c.o" \
+"CMakeFiles/vittelight.dir/libraries/auxlib.c.o" \
+"CMakeFiles/vittelight.dir/libraries/baselib.c.o" \
+"CMakeFiles/vittelight.dir/libraries/cbor.c.o" \
+"CMakeFiles/vittelight.dir/libraries/codec.c.o" \
+"CMakeFiles/vittelight.dir/libraries/config.c.o" \
+"CMakeFiles/vittelight.dir/libraries/corolib.c.o" \
+"CMakeFiles/vittelight.dir/libraries/crypto.c.o" \
+"CMakeFiles/vittelight.dir/libraries/csv.c.o" \
+"CMakeFiles/vittelight.dir/libraries/curl.c.o" \
+"CMakeFiles/vittelight.dir/libraries/dblib.c.o" \
+"CMakeFiles/vittelight.dir/libraries/dl.c.o" \
+"CMakeFiles/vittelight.dir/libraries/ffi.c.o" \
+"CMakeFiles/vittelight.dir/libraries/ffmpeg.c.o" \
+"CMakeFiles/vittelight.dir/libraries/font.c.o" \
+"CMakeFiles/vittelight.dir/libraries/fs.c.o" \
+"CMakeFiles/vittelight.dir/libraries/fswatch.c.o" \
+"CMakeFiles/vittelight.dir/libraries/hash.c.o" \
+"CMakeFiles/vittelight.dir/libraries/http.c.o" \
+"CMakeFiles/vittelight.dir/libraries/img.c.o" \
+"CMakeFiles/vittelight.dir/libraries/iolib.c.o" \
+"CMakeFiles/vittelight.dir/libraries/ioloop.c.o" \
+"CMakeFiles/vittelight.dir/libraries/ipc.c.o" \
+"CMakeFiles/vittelight.dir/libraries/json.c.o" \
+"CMakeFiles/vittelight.dir/libraries/kafka.c.o" \
+"CMakeFiles/vittelight.dir/libraries/kv.c.o" \
+"CMakeFiles/vittelight.dir/libraries/libc.c.o" \
+"CMakeFiles/vittelight.dir/libraries/libm.c.o" \
+"CMakeFiles/vittelight.dir/libraries/loadlib.c.o" \
+"CMakeFiles/vittelight.dir/libraries/log.c.o" \
+"CMakeFiles/vittelight.dir/libraries/mathlib.c.o" \
+"CMakeFiles/vittelight.dir/libraries/metrics.c.o" \
+"CMakeFiles/vittelight.dir/libraries/mgpack.c.o" \
+"CMakeFiles/vittelight.dir/libraries/mqtt.c.o" \
+"CMakeFiles/vittelight.dir/libraries/mysql.c.o" \
+"CMakeFiles/vittelight.dir/libraries/ncurses.c.o" \
+"CMakeFiles/vittelight.dir/libraries/net.c.o" \
+"CMakeFiles/vittelight.dir/libraries/oslib.c.o" \
+"CMakeFiles/vittelight.dir/libraries/path.c.o" \
+"CMakeFiles/vittelight.dir/libraries/pg.c.o" \
+"CMakeFiles/vittelight.dir/libraries/proc.c.o" \
+"CMakeFiles/vittelight.dir/libraries/protobuf.c.o" \
+"CMakeFiles/vittelight.dir/libraries/pthread.c.o" \
+"CMakeFiles/vittelight.dir/libraries/re.c.o" \
+"CMakeFiles/vittelight.dir/libraries/redis.c.o" \
+"CMakeFiles/vittelight.dir/libraries/rt.c.o" \
+"CMakeFiles/vittelight.dir/libraries/sandbox.c.o" \
+"CMakeFiles/vittelight.dir/libraries/strlib.c.o" \
+"CMakeFiles/vittelight.dir/libraries/tablib.c.o" \
+"CMakeFiles/vittelight.dir/libraries/threadpool.c.o" \
+"CMakeFiles/vittelight.dir/libraries/time.c.o" \
+"CMakeFiles/vittelight.dir/libraries/url.c.o" \
+"CMakeFiles/vittelight.dir/libraries/utf8lib.c.o" \
+"CMakeFiles/vittelight.dir/libraries/uuid.c.o" \
+"CMakeFiles/vittelight.dir/libraries/webp.c.o" \
+"CMakeFiles/vittelight.dir/libraries/ws.c.o" \
+"CMakeFiles/vittelight.dir/libraries/xml.c.o" \
+"CMakeFiles/vittelight.dir/libraries/yaml.c.o" \
+"CMakeFiles/vittelight.dir/libraries/z.c.o" \
+"CMakeFiles/vittelight.dir/libraries/zmq.c.o"
 
 # External object files for target vittelight
 vittelight_EXTERNAL_OBJECTS =
@@ -446,9 +1376,71 @@ libvittelight.a: CMakeFiles/vittelight.dir/core/utf8.c.o
 libvittelight.a: CMakeFiles/vittelight.dir/core/vl_compat.c.o
 libvittelight.a: CMakeFiles/vittelight.dir/core/vm.c.o
 libvittelight.a: CMakeFiles/vittelight.dir/core/zio.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/amqp.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/archive.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/audio.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/auxlib.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/baselib.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/cbor.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/codec.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/config.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/corolib.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/crypto.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/csv.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/curl.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/dblib.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/dl.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/ffi.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/ffmpeg.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/font.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/fs.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/fswatch.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/hash.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/http.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/img.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/iolib.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/ioloop.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/ipc.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/json.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/kafka.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/kv.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/libc.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/libm.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/loadlib.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/log.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/mathlib.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/metrics.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/mgpack.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/mqtt.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/mysql.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/ncurses.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/net.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/oslib.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/path.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/pg.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/proc.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/protobuf.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/pthread.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/re.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/redis.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/rt.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/sandbox.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/strlib.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/tablib.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/threadpool.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/time.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/url.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/utf8lib.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/uuid.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/webp.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/ws.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/xml.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/yaml.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/z.c.o
+libvittelight.a: CMakeFiles/vittelight.dir/libraries/zmq.c.o
 libvittelight.a: CMakeFiles/vittelight.dir/build.make
 libvittelight.a: CMakeFiles/vittelight.dir/link.txt
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_24) "Linking C static library libvittelight.a"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/Users/vincent/Documents/Github/VitteLight/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_86) "Linking C static library libvittelight.a"
 	$(CMAKE_COMMAND) -P CMakeFiles/vittelight.dir/cmake_clean_target.cmake
 	$(CMAKE_COMMAND) -E cmake_link_script CMakeFiles/vittelight.dir/link.txt --verbose=$(VERBOSE)
 

@@ -15,6 +15,7 @@
 #include <string.h>
 
 #include "debug.h"
+#include "code.h"
 
 /* ----------------------------------------------------------------------------
    Utils
@@ -148,8 +149,9 @@ static int parse_color(const char* s, int* auto_mode, int* ok) {
 
 static void usage(const char* prog) {
   fprintf(stderr,
-          "Usage: %s [options]\n"
-          "Options:\n"
+          "Usage: %s [options] [commande [arguments]]\n"
+          "\n"
+          "Options logging/debug:\n"
           "  --level <trace|debug|info|warn|error|fatal>\n"
           "  --format <text|json>\n"
           "  --color  <auto|on|off>\n"
@@ -162,8 +164,11 @@ static void usage(const char* prog) {
           "  --emit-sample              # émet TRACE..FATAL\n"
           "  --fatal                    # déclenche FATAL (abort)\n"
           "  --json / --text            # alias de --format\n"
-          "  -h | --help\n",
+          "  -V | --version             # infos runtime (après init log)\n"
+          "  -h | --help\n"
+          "\n",
           prog);
+  code_usage(stderr);
 }
 
 /* ----------------------------------------------------------------------------
@@ -234,12 +239,16 @@ int main(int argc, char** argv) {
   int do_bt = 0, do_samples = 0, do_fatal = 0;
   uint64_t bench_n = 0;
   const char* bench_msg = NULL;
+  int show_version = 0;
+  int first_cmd_index = 0;
 
   for (int i = 1; i < argc; i++) {
     const char* a = argv[i];
     if (streq(a, "-h") || streq(a, "--help")) {
       usage(argv[0]);
       return 0;
+    } else if (streq(a, "-V") || streq(a, "--version")) {
+      show_version = 1;
     } else if (streq(a, "--level") && i + 1 < argc) {
       int ok = 0;
       cfg.level = parse_level(argv[++i], &ok);
@@ -297,6 +306,9 @@ int main(int argc, char** argv) {
       do_samples = 1;
     } else if (streq(a, "--fatal")) {
       do_fatal = 1;
+    } else if (a[0] != '\0' && a[0] != '-') {
+      first_cmd_index = i;
+      break;
     } else {
       fprintf(stderr, "Unknown arg: %s\n", a);
       usage(argv[0]);
@@ -316,6 +328,19 @@ int main(int argc, char** argv) {
       (int)cfg.level, (int)cfg.format, cfg.use_color,
       cfg.file_path ? cfg.file_path : "<stderr>", cfg.rotate_bytes,
       cfg.capture_crash);
+
+  if (show_version) {
+    code_print_info();
+  }
+
+  if (first_cmd_index > 0) {
+    char* saved = argv[first_cmd_index - 1];
+    argv[first_cmd_index - 1] = argv[0];
+    int rc = code_main(argc - first_cmd_index + 1, argv + first_cmd_index - 1);
+    argv[first_cmd_index - 1] = saved;
+    vt_log_shutdown();
+    return rc;
+  }
 
   if (do_samples) {
     do_emit_sample();
