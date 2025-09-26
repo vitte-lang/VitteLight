@@ -29,9 +29,15 @@
 #include <string.h>
 #include <stdint.h>
 #include <stddef.h>   /* ptrdiff_t */
-#include <ctype.h>
+#include "libctype.h"
 #include <time.h>
 #include <stdarg.h>
+
+static int aux_to_lower_ascii(int c) {
+    if (c >= 'A' && c <= 'Z')
+        return c + ('a' - 'A');
+    return c;
+}
 
 #if defined(_WIN32)
   #include <windows.h>
@@ -424,7 +430,7 @@ AUX_API int aux_prompt_password(const char* prompt, char* out, size_t cap){
 
 static inline int _aux_equ_ci(char a,char b,int ci){
     if (!ci) return a==b;
-    return (int)tolower((unsigned char)a) == (int)tolower((unsigned char)b);
+    return aux_to_lower_ascii((unsigned char)a) == aux_to_lower_ascii((unsigned char)b);
 }
 AUX_API int aux_wildmatch_ci(const char* pat,const char* str,int case_insensitive){
     const char *p=pat,*s=str,*star=NULL,*ss=NULL;
@@ -597,8 +603,3 @@ int main(int argc,char**argv){
     return 0;
 }
 #endif
-static int aux_to_lower_ascii(int c) {
-    if (c >= 'A' && c <= 'Z')
-        return c + ('a' - 'A');
-    return c;
-}

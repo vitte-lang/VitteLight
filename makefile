@@ -10,10 +10,10 @@ VERSION      ?= 0.1.0
 DESC         ?= "VitteLight VM tooling & CLI"
 
 # ---- Répertoires ----
-SRC_DIRS     := core interpreter compiler
+SRC_DIRS     := core libraries interpreter compiler
 BUILD_DIR    ?= build
 DIST_DIR     ?= dist
-INCLUDE_DIRS := core .
+INCLUDE_DIRS := core libraries .
 PREFIX       ?= /usr/local
 BINDIR       ?= $(PREFIX)/bin
 LIBDIR       ?= $(PREFIX)/lib
@@ -87,18 +87,21 @@ else
 endif
 
 # ---- Sources (auto) ----
-CORE_SRCS      := $(wildcard core/*.c)
+CORE_ALL_SRCS  := $(wildcard core/*.c)
+CORE_LIB_SRCS  := $(filter-out core/code.c,$(CORE_ALL_SRCS))
+LIB_SRCS       := $(filter-out libraries/init.c,$(wildcard libraries/*.c))
 INTERP_SRCS    := $(wildcard interpreter/*.c)
 COMPILER_SRCS  := $(wildcard compiler/*.c)
-ALL_SRCS       := $(CORE_SRCS) $(INTERP_SRCS) $(COMPILER_SRCS)
+ALL_SRCS       := $(CORE_LIB_SRCS) $(LIB_SRCS) $(INTERP_SRCS) $(COMPILER_SRCS) core/code.c
 
 # ---- Objets ----
 OBJ_DIR  := $(BUILD_DIR)/obj
 BIN_DIR  := $(BUILD_DIR)/bin
 LIB_DIR  := $(BUILD_DIR)/lib
 
-OBJS      := $(patsubst %.c,$(OBJ_DIR)/%.o,$(ALL_SRCS))
-CORE_OBJS := $(patsubst %.c,$(OBJ_DIR)/%.o,$(CORE_SRCS))
+OBJS          := $(patsubst %.c,$(OBJ_DIR)/%.o,$(ALL_SRCS))
+CORE_LIB_OBJS := $(patsubst %.c,$(OBJ_DIR)/%.o,$(CORE_LIB_SRCS))
+LIB_OBJS      := $(patsubst %.c,$(OBJ_DIR)/%.o,$(LIB_SRCS))
 
 # ---- Binaries / Libraries ----
 BIN_APP     := $(BIN_DIR)/$(APP)$(EXE)
@@ -143,14 +146,14 @@ lib: static shared
 static: $(LIB_STATIC)
 shared: $(LIB_SHARED)
 
-$(LIB_STATIC): $(CORE_OBJS) | $(LIB_DIR)
+$(LIB_STATIC): $(CORE_LIB_OBJS) $(LIB_OBJS) | $(LIB_DIR)
 	@echo "AR  $@"
-	@$(AR) rcs $@ $(CORE_OBJS)
+	@$(AR) rcs $@ $(CORE_LIB_OBJS) $(LIB_OBJS)
 	@$(RANLIB) $@
 
-$(LIB_SHARED): $(CORE_OBJS) | $(LIB_DIR)
+$(LIB_SHARED): $(CORE_LIB_OBJS) $(LIB_OBJS) | $(LIB_DIR)
 	@echo "LD  $@"
-	@$(CC) $(SHARED_FLAG) -o $@ $(CORE_OBJS) $(LDLIBS)
+	@$(CC) $(SHARED_FLAG) -o $@ $(CORE_LIB_OBJS) $(LIB_OBJS) $(LDLIBS)
 
 # ---- Binaries ----
 # On lie le CLI principal contre la lib statique + l’objet code.o (si présent)

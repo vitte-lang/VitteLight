@@ -65,6 +65,16 @@ CMAKE_BINARY_DIR = /Users/vincent/Documents/Github/VitteLight/build-cmake
 #=============================================================================
 # Targets provided globally by CMake.
 
+# Special rule for the target test
+test:
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --cyan "Running tests..."
+	/opt/homebrew/bin/ctest $(ARGS)
+.PHONY : test
+
+# Special rule for the target test
+test/fast: test
+.PHONY : test/fast
+
 # Special rule for the target edit_cache
 edit_cache:
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --cyan "Running CMake cache editor..."
@@ -200,6 +210,19 @@ vitte-cli: cmake_check_build_system
 vitte-cli/fast:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/vitte-cli.dir/build.make CMakeFiles/vitte-cli.dir/build
 .PHONY : vitte-cli/fast
+
+#=============================================================================
+# Target rules for targets named vl_test
+
+# Build rule for target.
+vl_test: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 vl_test
+.PHONY : vl_test
+
+# fast build rule for target.
+vl_test/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vl_test.dir/build.make CMakeFiles/vl_test.dir/build
+.PHONY : vl_test/fast
 
 compiler/vitlc.o: compiler/vitlc.c.o
 .PHONY : compiler/vitlc.o
@@ -801,6 +824,1518 @@ core/zio.c.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/core/zio.c.s
 .PHONY : core/zio.c.s
 
+libraries/amqp.o: libraries/amqp.c.o
+.PHONY : libraries/amqp.o
+
+# target to build an object file
+libraries/amqp.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/amqp.c.o
+.PHONY : libraries/amqp.c.o
+
+libraries/amqp.i: libraries/amqp.c.i
+.PHONY : libraries/amqp.i
+
+# target to preprocess a source file
+libraries/amqp.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/amqp.c.i
+.PHONY : libraries/amqp.c.i
+
+libraries/amqp.s: libraries/amqp.c.s
+.PHONY : libraries/amqp.s
+
+# target to generate assembly for a file
+libraries/amqp.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/amqp.c.s
+.PHONY : libraries/amqp.c.s
+
+libraries/archive.o: libraries/archive.c.o
+.PHONY : libraries/archive.o
+
+# target to build an object file
+libraries/archive.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/archive.c.o
+.PHONY : libraries/archive.c.o
+
+libraries/archive.i: libraries/archive.c.i
+.PHONY : libraries/archive.i
+
+# target to preprocess a source file
+libraries/archive.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/archive.c.i
+.PHONY : libraries/archive.c.i
+
+libraries/archive.s: libraries/archive.c.s
+.PHONY : libraries/archive.s
+
+# target to generate assembly for a file
+libraries/archive.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/archive.c.s
+.PHONY : libraries/archive.c.s
+
+libraries/audio.o: libraries/audio.c.o
+.PHONY : libraries/audio.o
+
+# target to build an object file
+libraries/audio.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/audio.c.o
+.PHONY : libraries/audio.c.o
+
+libraries/audio.i: libraries/audio.c.i
+.PHONY : libraries/audio.i
+
+# target to preprocess a source file
+libraries/audio.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/audio.c.i
+.PHONY : libraries/audio.c.i
+
+libraries/audio.s: libraries/audio.c.s
+.PHONY : libraries/audio.s
+
+# target to generate assembly for a file
+libraries/audio.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/audio.c.s
+.PHONY : libraries/audio.c.s
+
+libraries/auxlib.o: libraries/auxlib.c.o
+.PHONY : libraries/auxlib.o
+
+# target to build an object file
+libraries/auxlib.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/auxlib.c.o
+.PHONY : libraries/auxlib.c.o
+
+libraries/auxlib.i: libraries/auxlib.c.i
+.PHONY : libraries/auxlib.i
+
+# target to preprocess a source file
+libraries/auxlib.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/auxlib.c.i
+.PHONY : libraries/auxlib.c.i
+
+libraries/auxlib.s: libraries/auxlib.c.s
+.PHONY : libraries/auxlib.s
+
+# target to generate assembly for a file
+libraries/auxlib.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/auxlib.c.s
+.PHONY : libraries/auxlib.c.s
+
+libraries/baselib.o: libraries/baselib.c.o
+.PHONY : libraries/baselib.o
+
+# target to build an object file
+libraries/baselib.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/baselib.c.o
+.PHONY : libraries/baselib.c.o
+
+libraries/baselib.i: libraries/baselib.c.i
+.PHONY : libraries/baselib.i
+
+# target to preprocess a source file
+libraries/baselib.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/baselib.c.i
+.PHONY : libraries/baselib.c.i
+
+libraries/baselib.s: libraries/baselib.c.s
+.PHONY : libraries/baselib.s
+
+# target to generate assembly for a file
+libraries/baselib.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/baselib.c.s
+.PHONY : libraries/baselib.c.s
+
+libraries/cbor.o: libraries/cbor.c.o
+.PHONY : libraries/cbor.o
+
+# target to build an object file
+libraries/cbor.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/cbor.c.o
+.PHONY : libraries/cbor.c.o
+
+libraries/cbor.i: libraries/cbor.c.i
+.PHONY : libraries/cbor.i
+
+# target to preprocess a source file
+libraries/cbor.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/cbor.c.i
+.PHONY : libraries/cbor.c.i
+
+libraries/cbor.s: libraries/cbor.c.s
+.PHONY : libraries/cbor.s
+
+# target to generate assembly for a file
+libraries/cbor.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/cbor.c.s
+.PHONY : libraries/cbor.c.s
+
+libraries/codec.o: libraries/codec.c.o
+.PHONY : libraries/codec.o
+
+# target to build an object file
+libraries/codec.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/codec.c.o
+.PHONY : libraries/codec.c.o
+
+libraries/codec.i: libraries/codec.c.i
+.PHONY : libraries/codec.i
+
+# target to preprocess a source file
+libraries/codec.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/codec.c.i
+.PHONY : libraries/codec.c.i
+
+libraries/codec.s: libraries/codec.c.s
+.PHONY : libraries/codec.s
+
+# target to generate assembly for a file
+libraries/codec.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/codec.c.s
+.PHONY : libraries/codec.c.s
+
+libraries/config.o: libraries/config.c.o
+.PHONY : libraries/config.o
+
+# target to build an object file
+libraries/config.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/config.c.o
+.PHONY : libraries/config.c.o
+
+libraries/config.i: libraries/config.c.i
+.PHONY : libraries/config.i
+
+# target to preprocess a source file
+libraries/config.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/config.c.i
+.PHONY : libraries/config.c.i
+
+libraries/config.s: libraries/config.c.s
+.PHONY : libraries/config.s
+
+# target to generate assembly for a file
+libraries/config.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/config.c.s
+.PHONY : libraries/config.c.s
+
+libraries/corolib.o: libraries/corolib.c.o
+.PHONY : libraries/corolib.o
+
+# target to build an object file
+libraries/corolib.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/corolib.c.o
+.PHONY : libraries/corolib.c.o
+
+libraries/corolib.i: libraries/corolib.c.i
+.PHONY : libraries/corolib.i
+
+# target to preprocess a source file
+libraries/corolib.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/corolib.c.i
+.PHONY : libraries/corolib.c.i
+
+libraries/corolib.s: libraries/corolib.c.s
+.PHONY : libraries/corolib.s
+
+# target to generate assembly for a file
+libraries/corolib.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/corolib.c.s
+.PHONY : libraries/corolib.c.s
+
+libraries/crypto.o: libraries/crypto.c.o
+.PHONY : libraries/crypto.o
+
+# target to build an object file
+libraries/crypto.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/crypto.c.o
+.PHONY : libraries/crypto.c.o
+
+libraries/crypto.i: libraries/crypto.c.i
+.PHONY : libraries/crypto.i
+
+# target to preprocess a source file
+libraries/crypto.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/crypto.c.i
+.PHONY : libraries/crypto.c.i
+
+libraries/crypto.s: libraries/crypto.c.s
+.PHONY : libraries/crypto.s
+
+# target to generate assembly for a file
+libraries/crypto.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/crypto.c.s
+.PHONY : libraries/crypto.c.s
+
+libraries/csv.o: libraries/csv.c.o
+.PHONY : libraries/csv.o
+
+# target to build an object file
+libraries/csv.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/csv.c.o
+.PHONY : libraries/csv.c.o
+
+libraries/csv.i: libraries/csv.c.i
+.PHONY : libraries/csv.i
+
+# target to preprocess a source file
+libraries/csv.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/csv.c.i
+.PHONY : libraries/csv.c.i
+
+libraries/csv.s: libraries/csv.c.s
+.PHONY : libraries/csv.s
+
+# target to generate assembly for a file
+libraries/csv.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/csv.c.s
+.PHONY : libraries/csv.c.s
+
+libraries/curl.o: libraries/curl.c.o
+.PHONY : libraries/curl.o
+
+# target to build an object file
+libraries/curl.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/curl.c.o
+.PHONY : libraries/curl.c.o
+
+libraries/curl.i: libraries/curl.c.i
+.PHONY : libraries/curl.i
+
+# target to preprocess a source file
+libraries/curl.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/curl.c.i
+.PHONY : libraries/curl.c.i
+
+libraries/curl.s: libraries/curl.c.s
+.PHONY : libraries/curl.s
+
+# target to generate assembly for a file
+libraries/curl.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/curl.c.s
+.PHONY : libraries/curl.c.s
+
+libraries/dblib.o: libraries/dblib.c.o
+.PHONY : libraries/dblib.o
+
+# target to build an object file
+libraries/dblib.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/dblib.c.o
+.PHONY : libraries/dblib.c.o
+
+libraries/dblib.i: libraries/dblib.c.i
+.PHONY : libraries/dblib.i
+
+# target to preprocess a source file
+libraries/dblib.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/dblib.c.i
+.PHONY : libraries/dblib.c.i
+
+libraries/dblib.s: libraries/dblib.c.s
+.PHONY : libraries/dblib.s
+
+# target to generate assembly for a file
+libraries/dblib.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/dblib.c.s
+.PHONY : libraries/dblib.c.s
+
+libraries/dl.o: libraries/dl.c.o
+.PHONY : libraries/dl.o
+
+# target to build an object file
+libraries/dl.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/dl.c.o
+.PHONY : libraries/dl.c.o
+
+libraries/dl.i: libraries/dl.c.i
+.PHONY : libraries/dl.i
+
+# target to preprocess a source file
+libraries/dl.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/dl.c.i
+.PHONY : libraries/dl.c.i
+
+libraries/dl.s: libraries/dl.c.s
+.PHONY : libraries/dl.s
+
+# target to generate assembly for a file
+libraries/dl.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/dl.c.s
+.PHONY : libraries/dl.c.s
+
+libraries/ffi.o: libraries/ffi.c.o
+.PHONY : libraries/ffi.o
+
+# target to build an object file
+libraries/ffi.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/ffi.c.o
+.PHONY : libraries/ffi.c.o
+
+libraries/ffi.i: libraries/ffi.c.i
+.PHONY : libraries/ffi.i
+
+# target to preprocess a source file
+libraries/ffi.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/ffi.c.i
+.PHONY : libraries/ffi.c.i
+
+libraries/ffi.s: libraries/ffi.c.s
+.PHONY : libraries/ffi.s
+
+# target to generate assembly for a file
+libraries/ffi.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/ffi.c.s
+.PHONY : libraries/ffi.c.s
+
+libraries/ffmpeg.o: libraries/ffmpeg.c.o
+.PHONY : libraries/ffmpeg.o
+
+# target to build an object file
+libraries/ffmpeg.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/ffmpeg.c.o
+.PHONY : libraries/ffmpeg.c.o
+
+libraries/ffmpeg.i: libraries/ffmpeg.c.i
+.PHONY : libraries/ffmpeg.i
+
+# target to preprocess a source file
+libraries/ffmpeg.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/ffmpeg.c.i
+.PHONY : libraries/ffmpeg.c.i
+
+libraries/ffmpeg.s: libraries/ffmpeg.c.s
+.PHONY : libraries/ffmpeg.s
+
+# target to generate assembly for a file
+libraries/ffmpeg.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/ffmpeg.c.s
+.PHONY : libraries/ffmpeg.c.s
+
+libraries/font.o: libraries/font.c.o
+.PHONY : libraries/font.o
+
+# target to build an object file
+libraries/font.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/font.c.o
+.PHONY : libraries/font.c.o
+
+libraries/font.i: libraries/font.c.i
+.PHONY : libraries/font.i
+
+# target to preprocess a source file
+libraries/font.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/font.c.i
+.PHONY : libraries/font.c.i
+
+libraries/font.s: libraries/font.c.s
+.PHONY : libraries/font.s
+
+# target to generate assembly for a file
+libraries/font.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/font.c.s
+.PHONY : libraries/font.c.s
+
+libraries/fs.o: libraries/fs.c.o
+.PHONY : libraries/fs.o
+
+# target to build an object file
+libraries/fs.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/fs.c.o
+.PHONY : libraries/fs.c.o
+
+libraries/fs.i: libraries/fs.c.i
+.PHONY : libraries/fs.i
+
+# target to preprocess a source file
+libraries/fs.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/fs.c.i
+.PHONY : libraries/fs.c.i
+
+libraries/fs.s: libraries/fs.c.s
+.PHONY : libraries/fs.s
+
+# target to generate assembly for a file
+libraries/fs.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/fs.c.s
+.PHONY : libraries/fs.c.s
+
+libraries/fswatch.o: libraries/fswatch.c.o
+.PHONY : libraries/fswatch.o
+
+# target to build an object file
+libraries/fswatch.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/fswatch.c.o
+.PHONY : libraries/fswatch.c.o
+
+libraries/fswatch.i: libraries/fswatch.c.i
+.PHONY : libraries/fswatch.i
+
+# target to preprocess a source file
+libraries/fswatch.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/fswatch.c.i
+.PHONY : libraries/fswatch.c.i
+
+libraries/fswatch.s: libraries/fswatch.c.s
+.PHONY : libraries/fswatch.s
+
+# target to generate assembly for a file
+libraries/fswatch.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/fswatch.c.s
+.PHONY : libraries/fswatch.c.s
+
+libraries/hash.o: libraries/hash.c.o
+.PHONY : libraries/hash.o
+
+# target to build an object file
+libraries/hash.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/hash.c.o
+.PHONY : libraries/hash.c.o
+
+libraries/hash.i: libraries/hash.c.i
+.PHONY : libraries/hash.i
+
+# target to preprocess a source file
+libraries/hash.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/hash.c.i
+.PHONY : libraries/hash.c.i
+
+libraries/hash.s: libraries/hash.c.s
+.PHONY : libraries/hash.s
+
+# target to generate assembly for a file
+libraries/hash.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/hash.c.s
+.PHONY : libraries/hash.c.s
+
+libraries/http.o: libraries/http.c.o
+.PHONY : libraries/http.o
+
+# target to build an object file
+libraries/http.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/http.c.o
+.PHONY : libraries/http.c.o
+
+libraries/http.i: libraries/http.c.i
+.PHONY : libraries/http.i
+
+# target to preprocess a source file
+libraries/http.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/http.c.i
+.PHONY : libraries/http.c.i
+
+libraries/http.s: libraries/http.c.s
+.PHONY : libraries/http.s
+
+# target to generate assembly for a file
+libraries/http.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/http.c.s
+.PHONY : libraries/http.c.s
+
+libraries/img.o: libraries/img.c.o
+.PHONY : libraries/img.o
+
+# target to build an object file
+libraries/img.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/img.c.o
+.PHONY : libraries/img.c.o
+
+libraries/img.i: libraries/img.c.i
+.PHONY : libraries/img.i
+
+# target to preprocess a source file
+libraries/img.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/img.c.i
+.PHONY : libraries/img.c.i
+
+libraries/img.s: libraries/img.c.s
+.PHONY : libraries/img.s
+
+# target to generate assembly for a file
+libraries/img.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/img.c.s
+.PHONY : libraries/img.c.s
+
+libraries/iolib.o: libraries/iolib.c.o
+.PHONY : libraries/iolib.o
+
+# target to build an object file
+libraries/iolib.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/iolib.c.o
+.PHONY : libraries/iolib.c.o
+
+libraries/iolib.i: libraries/iolib.c.i
+.PHONY : libraries/iolib.i
+
+# target to preprocess a source file
+libraries/iolib.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/iolib.c.i
+.PHONY : libraries/iolib.c.i
+
+libraries/iolib.s: libraries/iolib.c.s
+.PHONY : libraries/iolib.s
+
+# target to generate assembly for a file
+libraries/iolib.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/iolib.c.s
+.PHONY : libraries/iolib.c.s
+
+libraries/ioloop.o: libraries/ioloop.c.o
+.PHONY : libraries/ioloop.o
+
+# target to build an object file
+libraries/ioloop.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/ioloop.c.o
+.PHONY : libraries/ioloop.c.o
+
+libraries/ioloop.i: libraries/ioloop.c.i
+.PHONY : libraries/ioloop.i
+
+# target to preprocess a source file
+libraries/ioloop.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/ioloop.c.i
+.PHONY : libraries/ioloop.c.i
+
+libraries/ioloop.s: libraries/ioloop.c.s
+.PHONY : libraries/ioloop.s
+
+# target to generate assembly for a file
+libraries/ioloop.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/ioloop.c.s
+.PHONY : libraries/ioloop.c.s
+
+libraries/ipc.o: libraries/ipc.c.o
+.PHONY : libraries/ipc.o
+
+# target to build an object file
+libraries/ipc.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/ipc.c.o
+.PHONY : libraries/ipc.c.o
+
+libraries/ipc.i: libraries/ipc.c.i
+.PHONY : libraries/ipc.i
+
+# target to preprocess a source file
+libraries/ipc.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/ipc.c.i
+.PHONY : libraries/ipc.c.i
+
+libraries/ipc.s: libraries/ipc.c.s
+.PHONY : libraries/ipc.s
+
+# target to generate assembly for a file
+libraries/ipc.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/ipc.c.s
+.PHONY : libraries/ipc.c.s
+
+libraries/json.o: libraries/json.c.o
+.PHONY : libraries/json.o
+
+# target to build an object file
+libraries/json.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/json.c.o
+.PHONY : libraries/json.c.o
+
+libraries/json.i: libraries/json.c.i
+.PHONY : libraries/json.i
+
+# target to preprocess a source file
+libraries/json.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/json.c.i
+.PHONY : libraries/json.c.i
+
+libraries/json.s: libraries/json.c.s
+.PHONY : libraries/json.s
+
+# target to generate assembly for a file
+libraries/json.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/json.c.s
+.PHONY : libraries/json.c.s
+
+libraries/kafka.o: libraries/kafka.c.o
+.PHONY : libraries/kafka.o
+
+# target to build an object file
+libraries/kafka.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/kafka.c.o
+.PHONY : libraries/kafka.c.o
+
+libraries/kafka.i: libraries/kafka.c.i
+.PHONY : libraries/kafka.i
+
+# target to preprocess a source file
+libraries/kafka.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/kafka.c.i
+.PHONY : libraries/kafka.c.i
+
+libraries/kafka.s: libraries/kafka.c.s
+.PHONY : libraries/kafka.s
+
+# target to generate assembly for a file
+libraries/kafka.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/kafka.c.s
+.PHONY : libraries/kafka.c.s
+
+libraries/kv.o: libraries/kv.c.o
+.PHONY : libraries/kv.o
+
+# target to build an object file
+libraries/kv.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/kv.c.o
+.PHONY : libraries/kv.c.o
+
+libraries/kv.i: libraries/kv.c.i
+.PHONY : libraries/kv.i
+
+# target to preprocess a source file
+libraries/kv.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/kv.c.i
+.PHONY : libraries/kv.c.i
+
+libraries/kv.s: libraries/kv.c.s
+.PHONY : libraries/kv.s
+
+# target to generate assembly for a file
+libraries/kv.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/kv.c.s
+.PHONY : libraries/kv.c.s
+
+libraries/libc.o: libraries/libc.c.o
+.PHONY : libraries/libc.o
+
+# target to build an object file
+libraries/libc.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/libc.c.o
+.PHONY : libraries/libc.c.o
+
+libraries/libc.i: libraries/libc.c.i
+.PHONY : libraries/libc.i
+
+# target to preprocess a source file
+libraries/libc.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/libc.c.i
+.PHONY : libraries/libc.c.i
+
+libraries/libc.s: libraries/libc.c.s
+.PHONY : libraries/libc.s
+
+# target to generate assembly for a file
+libraries/libc.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/libc.c.s
+.PHONY : libraries/libc.c.s
+
+libraries/libm.o: libraries/libm.c.o
+.PHONY : libraries/libm.o
+
+# target to build an object file
+libraries/libm.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/libm.c.o
+.PHONY : libraries/libm.c.o
+
+libraries/libm.i: libraries/libm.c.i
+.PHONY : libraries/libm.i
+
+# target to preprocess a source file
+libraries/libm.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/libm.c.i
+.PHONY : libraries/libm.c.i
+
+libraries/libm.s: libraries/libm.c.s
+.PHONY : libraries/libm.s
+
+# target to generate assembly for a file
+libraries/libm.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/libm.c.s
+.PHONY : libraries/libm.c.s
+
+libraries/loadlib.o: libraries/loadlib.c.o
+.PHONY : libraries/loadlib.o
+
+# target to build an object file
+libraries/loadlib.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/loadlib.c.o
+.PHONY : libraries/loadlib.c.o
+
+libraries/loadlib.i: libraries/loadlib.c.i
+.PHONY : libraries/loadlib.i
+
+# target to preprocess a source file
+libraries/loadlib.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/loadlib.c.i
+.PHONY : libraries/loadlib.c.i
+
+libraries/loadlib.s: libraries/loadlib.c.s
+.PHONY : libraries/loadlib.s
+
+# target to generate assembly for a file
+libraries/loadlib.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/loadlib.c.s
+.PHONY : libraries/loadlib.c.s
+
+libraries/log.o: libraries/log.c.o
+.PHONY : libraries/log.o
+
+# target to build an object file
+libraries/log.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/log.c.o
+.PHONY : libraries/log.c.o
+
+libraries/log.i: libraries/log.c.i
+.PHONY : libraries/log.i
+
+# target to preprocess a source file
+libraries/log.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/log.c.i
+.PHONY : libraries/log.c.i
+
+libraries/log.s: libraries/log.c.s
+.PHONY : libraries/log.s
+
+# target to generate assembly for a file
+libraries/log.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/log.c.s
+.PHONY : libraries/log.c.s
+
+libraries/mathlib.o: libraries/mathlib.c.o
+.PHONY : libraries/mathlib.o
+
+# target to build an object file
+libraries/mathlib.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/mathlib.c.o
+.PHONY : libraries/mathlib.c.o
+
+libraries/mathlib.i: libraries/mathlib.c.i
+.PHONY : libraries/mathlib.i
+
+# target to preprocess a source file
+libraries/mathlib.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/mathlib.c.i
+.PHONY : libraries/mathlib.c.i
+
+libraries/mathlib.s: libraries/mathlib.c.s
+.PHONY : libraries/mathlib.s
+
+# target to generate assembly for a file
+libraries/mathlib.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/mathlib.c.s
+.PHONY : libraries/mathlib.c.s
+
+libraries/metrics.o: libraries/metrics.c.o
+.PHONY : libraries/metrics.o
+
+# target to build an object file
+libraries/metrics.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/metrics.c.o
+.PHONY : libraries/metrics.c.o
+
+libraries/metrics.i: libraries/metrics.c.i
+.PHONY : libraries/metrics.i
+
+# target to preprocess a source file
+libraries/metrics.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/metrics.c.i
+.PHONY : libraries/metrics.c.i
+
+libraries/metrics.s: libraries/metrics.c.s
+.PHONY : libraries/metrics.s
+
+# target to generate assembly for a file
+libraries/metrics.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/metrics.c.s
+.PHONY : libraries/metrics.c.s
+
+libraries/mgpack.o: libraries/mgpack.c.o
+.PHONY : libraries/mgpack.o
+
+# target to build an object file
+libraries/mgpack.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/mgpack.c.o
+.PHONY : libraries/mgpack.c.o
+
+libraries/mgpack.i: libraries/mgpack.c.i
+.PHONY : libraries/mgpack.i
+
+# target to preprocess a source file
+libraries/mgpack.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/mgpack.c.i
+.PHONY : libraries/mgpack.c.i
+
+libraries/mgpack.s: libraries/mgpack.c.s
+.PHONY : libraries/mgpack.s
+
+# target to generate assembly for a file
+libraries/mgpack.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/mgpack.c.s
+.PHONY : libraries/mgpack.c.s
+
+libraries/mqtt.o: libraries/mqtt.c.o
+.PHONY : libraries/mqtt.o
+
+# target to build an object file
+libraries/mqtt.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/mqtt.c.o
+.PHONY : libraries/mqtt.c.o
+
+libraries/mqtt.i: libraries/mqtt.c.i
+.PHONY : libraries/mqtt.i
+
+# target to preprocess a source file
+libraries/mqtt.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/mqtt.c.i
+.PHONY : libraries/mqtt.c.i
+
+libraries/mqtt.s: libraries/mqtt.c.s
+.PHONY : libraries/mqtt.s
+
+# target to generate assembly for a file
+libraries/mqtt.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/mqtt.c.s
+.PHONY : libraries/mqtt.c.s
+
+libraries/mysql.o: libraries/mysql.c.o
+.PHONY : libraries/mysql.o
+
+# target to build an object file
+libraries/mysql.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/mysql.c.o
+.PHONY : libraries/mysql.c.o
+
+libraries/mysql.i: libraries/mysql.c.i
+.PHONY : libraries/mysql.i
+
+# target to preprocess a source file
+libraries/mysql.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/mysql.c.i
+.PHONY : libraries/mysql.c.i
+
+libraries/mysql.s: libraries/mysql.c.s
+.PHONY : libraries/mysql.s
+
+# target to generate assembly for a file
+libraries/mysql.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/mysql.c.s
+.PHONY : libraries/mysql.c.s
+
+libraries/ncurses.o: libraries/ncurses.c.o
+.PHONY : libraries/ncurses.o
+
+# target to build an object file
+libraries/ncurses.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/ncurses.c.o
+.PHONY : libraries/ncurses.c.o
+
+libraries/ncurses.i: libraries/ncurses.c.i
+.PHONY : libraries/ncurses.i
+
+# target to preprocess a source file
+libraries/ncurses.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/ncurses.c.i
+.PHONY : libraries/ncurses.c.i
+
+libraries/ncurses.s: libraries/ncurses.c.s
+.PHONY : libraries/ncurses.s
+
+# target to generate assembly for a file
+libraries/ncurses.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/ncurses.c.s
+.PHONY : libraries/ncurses.c.s
+
+libraries/net.o: libraries/net.c.o
+.PHONY : libraries/net.o
+
+# target to build an object file
+libraries/net.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/net.c.o
+.PHONY : libraries/net.c.o
+
+libraries/net.i: libraries/net.c.i
+.PHONY : libraries/net.i
+
+# target to preprocess a source file
+libraries/net.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/net.c.i
+.PHONY : libraries/net.c.i
+
+libraries/net.s: libraries/net.c.s
+.PHONY : libraries/net.s
+
+# target to generate assembly for a file
+libraries/net.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/net.c.s
+.PHONY : libraries/net.c.s
+
+libraries/oslib.o: libraries/oslib.c.o
+.PHONY : libraries/oslib.o
+
+# target to build an object file
+libraries/oslib.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/oslib.c.o
+.PHONY : libraries/oslib.c.o
+
+libraries/oslib.i: libraries/oslib.c.i
+.PHONY : libraries/oslib.i
+
+# target to preprocess a source file
+libraries/oslib.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/oslib.c.i
+.PHONY : libraries/oslib.c.i
+
+libraries/oslib.s: libraries/oslib.c.s
+.PHONY : libraries/oslib.s
+
+# target to generate assembly for a file
+libraries/oslib.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/oslib.c.s
+.PHONY : libraries/oslib.c.s
+
+libraries/path.o: libraries/path.c.o
+.PHONY : libraries/path.o
+
+# target to build an object file
+libraries/path.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/path.c.o
+.PHONY : libraries/path.c.o
+
+libraries/path.i: libraries/path.c.i
+.PHONY : libraries/path.i
+
+# target to preprocess a source file
+libraries/path.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/path.c.i
+.PHONY : libraries/path.c.i
+
+libraries/path.s: libraries/path.c.s
+.PHONY : libraries/path.s
+
+# target to generate assembly for a file
+libraries/path.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/path.c.s
+.PHONY : libraries/path.c.s
+
+libraries/pg.o: libraries/pg.c.o
+.PHONY : libraries/pg.o
+
+# target to build an object file
+libraries/pg.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/pg.c.o
+.PHONY : libraries/pg.c.o
+
+libraries/pg.i: libraries/pg.c.i
+.PHONY : libraries/pg.i
+
+# target to preprocess a source file
+libraries/pg.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/pg.c.i
+.PHONY : libraries/pg.c.i
+
+libraries/pg.s: libraries/pg.c.s
+.PHONY : libraries/pg.s
+
+# target to generate assembly for a file
+libraries/pg.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/pg.c.s
+.PHONY : libraries/pg.c.s
+
+libraries/proc.o: libraries/proc.c.o
+.PHONY : libraries/proc.o
+
+# target to build an object file
+libraries/proc.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/proc.c.o
+.PHONY : libraries/proc.c.o
+
+libraries/proc.i: libraries/proc.c.i
+.PHONY : libraries/proc.i
+
+# target to preprocess a source file
+libraries/proc.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/proc.c.i
+.PHONY : libraries/proc.c.i
+
+libraries/proc.s: libraries/proc.c.s
+.PHONY : libraries/proc.s
+
+# target to generate assembly for a file
+libraries/proc.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/proc.c.s
+.PHONY : libraries/proc.c.s
+
+libraries/protobuf.o: libraries/protobuf.c.o
+.PHONY : libraries/protobuf.o
+
+# target to build an object file
+libraries/protobuf.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/protobuf.c.o
+.PHONY : libraries/protobuf.c.o
+
+libraries/protobuf.i: libraries/protobuf.c.i
+.PHONY : libraries/protobuf.i
+
+# target to preprocess a source file
+libraries/protobuf.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/protobuf.c.i
+.PHONY : libraries/protobuf.c.i
+
+libraries/protobuf.s: libraries/protobuf.c.s
+.PHONY : libraries/protobuf.s
+
+# target to generate assembly for a file
+libraries/protobuf.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/protobuf.c.s
+.PHONY : libraries/protobuf.c.s
+
+libraries/pthread.o: libraries/pthread.c.o
+.PHONY : libraries/pthread.o
+
+# target to build an object file
+libraries/pthread.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/pthread.c.o
+.PHONY : libraries/pthread.c.o
+
+libraries/pthread.i: libraries/pthread.c.i
+.PHONY : libraries/pthread.i
+
+# target to preprocess a source file
+libraries/pthread.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/pthread.c.i
+.PHONY : libraries/pthread.c.i
+
+libraries/pthread.s: libraries/pthread.c.s
+.PHONY : libraries/pthread.s
+
+# target to generate assembly for a file
+libraries/pthread.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/pthread.c.s
+.PHONY : libraries/pthread.c.s
+
+libraries/re.o: libraries/re.c.o
+.PHONY : libraries/re.o
+
+# target to build an object file
+libraries/re.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/re.c.o
+.PHONY : libraries/re.c.o
+
+libraries/re.i: libraries/re.c.i
+.PHONY : libraries/re.i
+
+# target to preprocess a source file
+libraries/re.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/re.c.i
+.PHONY : libraries/re.c.i
+
+libraries/re.s: libraries/re.c.s
+.PHONY : libraries/re.s
+
+# target to generate assembly for a file
+libraries/re.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/re.c.s
+.PHONY : libraries/re.c.s
+
+libraries/redis.o: libraries/redis.c.o
+.PHONY : libraries/redis.o
+
+# target to build an object file
+libraries/redis.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/redis.c.o
+.PHONY : libraries/redis.c.o
+
+libraries/redis.i: libraries/redis.c.i
+.PHONY : libraries/redis.i
+
+# target to preprocess a source file
+libraries/redis.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/redis.c.i
+.PHONY : libraries/redis.c.i
+
+libraries/redis.s: libraries/redis.c.s
+.PHONY : libraries/redis.s
+
+# target to generate assembly for a file
+libraries/redis.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/redis.c.s
+.PHONY : libraries/redis.c.s
+
+libraries/rt.o: libraries/rt.c.o
+.PHONY : libraries/rt.o
+
+# target to build an object file
+libraries/rt.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/rt.c.o
+.PHONY : libraries/rt.c.o
+
+libraries/rt.i: libraries/rt.c.i
+.PHONY : libraries/rt.i
+
+# target to preprocess a source file
+libraries/rt.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/rt.c.i
+.PHONY : libraries/rt.c.i
+
+libraries/rt.s: libraries/rt.c.s
+.PHONY : libraries/rt.s
+
+# target to generate assembly for a file
+libraries/rt.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/rt.c.s
+.PHONY : libraries/rt.c.s
+
+libraries/sandbox.o: libraries/sandbox.c.o
+.PHONY : libraries/sandbox.o
+
+# target to build an object file
+libraries/sandbox.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/sandbox.c.o
+.PHONY : libraries/sandbox.c.o
+
+libraries/sandbox.i: libraries/sandbox.c.i
+.PHONY : libraries/sandbox.i
+
+# target to preprocess a source file
+libraries/sandbox.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/sandbox.c.i
+.PHONY : libraries/sandbox.c.i
+
+libraries/sandbox.s: libraries/sandbox.c.s
+.PHONY : libraries/sandbox.s
+
+# target to generate assembly for a file
+libraries/sandbox.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/sandbox.c.s
+.PHONY : libraries/sandbox.c.s
+
+libraries/strlib.o: libraries/strlib.c.o
+.PHONY : libraries/strlib.o
+
+# target to build an object file
+libraries/strlib.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/strlib.c.o
+.PHONY : libraries/strlib.c.o
+
+libraries/strlib.i: libraries/strlib.c.i
+.PHONY : libraries/strlib.i
+
+# target to preprocess a source file
+libraries/strlib.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/strlib.c.i
+.PHONY : libraries/strlib.c.i
+
+libraries/strlib.s: libraries/strlib.c.s
+.PHONY : libraries/strlib.s
+
+# target to generate assembly for a file
+libraries/strlib.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/strlib.c.s
+.PHONY : libraries/strlib.c.s
+
+libraries/tablib.o: libraries/tablib.c.o
+.PHONY : libraries/tablib.o
+
+# target to build an object file
+libraries/tablib.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/tablib.c.o
+.PHONY : libraries/tablib.c.o
+
+libraries/tablib.i: libraries/tablib.c.i
+.PHONY : libraries/tablib.i
+
+# target to preprocess a source file
+libraries/tablib.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/tablib.c.i
+.PHONY : libraries/tablib.c.i
+
+libraries/tablib.s: libraries/tablib.c.s
+.PHONY : libraries/tablib.s
+
+# target to generate assembly for a file
+libraries/tablib.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/tablib.c.s
+.PHONY : libraries/tablib.c.s
+
+libraries/threadpool.o: libraries/threadpool.c.o
+.PHONY : libraries/threadpool.o
+
+# target to build an object file
+libraries/threadpool.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/threadpool.c.o
+.PHONY : libraries/threadpool.c.o
+
+libraries/threadpool.i: libraries/threadpool.c.i
+.PHONY : libraries/threadpool.i
+
+# target to preprocess a source file
+libraries/threadpool.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/threadpool.c.i
+.PHONY : libraries/threadpool.c.i
+
+libraries/threadpool.s: libraries/threadpool.c.s
+.PHONY : libraries/threadpool.s
+
+# target to generate assembly for a file
+libraries/threadpool.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/threadpool.c.s
+.PHONY : libraries/threadpool.c.s
+
+libraries/time.o: libraries/time.c.o
+.PHONY : libraries/time.o
+
+# target to build an object file
+libraries/time.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/time.c.o
+.PHONY : libraries/time.c.o
+
+libraries/time.i: libraries/time.c.i
+.PHONY : libraries/time.i
+
+# target to preprocess a source file
+libraries/time.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/time.c.i
+.PHONY : libraries/time.c.i
+
+libraries/time.s: libraries/time.c.s
+.PHONY : libraries/time.s
+
+# target to generate assembly for a file
+libraries/time.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/time.c.s
+.PHONY : libraries/time.c.s
+
+libraries/url.o: libraries/url.c.o
+.PHONY : libraries/url.o
+
+# target to build an object file
+libraries/url.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/url.c.o
+.PHONY : libraries/url.c.o
+
+libraries/url.i: libraries/url.c.i
+.PHONY : libraries/url.i
+
+# target to preprocess a source file
+libraries/url.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/url.c.i
+.PHONY : libraries/url.c.i
+
+libraries/url.s: libraries/url.c.s
+.PHONY : libraries/url.s
+
+# target to generate assembly for a file
+libraries/url.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/url.c.s
+.PHONY : libraries/url.c.s
+
+libraries/utf8lib.o: libraries/utf8lib.c.o
+.PHONY : libraries/utf8lib.o
+
+# target to build an object file
+libraries/utf8lib.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/utf8lib.c.o
+.PHONY : libraries/utf8lib.c.o
+
+libraries/utf8lib.i: libraries/utf8lib.c.i
+.PHONY : libraries/utf8lib.i
+
+# target to preprocess a source file
+libraries/utf8lib.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/utf8lib.c.i
+.PHONY : libraries/utf8lib.c.i
+
+libraries/utf8lib.s: libraries/utf8lib.c.s
+.PHONY : libraries/utf8lib.s
+
+# target to generate assembly for a file
+libraries/utf8lib.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/utf8lib.c.s
+.PHONY : libraries/utf8lib.c.s
+
+libraries/uuid.o: libraries/uuid.c.o
+.PHONY : libraries/uuid.o
+
+# target to build an object file
+libraries/uuid.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/uuid.c.o
+.PHONY : libraries/uuid.c.o
+
+libraries/uuid.i: libraries/uuid.c.i
+.PHONY : libraries/uuid.i
+
+# target to preprocess a source file
+libraries/uuid.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/uuid.c.i
+.PHONY : libraries/uuid.c.i
+
+libraries/uuid.s: libraries/uuid.c.s
+.PHONY : libraries/uuid.s
+
+# target to generate assembly for a file
+libraries/uuid.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/uuid.c.s
+.PHONY : libraries/uuid.c.s
+
+libraries/webp.o: libraries/webp.c.o
+.PHONY : libraries/webp.o
+
+# target to build an object file
+libraries/webp.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/webp.c.o
+.PHONY : libraries/webp.c.o
+
+libraries/webp.i: libraries/webp.c.i
+.PHONY : libraries/webp.i
+
+# target to preprocess a source file
+libraries/webp.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/webp.c.i
+.PHONY : libraries/webp.c.i
+
+libraries/webp.s: libraries/webp.c.s
+.PHONY : libraries/webp.s
+
+# target to generate assembly for a file
+libraries/webp.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/webp.c.s
+.PHONY : libraries/webp.c.s
+
+libraries/ws.o: libraries/ws.c.o
+.PHONY : libraries/ws.o
+
+# target to build an object file
+libraries/ws.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/ws.c.o
+.PHONY : libraries/ws.c.o
+
+libraries/ws.i: libraries/ws.c.i
+.PHONY : libraries/ws.i
+
+# target to preprocess a source file
+libraries/ws.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/ws.c.i
+.PHONY : libraries/ws.c.i
+
+libraries/ws.s: libraries/ws.c.s
+.PHONY : libraries/ws.s
+
+# target to generate assembly for a file
+libraries/ws.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/ws.c.s
+.PHONY : libraries/ws.c.s
+
+libraries/xml.o: libraries/xml.c.o
+.PHONY : libraries/xml.o
+
+# target to build an object file
+libraries/xml.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/xml.c.o
+.PHONY : libraries/xml.c.o
+
+libraries/xml.i: libraries/xml.c.i
+.PHONY : libraries/xml.i
+
+# target to preprocess a source file
+libraries/xml.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/xml.c.i
+.PHONY : libraries/xml.c.i
+
+libraries/xml.s: libraries/xml.c.s
+.PHONY : libraries/xml.s
+
+# target to generate assembly for a file
+libraries/xml.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/xml.c.s
+.PHONY : libraries/xml.c.s
+
+libraries/yaml.o: libraries/yaml.c.o
+.PHONY : libraries/yaml.o
+
+# target to build an object file
+libraries/yaml.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/yaml.c.o
+.PHONY : libraries/yaml.c.o
+
+libraries/yaml.i: libraries/yaml.c.i
+.PHONY : libraries/yaml.i
+
+# target to preprocess a source file
+libraries/yaml.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/yaml.c.i
+.PHONY : libraries/yaml.c.i
+
+libraries/yaml.s: libraries/yaml.c.s
+.PHONY : libraries/yaml.s
+
+# target to generate assembly for a file
+libraries/yaml.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/yaml.c.s
+.PHONY : libraries/yaml.c.s
+
+libraries/z.o: libraries/z.c.o
+.PHONY : libraries/z.o
+
+# target to build an object file
+libraries/z.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/z.c.o
+.PHONY : libraries/z.c.o
+
+libraries/z.i: libraries/z.c.i
+.PHONY : libraries/z.i
+
+# target to preprocess a source file
+libraries/z.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/z.c.i
+.PHONY : libraries/z.c.i
+
+libraries/z.s: libraries/z.c.s
+.PHONY : libraries/z.s
+
+# target to generate assembly for a file
+libraries/z.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/z.c.s
+.PHONY : libraries/z.c.s
+
+libraries/zmq.o: libraries/zmq.c.o
+.PHONY : libraries/zmq.o
+
+# target to build an object file
+libraries/zmq.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/zmq.c.o
+.PHONY : libraries/zmq.c.o
+
+libraries/zmq.i: libraries/zmq.c.i
+.PHONY : libraries/zmq.i
+
+# target to preprocess a source file
+libraries/zmq.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/zmq.c.i
+.PHONY : libraries/zmq.c.i
+
+libraries/zmq.s: libraries/zmq.c.s
+.PHONY : libraries/zmq.s
+
+# target to generate assembly for a file
+libraries/zmq.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vittelight.dir/build.make CMakeFiles/vittelight.dir/libraries/zmq.c.s
+.PHONY : libraries/zmq.c.s
+
+tests/test.o: tests/test.c.o
+.PHONY : tests/test.o
+
+# target to build an object file
+tests/test.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vl_test.dir/build.make CMakeFiles/vl_test.dir/tests/test.c.o
+.PHONY : tests/test.c.o
+
+tests/test.i: tests/test.c.i
+.PHONY : tests/test.i
+
+# target to preprocess a source file
+tests/test.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vl_test.dir/build.make CMakeFiles/vl_test.dir/tests/test.c.i
+.PHONY : tests/test.c.i
+
+tests/test.s: tests/test.c.s
+.PHONY : tests/test.s
+
+# target to generate assembly for a file
+tests/test.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/vl_test.dir/build.make CMakeFiles/vl_test.dir/tests/test.c.s
+.PHONY : tests/test.c.s
+
 # Help Target
 help:
 	@echo "The following are some of the valid targets for this Makefile:"
@@ -813,9 +2348,11 @@ help:
 	@echo "... install/strip"
 	@echo "... list_install_components"
 	@echo "... rebuild_cache"
+	@echo "... test"
 	@echo "... vitlc"
 	@echo "... vitte-cli"
 	@echo "... vittelight"
+	@echo "... vl_test"
 	@echo "... compiler/vitlc.o"
 	@echo "... compiler/vitlc.i"
 	@echo "... compiler/vitlc.s"
@@ -891,6 +2428,195 @@ help:
 	@echo "... core/zio.o"
 	@echo "... core/zio.i"
 	@echo "... core/zio.s"
+	@echo "... libraries/amqp.o"
+	@echo "... libraries/amqp.i"
+	@echo "... libraries/amqp.s"
+	@echo "... libraries/archive.o"
+	@echo "... libraries/archive.i"
+	@echo "... libraries/archive.s"
+	@echo "... libraries/audio.o"
+	@echo "... libraries/audio.i"
+	@echo "... libraries/audio.s"
+	@echo "... libraries/auxlib.o"
+	@echo "... libraries/auxlib.i"
+	@echo "... libraries/auxlib.s"
+	@echo "... libraries/baselib.o"
+	@echo "... libraries/baselib.i"
+	@echo "... libraries/baselib.s"
+	@echo "... libraries/cbor.o"
+	@echo "... libraries/cbor.i"
+	@echo "... libraries/cbor.s"
+	@echo "... libraries/codec.o"
+	@echo "... libraries/codec.i"
+	@echo "... libraries/codec.s"
+	@echo "... libraries/config.o"
+	@echo "... libraries/config.i"
+	@echo "... libraries/config.s"
+	@echo "... libraries/corolib.o"
+	@echo "... libraries/corolib.i"
+	@echo "... libraries/corolib.s"
+	@echo "... libraries/crypto.o"
+	@echo "... libraries/crypto.i"
+	@echo "... libraries/crypto.s"
+	@echo "... libraries/csv.o"
+	@echo "... libraries/csv.i"
+	@echo "... libraries/csv.s"
+	@echo "... libraries/curl.o"
+	@echo "... libraries/curl.i"
+	@echo "... libraries/curl.s"
+	@echo "... libraries/dblib.o"
+	@echo "... libraries/dblib.i"
+	@echo "... libraries/dblib.s"
+	@echo "... libraries/dl.o"
+	@echo "... libraries/dl.i"
+	@echo "... libraries/dl.s"
+	@echo "... libraries/ffi.o"
+	@echo "... libraries/ffi.i"
+	@echo "... libraries/ffi.s"
+	@echo "... libraries/ffmpeg.o"
+	@echo "... libraries/ffmpeg.i"
+	@echo "... libraries/ffmpeg.s"
+	@echo "... libraries/font.o"
+	@echo "... libraries/font.i"
+	@echo "... libraries/font.s"
+	@echo "... libraries/fs.o"
+	@echo "... libraries/fs.i"
+	@echo "... libraries/fs.s"
+	@echo "... libraries/fswatch.o"
+	@echo "... libraries/fswatch.i"
+	@echo "... libraries/fswatch.s"
+	@echo "... libraries/hash.o"
+	@echo "... libraries/hash.i"
+	@echo "... libraries/hash.s"
+	@echo "... libraries/http.o"
+	@echo "... libraries/http.i"
+	@echo "... libraries/http.s"
+	@echo "... libraries/img.o"
+	@echo "... libraries/img.i"
+	@echo "... libraries/img.s"
+	@echo "... libraries/iolib.o"
+	@echo "... libraries/iolib.i"
+	@echo "... libraries/iolib.s"
+	@echo "... libraries/ioloop.o"
+	@echo "... libraries/ioloop.i"
+	@echo "... libraries/ioloop.s"
+	@echo "... libraries/ipc.o"
+	@echo "... libraries/ipc.i"
+	@echo "... libraries/ipc.s"
+	@echo "... libraries/json.o"
+	@echo "... libraries/json.i"
+	@echo "... libraries/json.s"
+	@echo "... libraries/kafka.o"
+	@echo "... libraries/kafka.i"
+	@echo "... libraries/kafka.s"
+	@echo "... libraries/kv.o"
+	@echo "... libraries/kv.i"
+	@echo "... libraries/kv.s"
+	@echo "... libraries/libc.o"
+	@echo "... libraries/libc.i"
+	@echo "... libraries/libc.s"
+	@echo "... libraries/libm.o"
+	@echo "... libraries/libm.i"
+	@echo "... libraries/libm.s"
+	@echo "... libraries/loadlib.o"
+	@echo "... libraries/loadlib.i"
+	@echo "... libraries/loadlib.s"
+	@echo "... libraries/log.o"
+	@echo "... libraries/log.i"
+	@echo "... libraries/log.s"
+	@echo "... libraries/mathlib.o"
+	@echo "... libraries/mathlib.i"
+	@echo "... libraries/mathlib.s"
+	@echo "... libraries/metrics.o"
+	@echo "... libraries/metrics.i"
+	@echo "... libraries/metrics.s"
+	@echo "... libraries/mgpack.o"
+	@echo "... libraries/mgpack.i"
+	@echo "... libraries/mgpack.s"
+	@echo "... libraries/mqtt.o"
+	@echo "... libraries/mqtt.i"
+	@echo "... libraries/mqtt.s"
+	@echo "... libraries/mysql.o"
+	@echo "... libraries/mysql.i"
+	@echo "... libraries/mysql.s"
+	@echo "... libraries/ncurses.o"
+	@echo "... libraries/ncurses.i"
+	@echo "... libraries/ncurses.s"
+	@echo "... libraries/net.o"
+	@echo "... libraries/net.i"
+	@echo "... libraries/net.s"
+	@echo "... libraries/oslib.o"
+	@echo "... libraries/oslib.i"
+	@echo "... libraries/oslib.s"
+	@echo "... libraries/path.o"
+	@echo "... libraries/path.i"
+	@echo "... libraries/path.s"
+	@echo "... libraries/pg.o"
+	@echo "... libraries/pg.i"
+	@echo "... libraries/pg.s"
+	@echo "... libraries/proc.o"
+	@echo "... libraries/proc.i"
+	@echo "... libraries/proc.s"
+	@echo "... libraries/protobuf.o"
+	@echo "... libraries/protobuf.i"
+	@echo "... libraries/protobuf.s"
+	@echo "... libraries/pthread.o"
+	@echo "... libraries/pthread.i"
+	@echo "... libraries/pthread.s"
+	@echo "... libraries/re.o"
+	@echo "... libraries/re.i"
+	@echo "... libraries/re.s"
+	@echo "... libraries/redis.o"
+	@echo "... libraries/redis.i"
+	@echo "... libraries/redis.s"
+	@echo "... libraries/rt.o"
+	@echo "... libraries/rt.i"
+	@echo "... libraries/rt.s"
+	@echo "... libraries/sandbox.o"
+	@echo "... libraries/sandbox.i"
+	@echo "... libraries/sandbox.s"
+	@echo "... libraries/strlib.o"
+	@echo "... libraries/strlib.i"
+	@echo "... libraries/strlib.s"
+	@echo "... libraries/tablib.o"
+	@echo "... libraries/tablib.i"
+	@echo "... libraries/tablib.s"
+	@echo "... libraries/threadpool.o"
+	@echo "... libraries/threadpool.i"
+	@echo "... libraries/threadpool.s"
+	@echo "... libraries/time.o"
+	@echo "... libraries/time.i"
+	@echo "... libraries/time.s"
+	@echo "... libraries/url.o"
+	@echo "... libraries/url.i"
+	@echo "... libraries/url.s"
+	@echo "... libraries/utf8lib.o"
+	@echo "... libraries/utf8lib.i"
+	@echo "... libraries/utf8lib.s"
+	@echo "... libraries/uuid.o"
+	@echo "... libraries/uuid.i"
+	@echo "... libraries/uuid.s"
+	@echo "... libraries/webp.o"
+	@echo "... libraries/webp.i"
+	@echo "... libraries/webp.s"
+	@echo "... libraries/ws.o"
+	@echo "... libraries/ws.i"
+	@echo "... libraries/ws.s"
+	@echo "... libraries/xml.o"
+	@echo "... libraries/xml.i"
+	@echo "... libraries/xml.s"
+	@echo "... libraries/yaml.o"
+	@echo "... libraries/yaml.i"
+	@echo "... libraries/yaml.s"
+	@echo "... libraries/z.o"
+	@echo "... libraries/z.i"
+	@echo "... libraries/z.s"
+	@echo "... libraries/zmq.o"
+	@echo "... libraries/zmq.i"
+	@echo "... libraries/zmq.s"
+	@echo "... tests/test.o"
+	@echo "... tests/test.i"
+	@echo "... tests/test.s"
 .PHONY : help
 
 

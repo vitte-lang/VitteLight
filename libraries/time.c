@@ -53,7 +53,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
-#include <ctype.h>
+#include "libctype.h"
 
 #if defined(_WIN32)
   #define WIN32_LEAN_AND_MEAN
@@ -69,6 +69,9 @@
 #ifndef TM_API
 #define TM_API
 #endif
+
+TM_API int tm_format_iso8601_frac(time_t t, int utc, int frac_digits, char* out, size_t cap);
+TM_API int tm_local_utc_offset_sec(time_t t, int* out_sec);
 
 /* ===================== Horloges ===================== */
 

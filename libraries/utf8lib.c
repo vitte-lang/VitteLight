@@ -24,7 +24,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
-#include <ctype.h>
+#include "libctype.h"
 
 /* ---------- Helpers ---------- */
 

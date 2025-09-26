@@ -10,7 +10,7 @@
 // Depends: includes/auxlib.h, state.h, vm.h, and the libraries you enable.
 // Optional subsystems: libcurl (HTTP). All others are opt-in via flags.
 
-#include <ctype.h>
+#include "libctype.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>

@@ -1,0 +1,10 @@
+prefix=/usr/local
+exec_prefix=${prefix}
+libdir=${exec_prefix}/${CMAKE_INSTALL_LIBDIR}
+includedir=${prefix}/${CMAKE_INSTALL_INCLUDEDIR}
+
+Name: vittelight
+Description: Lightweight C runtime and CLI for the Vitte language (C11 VM & tooling)
+Version: 
+Libs: -L${libdir} -lvittelight
+Cflags: -I${includedir}

@@ -36,7 +36,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
-#include <ctype.h>
+#include "libctype.h"
 
 #ifndef RE_API
 #define RE_API

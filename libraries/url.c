@@ -9,7 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <ctype.h>
+#include "libctype.h"
 
 #ifndef URL_API
 #define URL_API

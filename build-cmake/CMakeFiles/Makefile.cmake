@@ -12,6 +12,7 @@ set(CMAKE_MAKEFILE_DEPENDS
   "CMakeFiles/4.1.1/CMakeSystem.cmake"
   "CMakeFiles/VerifyGlobs.cmake"
   "CMakeFiles/cmake.verify_globs"
+  "/Users/vincent/Documents/Github/VitteLight/vittelight.pc.in"
   "/opt/homebrew/share/cmake/Modules/CMakeCInformation.cmake"
   "/opt/homebrew/share/cmake/Modules/CMakeCommonLanguageInclude.cmake"
   "/opt/homebrew/share/cmake/Modules/CMakeGenericSystem.cmake"
@@ -53,6 +54,7 @@ set(CMAKE_MAKEFILE_OUTPUTS
 
 # Byproducts of CMake generate step:
 set(CMAKE_MAKEFILE_PRODUCTS
+  "vittelight.pc"
   "CMakeFiles/CMakeDirectoryInformation.cmake"
   )
 
@@ -61,4 +63,5 @@ set(CMAKE_DEPEND_INFO_FILES
   "CMakeFiles/vittelight.dir/DependInfo.cmake"
   "CMakeFiles/vitlc.dir/DependInfo.cmake"
   "CMakeFiles/vitte-cli.dir/DependInfo.cmake"
+  "CMakeFiles/vl_test.dir/DependInfo.cmake"
   )

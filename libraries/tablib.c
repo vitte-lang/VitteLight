@@ -12,7 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <ctype.h>
+#include "libctype.h"
 
 #ifndef TAB_API
 #define TAB_API
@@ -293,10 +293,22 @@ static int _cmp_ci(const void* a, const void* b, void* th){
 }
 
 #if defined(__GNUC__) || defined(__clang__)
+#if defined(__APPLE__)
+struct tablib_qsort_ctx {
+    int (*cmp)(const void*, const void*, void*);
+    void* thunk;
+};
+static int tablib_qsort_adapter(void* ctx_ptr, const void* a, const void* b) {
+    struct tablib_qsort_ctx* ctx = (struct tablib_qsort_ctx*)ctx_ptr;
+    return ctx->cmp(a, b, ctx->thunk);
+}
+#endif
+
 static void _qsort_r(void* base, size_t nmemb, size_t size,
                      int (*compar)(const void*, const void*, void*), void* th){
 #if defined(__APPLE__)
-    qsort_r(base, nmemb, size, th, compar);
+    struct tablib_qsort_ctx ctx = { compar, th };
+    qsort_r(base, nmemb, size, &ctx, tablib_qsort_adapter);
 #else
     qsort_r(base, nmemb, size, compar, th);
 #endif

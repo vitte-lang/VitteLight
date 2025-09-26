@@ -25,7 +25,7 @@
 #include <stdint.h>
 #include <stdarg.h>
 #include <stdio.h>
-#include <ctype.h>
+#include "libctype.h"
 
 #ifndef STR_API
 #define STR_API

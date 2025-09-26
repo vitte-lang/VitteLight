@@ -48,7 +48,17 @@
 #include <stdbool.h>
 #include <time.h>
 #include <errno.h>
-#include <threads.h>   // thrd_current pour id portable (C11)
+
+#if defined(__has_include)
+#  if __has_include(<threads.h>)
+#    include <threads.h>
+#    define VL_HAVE_THREADS_H 1
+#  endif
+#endif
+#ifndef VL_HAVE_THREADS_H
+#  include <pthread.h>
+#endif
+
 #include <stdatomic.h>
 #include <sys/stat.h>
 
@@ -131,8 +141,11 @@ static void now_iso8601(char out[32]) {
 }
 
 static unsigned long thread_id_u() {
-    // thrd_current() returns handle. Hash it to an integer.
+#if defined(VL_HAVE_THREADS_H)
     uintptr_t v = (uintptr_t) thrd_current();
+#else
+    uintptr_t v = (uintptr_t) pthread_self();
+#endif
     // simple mix
     v ^= v >> 33; v *= 0xff51afd7ed558ccdULL;
     v ^= v >> 33; v *= 0xc4ceb9fe1a85ec53ULL;

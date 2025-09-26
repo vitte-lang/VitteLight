@@ -4,7 +4,7 @@
 # compile C with /usr/bin/cc
 C_DEFINES = 
 
-C_INCLUDES = -I/Users/vincent/Documents/Github/VitteLight -I/Users/vincent/Documents/Github/VitteLight/core -I/Users/vincent/Documents/Github/VitteLight/includes -I/Users/vincent/Documents/Github/VitteLight/compiler
+C_INCLUDES = -I/Users/vincent/Documents/Github/VitteLight -I/Users/vincent/Documents/Github/VitteLight/core -I/Users/vincent/Documents/Github/VitteLight/libraries -I/Users/vincent/Documents/Github/VitteLight/includes -I/Users/vincent/Documents/Github/VitteLight/compiler
 
 C_FLAGSarm64 = -std=c11 -arch arm64
 

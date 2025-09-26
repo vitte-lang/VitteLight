@@ -12,17 +12,25 @@ set(VL_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 
 # Récupération automatique des sources
 file(GLOB CORE_SOURCES CONFIGURE_DEPENDS ${VL_ROOT}/core/*.c)
+file(GLOB LIB_SOURCES  CONFIGURE_DEPENDS ${VL_ROOT}/libraries/*.c)
+
+# Certaines implémentations (ex: init.c) dépendent de headers externes non fournis.
+list(REMOVE_ITEM LIB_SOURCES
+  ${VL_ROOT}/libraries/init.c
+)
 
 # Exclure certains fichiers utilisés comme main()
 list(REMOVE_ITEM CORE_SOURCES ${VL_ROOT}/core/code.c)
 
 add_library(vittelight STATIC
   ${CORE_SOURCES}
+  ${LIB_SOURCES}
 )
 
 target_include_directories(vittelight PUBLIC
   ${VL_ROOT}
   ${VL_ROOT}/core
+  ${VL_ROOT}/libraries
   ${VL_ROOT}/includes
   ${VL_ROOT}/compiler
 )
@@ -71,4 +79,3 @@ add_executable(vl_test tests/test.c)
 target_link_libraries(vl_test PRIVATE vittelight)
 
 add_test(NAME run_vl_test COMMAND vl_test)
-

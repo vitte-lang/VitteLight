@@ -41,7 +41,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <ctype.h>
+#include "libctype.h"
 #include <stddef.h> /* ptrdiff_t */
 
 #ifndef YAML_API

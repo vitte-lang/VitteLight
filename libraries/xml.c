@@ -21,7 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <ctype.h>
+#include "libctype.h"
 #include <stddef.h>   /* ptrdiff_t */
 
 #ifndef XML_API
@@ -36,6 +36,8 @@ typedef struct xml_node  {
     xml_attr *attrs;
     struct xml_node *child,*next,*parent;
 } xml_node;
+
+XML_API void xml_free(xml_node* x);
 
 /* ================= Utils ================= */
 

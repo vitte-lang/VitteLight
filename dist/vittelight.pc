@@ -1,6 +1,10 @@
 prefix=/usr/local
 exec_prefix=${prefix}
-libdir=${prefix}/lib
-includedir=${prefix}/include
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include/vittelight
 
 Name: vittelight
+Description: Lightweight C runtime and CLI for the Vitte language (C11 VM & tooling)
+Version: 0.1.0
+Libs: -L${libdir} -lvittelight
+Cflags: -I${includedir}

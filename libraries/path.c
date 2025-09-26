@@ -30,7 +30,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <ctype.h>
+#include "libctype.h"
 
 #if defined(_WIN32)
   #define PATH_SEP_NATIVE '\\'
