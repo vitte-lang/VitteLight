@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 /* ============================================================================
-   core/api.h — En-tête C99 pour runtime Vitte/Vitl
+   core/api.h — En-tête C11 pour runtime Vitte/Vitl
    Public API. Compatible C et C++.
    ============================================================================
  */
@@ -9,7 +9,7 @@
 
 #if defined(_MSC_VER)
 #ifndef __STDC_VERSION__
-#define __STDC_VERSION__ 199901L
+#define __STDC_VERSION__ 201112L
 #endif
 #endif
 
@@ -159,9 +159,9 @@ API_EXPORT void sb_append_fmt(StrBuf* sb, const char* fmt, ...);
 
 #define vec_push(v,val) do { vec_reserve((v),1); (v)->data[(v)->len++]=(val);} while(0)
 
-/* Alias nommés pour éviter les "struct <unnamed>" incompatibles */
-typedef VEC(u8)  vec_u8;
-typedef VEC(u32) vec_u32;
+/* Alias nommés pour éviter les \"struct <unnamed>\" incompatibles */
+typedef VEC(u8)   vec_u8;
+typedef VEC(u32)  vec_u32;
 typedef VEC(char) vec_char;
 
 /* -------------------------------------------------------------------------- */
@@ -192,7 +192,7 @@ API_EXPORT u64 hash_str(const char* s);
 /* -------------------------------------------------------------------------- */
 /* Hash map string -> u64                                                     */
 /* -------------------------------------------------------------------------- */
-struct HSlot;
+struct HSlot; /* opaque */
 typedef struct {
   struct HSlot* slots;
   usize         cap;
