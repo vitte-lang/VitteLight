@@ -1,5 +1,5 @@
 /* ============================================================================
-   debug.h — logging/debug cross-platform (C11)
+   debug.h — logging/debug cross-platform (C17)
    Niveaux: TRACE..FATAL. Formats: texte ou JSON. Sorties: stderr ou fichier.
    Thread-safe. Horodatage, TID, source (file:line:func). Hexdump, backtrace.
    Lier avec debug.c. Licence: MIT.
@@ -23,7 +23,8 @@ extern "C" {
 #endif
 
 #if defined(__GNUC__) || defined(__clang__)
-#define VT_PRINTF(fmt_idx, va_idx) __attribute__((format(printf, fmt_idx, va_idx)))
+#define VT_PRINTF(fmt_idx, va_idx) \
+  __attribute__((format(printf, fmt_idx, va_idx)))
 #else
 #define VT_PRINTF(fmt_idx, va_idx)
 #endif
@@ -34,8 +35,8 @@ extern "C" {
 typedef enum {
   VT_LL_TRACE = 0,
   VT_LL_DEBUG = 1,
-  VT_LL_INFO  = 2,
-  VT_LL_WARN  = 3,
+  VT_LL_INFO = 2,
+  VT_LL_WARN = 3,
   VT_LL_ERROR = 4,
   VT_LL_FATAL = 5
 } vt_log_level;
@@ -79,11 +80,6 @@ VT_DEBUG_API void vt_debug_hexdump(const void* data, size_t len,
 VT_DEBUG_API void vt_debug_backtrace(void);
 VT_DEBUG_API void vt_debug_install_crash_handlers(void);
 
-/* Assertions enrichies */
-VT_DEBUG_API void vt_assert_fail(const char* cond, const char* file, int line,
-                                 const char* func, const char* fmt, ...)
-    VT_PRINTF(5, 6);
-
 /* ----------------------------------------------------------------------------
    Macros de confort
 ---------------------------------------------------------------------------- */
@@ -117,6 +113,10 @@ VT_DEBUG_API void vt_assert_fail(const char* cond, const char* file, int line,
 #define VT_WARN(...)  VT_LOG(VT_LL_WARN,  __VA_ARGS__)
 #define VT_ERROR(...) VT_LOG(VT_LL_ERROR, __VA_ARGS__)
 #define VT_FATAL(...) VT_LOG(VT_LL_FATAL, __VA_ARGS__)
+
+VT_DEBUG_API void vt_assert_fail(const char* cond, const char* file, int line,
+                                 const char* func, const char* fmt, ...)
+    VT_PRINTF(5, 6);
 
 /* Assert light: log fatal with condition and custom message */
 #define VT_ASSERT(COND, ...)                                                \
