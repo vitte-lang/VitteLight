@@ -1,0 +1,8 @@
+{
+  "cline.provider": "openai",
+  "cline.openai.baseUrl": "http://127.0.0.1:11434/v1",
+  "cline.openai.apiKey": "ollama", 
+  "cline.openai.model": "qwen2.5-coder:14b-instruct",
+  "cline.requestTimeoutMs": 300000,
+  "cline.stream": true
+}
