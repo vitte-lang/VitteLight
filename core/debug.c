@@ -1,5 +1,5 @@
 /* ============================================================================
-   debug.c — utilitaires de debug/logging ultra complets (C17, cross-platform)
+   debug.c — utilitaires de debug/logging ultra complets (C11, cross-platform)
    - Niveaux: TRACE, DEBUG, INFO, WARN, ERROR, FATAL
    - Formats: texte (coloré) ou JSON ligne par ligne
    - Sorties: stderr par défaut, fichier avec rotation par taille
@@ -77,6 +77,8 @@ VT_DEBUG_API void vt_debug_hexdump(const void* data, size_t len,
                                    const char* label);
 VT_DEBUG_API void vt_debug_backtrace(void);
 VT_DEBUG_API void vt_debug_install_crash_handlers(void);
+VT_DEBUG_API void vt_assert_fail(const char* cond, const char* file, int line,
+                                 const char* func, const char* fmt, ...);
 #endif
 
 /* ----------------------------------------------------------------------------
@@ -145,35 +147,22 @@ static void vt__enable_vt100(void) {
 ---------------------------------------------------------------------------- */
 static const char* vt__lvl_name(vt_log_level l) {
   switch (l) {
-    case VT_LL_TRACE:
-      return "TRACE";
-    case VT_LL_DEBUG:
-      return "DEBUG";
-    case VT_LL_INFO:
-      return "INFO";
-    case VT_LL_WARN:
-      return "WARN";
-    case VT_LL_ERROR:
-      return "ERROR";
-    default:
-      return "FATAL";
+    case VT_LL_TRACE: return "TRACE";
+    case VT_LL_DEBUG: return "DEBUG";
+    case VT_LL_INFO:  return "INFO";
+    case VT_LL_WARN:  return "WARN";
+    case VT_LL_ERROR: return "ERROR";
+    default:          return "FATAL";
   }
 }
 static const char* vt__lvl_color(vt_log_level l) {
-  /* CSI */
   switch (l) {
-    case VT_LL_TRACE:
-      return "\x1b[90m"; /* bright black */
-    case VT_LL_DEBUG:
-      return "\x1b[36m"; /* cyan */
-    case VT_LL_INFO:
-      return "\x1b[32m"; /* green */
-    case VT_LL_WARN:
-      return "\x1b[33m"; /* yellow */
-    case VT_LL_ERROR:
-      return "\x1b[31m"; /* red */
-    default:
-      return "\x1b[41;97m"; /* red bg, white fg */
+    case VT_LL_TRACE: return "\x1b[90m";
+    case VT_LL_DEBUG: return "\x1b[36m";
+    case VT_LL_INFO:  return "\x1b[32m";
+    case VT_LL_WARN:  return "\x1b[33m";
+    case VT_LL_ERROR: return "\x1b[31m";
+    default:          return "\x1b[41;97m";
   }
 }
 
@@ -181,24 +170,22 @@ static const char* vt__lvl_color(vt_log_level l) {
    Horodatage local "YYYY-MM-DD HH:MM:SS.mmm"
 ---------------------------------------------------------------------------- */
 static void vt__fmt_timestamp(char* dst, size_t cap) {
-  struct timespec ts;
 #if defined(_WIN32)
-  /* Windows 10+ : timespec via _timespec64 ? Simple: GetSystemTime +
-   * milliseconds */
   SYSTEMTIME st;
   GetLocalTime(&st);
-  snprintf(dst, cap, "%04u-%02u-%02u %02u:%02u:%02u.%03u", (unsigned)st.wYear,
-           (unsigned)st.wMonth, (unsigned)st.wDay, (unsigned)st.wHour,
-           (unsigned)st.wMinute, (unsigned)st.wSecond,
-           (unsigned)st.wMilliseconds);
+  (void)snprintf(dst, cap, "%04u-%02u-%02u %02u:%02u:%02u.%03u",
+                 (unsigned)st.wYear, (unsigned)st.wMonth, (unsigned)st.wDay,
+                 (unsigned)st.wHour, (unsigned)st.wMinute, (unsigned)st.wSecond,
+                 (unsigned)st.wMilliseconds);
 #else
+  struct timespec ts;
   clock_gettime(CLOCK_REALTIME, &ts);
   struct tm tmval;
   localtime_r(&ts.tv_sec, &tmval);
   int ms = (int)(ts.tv_nsec / 1000000);
-  snprintf(dst, cap, "%04d-%02d-%02d %02d:%02d:%02d.%03d", 1900 + tmval.tm_year,
-           1 + tmval.tm_mon, tmval.tm_mday, tmval.tm_hour, tmval.tm_min,
-           tmval.tm_sec, ms);
+  (void)snprintf(dst, cap, "%04d-%02d-%02d %02d:%02d:%02d.%03d",
+                 1900 + tmval.tm_year, 1 + tmval.tm_mon, tmval.tm_mday,
+                 tmval.tm_hour, tmval.tm_min, tmval.tm_sec, ms);
 #endif
 }
 
@@ -225,11 +212,10 @@ static int vt__ensure_rotation_unlocked(size_t next_write) {
   if (g_log.rotate_bytes == 0) return 0;
   if (g_log.written_bytes + next_write < g_log.rotate_bytes) return 0;
 
-  /* Fermer et renommer: <file>.1 (écrase) */
   fclose(g_log.out);
   g_log.out = NULL;
   char bak[1200] = {0};
-  snprintf(bak, sizeof(bak), "%s.1", g_log.file_path);
+  (void)snprintf(bak, sizeof(bak), "%s.1", g_log.file_path);
 #if defined(_WIN32)
   MoveFileExA(g_log.file_path, bak, MOVEFILE_REPLACE_EXISTING);
 #else
@@ -253,11 +239,14 @@ int vt_log_init(const vt_log_config* cfg) {
   g_log.format = cfg ? cfg->format : VT_FMT_TEXT;
   g_log.color_enabled = cfg ? cfg->use_color : 1;
   g_log.rotate_bytes = cfg ? cfg->rotate_bytes : 0;
+
   if (cfg && cfg->file_path) {
-    strncpy(g_log.file_path, cfg->file_path, sizeof(g_log.file_path) - 1);
+    g_log.file_path[0] = '\0';
+    strncat(g_log.file_path, cfg->file_path, sizeof(g_log.file_path) - 1);
     g_log.out = fopen(g_log.file_path, "ab");
     if (!g_log.out) g_log.out = stderr;
   } else {
+    g_log.file_path[0] = '\0';
     g_log.out = stderr;
   }
 
@@ -320,7 +309,8 @@ void vt_log_set_file(const char* path, size_t rotate_bytes) {
   g_log.rotate_bytes = rotate_bytes;
   g_log.written_bytes = 0;
   if (path) {
-    strncpy(g_log.file_path, path, sizeof(g_log.file_path) - 1);
+    g_log.file_path[0] = '\0';
+    strncat(g_log.file_path, path, sizeof(g_log.file_path) - 1);
     g_log.out = fopen(g_log.file_path, "ab");
     if (!g_log.out) g_log.out = stderr;
   } else {
@@ -335,20 +325,20 @@ void vt_log_set_file(const char* path, size_t rotate_bytes) {
 ---------------------------------------------------------------------------- */
 static void vt__json_escape(const char* s, char* out, size_t cap) {
   size_t o = 0;
+  if (!s) s = "";
   for (size_t i = 0; s[i] && o + 6 < cap; ++i) {
     unsigned char c = (unsigned char)s[i];
     if (c == '"' || c == '\\') {
       out[o++] = '\\';
-      out[o++] = c;
+      out[o++] = (char)c;
     } else if (c >= 0x20 && c != 0x7F) {
-      out[o++] = c;
+      out[o++] = (char)c;
     } else {
-      /* \u00XX */
       int n = snprintf(out + o, cap - o, "\\u%04X", (unsigned)c);
       o += (n > 0) ? (size_t)n : 0;
     }
   }
-  out[o] = 0;
+  if (o < cap) out[o] = 0;
 }
 
 /* ----------------------------------------------------------------------------
@@ -365,28 +355,24 @@ void vt_log_write(vt_log_level lvl, const char* file, int line,
   char msgbuf[4096];
   va_list ap;
   va_start(ap, fmt);
-  vsnprintf(msgbuf, sizeof(msgbuf), fmt, ap);
+  vsnprintf(msgbuf, sizeof(msgbuf), fmt ? fmt : "", ap);
   va_end(ap);
 
   vt__lock();
 
-  /* Rotation éventuelle (approx: longueur estimée) */
   size_t approx = strlen(msgbuf) + 128;
-  vt__ensure_rotation_unlocked(approx);
+  (void)vt__ensure_rotation_unlocked(approx);
 
   if (g_log.format == VT_FMT_JSON) {
-    char fbuf[1024];
-    char funcbuf[1024];
-    char jmsg[4096];
+    char fbuf[512], funcbuf[512], jmsg[4096];
     vt__json_escape(file ? file : "", fbuf, sizeof fbuf);
     vt__json_escape(func ? func : "", funcbuf, sizeof funcbuf);
     vt__json_escape(msgbuf, jmsg, sizeof jmsg);
-    int n =
-        fprintf(g_log.out,
-                "{\"ts\":\"%s\",\"lvl\":\"%s\",\"tid\":%llu,"
-                "\"file\":\"%s\",\"line\":%d,\"func\":\"%s\",\"msg\":\"%s\"}\n",
-                ts, vt__lvl_name(lvl), (unsigned long long)tid, fbuf, line,
-                funcbuf, jmsg);
+    int n = fprintf(g_log.out,
+                    "{\"ts\":\"%s\",\"lvl\":\"%s\",\"tid\":%llu,"
+                    "\"file\":\"%s\",\"line\":%d,\"func\":\"%s\",\"msg\":\"%s\"}\n",
+                    ts, vt__lvl_name(lvl), (unsigned long long)tid, fbuf, line,
+                    funcbuf, jmsg);
     if (n > 0) g_log.written_bytes += (size_t)n;
   } else {
     if (g_log.color_active) {
@@ -407,7 +393,6 @@ void vt_log_write(vt_log_level lvl, const char* file, int line,
   if (lvl == VT_LL_FATAL) {
     vt__unlock();
     vt_debug_backtrace();
-    /* flush then abort */
     vt__lock();
     fflush(g_log.out);
     vt__unlock();
@@ -421,6 +406,7 @@ VT_DEBUG_API void vt_assert_fail(const char* cond, const char* file, int line,
                                  const char* func, const char* fmt, ...) {
   char msgbuf[4096];
   size_t off = 0;
+
   if (cond && *cond) {
     int n = snprintf(msgbuf, sizeof msgbuf, "assertion failed: %s", cond);
     off = (n > 0) ? (size_t)n : 0;
@@ -428,7 +414,6 @@ VT_DEBUG_API void vt_assert_fail(const char* cond, const char* file, int line,
     int n = snprintf(msgbuf, sizeof msgbuf, "assertion failed");
     off = (n > 0) ? (size_t)n : 0;
   }
-
   if (off >= sizeof msgbuf) off = sizeof msgbuf - 1;
 
   if (fmt && *fmt) {
@@ -545,12 +530,8 @@ static void vt__sig_handler(int sig, siginfo_t* info, void* uctx) {
 
 void vt_debug_install_crash_handlers(void) {
 #if defined(_WIN32)
-  /* Minimal SEH: print backtrace on unhandled exception */
-  /* Note: pour un handling robuste, préférer un filter séparé dans l’app. */
-  static LONG(__stdcall * prev)(EXCEPTION_POINTERS*) = NULL;
-  (void)prev;
-  /* Pas de remplacement global ici pour éviter effets de bord.
-     L’app peut installer son propre filter et appeler vt_debug_backtrace(). */
+  /* Minimal SEH: l’app peut installer son filter et appeler vt_debug_backtrace() */
+  (void)0;
 #else
   struct sigaction sa;
   memset(&sa, 0, sizeof sa);
@@ -568,7 +549,7 @@ void vt_debug_install_crash_handlers(void) {
 
 /* ----------------------------------------------------------------------------
    Exemple d’utilisation (désactivé par défaut):
-   gcc -DVT_DEBUG_TEST debug.c -ldl -pthread
+   cc -std=c11 -DVT_DEBUG_TEST debug.c -ldl -pthread
 ---------------------------------------------------------------------------- */
 #ifdef VT_DEBUG_TEST
 int main(void) {
